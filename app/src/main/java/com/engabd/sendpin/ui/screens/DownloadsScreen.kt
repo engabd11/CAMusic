@@ -537,9 +537,10 @@ private fun JobRow(job: DownloadJob, onRetry: () -> Unit, onDismiss: () -> Unit)
                 fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(
-                if (job.failed) "Failed" else "Downloading · ${(job.fraction * 100).toInt()}%",
+                if (job.failed) job.reason?.let { "Failed · $it" } ?: "Failed"
+                else "Downloading · ${(job.fraction * 100).toInt()}%",
                 color = if (job.failed) ErrorRed else TextMuted,
-                fontFamily = AppFont, fontSize = 12.sp, maxLines = 1,
+                fontFamily = AppFont, fontSize = 12.sp, maxLines = if (job.failed) 2 else 1,
             )
         }
         if (job.failed) {

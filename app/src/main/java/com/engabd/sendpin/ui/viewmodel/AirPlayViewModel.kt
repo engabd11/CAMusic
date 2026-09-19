@@ -7,6 +7,7 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AirPlayDiscovery
 import com.engabd.sendpin.audio.AirPlayOutput
 import com.engabd.sendpin.data.AppSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -61,9 +62,16 @@ class AirPlayViewModel(app: Application) : AndroidViewModel(app) {
     fun startDiscovery() {
         if (discoveryJob?.isActive == true) return
         discoveryJob = viewModelScope.launch {
-            runCatching {
+            try {
                 AirPlayDiscovery(getApplication()).discover().collect { _devices.value = it }
-            }.onFailure { _error.value = "Could not browse the network: ${it.message}" }
+            } catch (e: CancellationException) {
+                // The sheet closing — [stopDiscovery] — is not a failure to browse,
+                // and reporting it as one left "Could not browse the network: … was
+                // cancelled" on the card the next time it opened.
+                throw e
+            } catch (e: Exception) {
+                _error.value = "Could not browse the network: ${e.message}"
+            }
         }
     }
 
@@ -111,11 +119,6 @@ class AirPlayViewModel(app: Application) : AndroidViewModel(app) {
     /** Mirror the phone's volume slider onto the receiver, 0..1. */
     fun setVolume(level01: Float) {
         if (connected.value) output?.setVolume(level01.coerceIn(0f, 1f))
-    }
-
-    /** What the receiver's own Now Playing shows — an Apple TV renders this itself. */
-    fun setNowPlaying(title: String, artist: String, album: String) {
-        if (connected.value) output?.setNowPlaying(title, artist, album, cover = null, coverMime = null)
     }
 
     override fun onCleared() {

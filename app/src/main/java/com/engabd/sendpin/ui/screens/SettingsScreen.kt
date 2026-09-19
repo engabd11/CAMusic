@@ -186,10 +186,7 @@ fun SettingsScreen(
     fun up() {
         when {
             detail == null -> onSection(null)
-            // Three levels: the player page sits under a server, which sits under the
-            // list. Popping straight to null from there would skip the page the user
-            // came from and land them on the list, which is not where back goes.
-            else -> onDetail(parentDetail(detail))
+            else -> onDetail(null)
         }
     }
 
@@ -660,16 +657,6 @@ private fun GetStartedCard(accent: androidx.compose.ui.graphics.Color, onAddLibr
 }
 
 /**
- * One level up from [detail], or null for the section's own index.
- *
- * Everything in Settings is two levels except one thing: a Music Assistant server's
- * "this phone as a player" page, which is a page under a page. Its route carries the
- * server it belongs to, so going up from it is a matter of reading that back out
- * rather than a third piece of state — see [playerRoute].
- */
-private fun parentDetail(detail: String): String? = serverIdOfPlayerRoute(detail)
-
-/**
  * What the header says.
  *
  * A detail page under a section is still that section as far as the user is concerned
@@ -680,7 +667,6 @@ private fun parentDetail(detail: String): String? = serverIdOfPlayerRoute(detail
 private fun headerTitle(section: SettingsSection?, detail: String?, servers: List<ServerConfig>): String = when {
     section == null -> "Settings"
     section == SettingsSection.PROVIDERS && detail == PICK_ROUTE -> "Add a server"
-    section == SettingsSection.PROVIDERS && serverIdOfPlayerRoute(detail) != null -> "This phone"
     // The kind's own name — "Spotify", "Navidrome" — since that is what the page is.
     section == SettingsSection.PROVIDERS && detail != null -> serverKindOfRoute(detail, servers)?.label ?: "Server"
     section == SettingsSection.LIGHTS_SYNC && detail == BRIDGE_ROUTE -> "Hue Bridge"

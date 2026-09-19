@@ -115,13 +115,27 @@ struct AirPlayBridge {
 
 // ── JNI entry points ─────────────────────────────────────────────────────
 
-static AirPlayBridge* getBridge(JNIEnv* env, jobject thiz) {
+// The `nativePtr` field, looked up once. A null here means the Kotlin side was
+// minified without the keep rule in proguard-rules.pro — the pending
+// NoSuchFieldError is cleared and reported, because handing a null jfieldID to
+// GetLongField is a JNI abort (the whole process, not an exception).
+static jfieldID nativePtrField(JNIEnv* env, jobject thiz) {
     static jfieldID fid = nullptr;
     if (!fid) {
         jclass cls = env->GetObjectClass(thiz);
         fid = env->GetFieldID(cls, "nativePtr", "J");
         env->DeleteLocalRef(cls);
+        if (!fid) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGE("AirPlayOutput.nativePtr not found — keep rule missing from proguard-rules.pro");
+        }
     }
+    return fid;
+}
+
+static AirPlayBridge* getBridge(JNIEnv* env, jobject thiz) {
+    jfieldID fid = nativePtrField(env, thiz);
+    if (!fid) return nullptr;
     jlong ptr = env->GetLongField(thiz, fid);
     return reinterpret_cast<AirPlayBridge*>(ptr);
 }
@@ -213,13 +227,8 @@ Java_com_engabd_sendpin_audio_AirPlayOutput_nativeDestroy(JNIEnv* env, jobject t
     if (!bridge) return;
     bridge->stop();
     delete bridge;
-    static jfieldID fid = nullptr;
-    if (!fid) {
-        jclass cls = env->GetObjectClass(thiz);
-        fid = env->GetFieldID(cls, "nativePtr", "J");
-        env->DeleteLocalRef(cls);
-    }
-    env->SetLongField(thiz, fid, 0);
+    jfieldID fid = nativePtrField(env, thiz);
+    if (fid) env->SetLongField(thiz, fid, 0);
 }
 
 // ── nativeStart ──────────────────────────────────────────────────────────
@@ -343,6 +352,15 @@ Java_com_engabd_sendpin_audio_AirPlayOutput_nativeSetNowPlaying(
     if (jTitle) env->ReleaseStringUTFChars(jTitle, title);
     if (jArtist) env->ReleaseStringUTFChars(jArtist, artist);
     if (jAlbum) env->ReleaseStringUTFChars(jAlbum, album);
+}
+
+// ── nativeSetProgress ────────────────────────────────────────────────────
+JNIEXPORT void JNICALL
+Java_com_engabd_sendpin_audio_AirPlayOutput_nativeSetProgress(
+        JNIEnv* env, jobject thiz, jlong positionMs, jlong durationMs) {
+    AirPlayBridge* bridge = getBridge(env, thiz);
+    if (!bridge) return;
+    bridge->sender->setProgress(double(positionMs) / 1000.0, double(durationMs) / 1000.0);
 }
 
 // ── nativeIsWaitingForPin ────────────────────────────────────────────────

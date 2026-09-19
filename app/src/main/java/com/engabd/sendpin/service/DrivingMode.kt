@@ -11,7 +11,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.data.AppSettings
 import kotlinx.coroutines.CoroutineScope
@@ -112,6 +118,8 @@ class DrivingMode(private val app: Context) {
     private val owner get() = com.engabd.sendpin.SendpinApp.instance.playbackOwner
 
     private companion object {
+        const val TAG = "DrivingMode"
+
         /**
          * How long after a car ACL connect a second one counts as the same arrival.
          *
@@ -205,7 +213,10 @@ class DrivingMode(private val app: Context) {
             // that flag, the alert could not fire at any speed.
             if (action == BluetoothAdapter.ACTION_STATE_CHANGED) {
                 when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
-                    BluetoothAdapter.STATE_ON -> refreshCarConnection(wantedCarAddress)
+                    BluetoothAdapter.STATE_ON -> {
+                        Log.i(TAG, "adapter on, re-asking for the car")
+                        refreshCarConnection(wantedCarAddress)
+                    }
                     BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                         connectionQueryEpoch++
                         _carConnected.value = false
@@ -223,6 +234,7 @@ class DrivingMode(private val app: Context) {
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                 }
             if (device?.address != wanted) return
+            Log.i(TAG, "car ${action.substringAfterLast('.')}")
             when (action) {
                 // A fresh drive starts clean — a dismissal from the last one must
                 // not carry over and leave the bar silently missing on this trip.
@@ -257,6 +269,24 @@ class DrivingMode(private val app: Context) {
                 }
             }
         }
+    }
+
+    /**
+     * The audio framework's view of a Bluetooth sink arriving or leaving — see the
+     * registration in `init` for why this exists beside [carReceiver].
+     */
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>?) {
+            if (added?.any { it.isBluetoothSink() } == true) refreshCarConnection(wantedCarAddress)
+        }
+
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>?) {
+            if (removed?.any { it.isBluetoothSink() } == true) refreshCarConnection(wantedCarAddress)
+        }
+
+        private fun AudioDeviceInfo.isBluetoothSink(): Boolean =
+            type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                (Build.VERSION.SDK_INT >= 33 && type == AudioDeviceInfo.TYPE_BLE_HEADSET)
     }
 
     @Volatile private var wantedCarAddress: String = ""
@@ -301,11 +331,16 @@ class DrivingMode(private val app: Context) {
         // alternative — registering and unregistering as the setting changes — has
         // more states to get wrong than it saves work.
         //
-        // RECEIVER_NOT_EXPORTED here for lint cleanliness and to match the shape
-        // already used at DrivingPip.registerControls, not because this receiver is
-        // otherwise at risk: ACTION_ACL_CONNECTED is a protected system broadcast,
-        // so only the platform can ever send it and an unexported flag closes no
-        // real hole. Same SDK guard either way, since the flag only exists from 33.
+        // RECEIVER_EXPORTED, and this is not optional. These broadcasts are sent by
+        // the Bluetooth stack (`com.android.bluetooth`), which since 13 runs as its
+        // own uid (1002, `bluetooth`) — not `system`. A receiver registered
+        // NOT_EXPORTED only accepts broadcasts from its own app or the system uid,
+        // so the platform dropped every ACL connect, disconnect and adapter-state
+        // change to this receiver on the floor ("Exported Denial" in the system
+        // log) and the car never appeared to connect: the speed watch sat on
+        // "waiting for <car> to connect" for the whole drive. Exporting closes no
+        // hole — ACTION_ACL_CONNECTED and ACTION_STATE_CHANGED are protected
+        // broadcasts, so only the platform can send them regardless of the flag.
         runCatching {
             val filter = IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
@@ -318,11 +353,28 @@ class DrivingMode(private val app: Context) {
                 addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                app.registerReceiver(carReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                app.registerReceiver(carReceiver, filter, Context.RECEIVER_EXPORTED)
             } else {
                 @Suppress("UnspecifiedRegisterReceiverFlag")
                 app.registerReceiver(carReceiver, filter)
             }
+        }
+        // Belt and braces for the broadcast above: the audio framework's own
+        // device list. When a car takes the phone's media output it appears here
+        // as a Bluetooth A2DP sink, and when it drops it disappears — delivered
+        // to any app, no permission needed, through a callback the framework
+        // owns rather than a broadcast that a flag or a permission can silence.
+        // It does not say *which* device, so it does not set the flag itself; it
+        // re-asks the adapter, which does.
+        runCatching {
+            val audio = app.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audio?.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        }
+        // The app coming forward is the moment a grant made in the system Settings
+        // (Bluetooth, most likely — the query below is a no-op without it) first
+        // becomes usable, and the one moment the user is looking at the answer.
+        scope.launch {
+            AppLifecycleObserver.register(app).foreground.collect { fg -> if (fg) refreshCarConnection() }
         }
         // Start and stop the window that actually shows the bar. Which mechanism is
         // in play is read here rather than inside the service, so switching it takes
@@ -382,6 +434,19 @@ class DrivingMode(private val app: Context) {
     fun refreshCarConnection() {
         refreshCarConnection(wantedCarAddress)
     }
+
+    /**
+     * Whether this process may hear about the car at all.
+     *
+     * Every way [carConnected] can become true needs `BLUETOOTH_CONNECT`: the ACL
+     * broadcasts are sent with it as a required permission, and the profile query
+     * refuses to run without it. So a nominated car with the grant missing is not
+     * "waiting for the car" — it is a link that cannot close, and the screen that
+     * reports the watch has to say so rather than describe a wait that never ends.
+     */
+    fun canSeeCar(): Boolean =
+        ContextCompat.checkSelfPermission(app, Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
 
     /**
      * Asks the adapter whether the nominated car is connected *right now*.
@@ -468,6 +533,7 @@ class DrivingMode(private val app: Context) {
         if (queryEpoch != connectionQueryEpoch) return
         if (wantedCarAddress != address) return
         if (connected) {
+            if (!_carConnected.value) Log.i(TAG, "car found connected on profile $profileId")
             _carConnected.value = true
         } else {
             answers[profileId] = false

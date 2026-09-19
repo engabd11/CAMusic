@@ -95,6 +95,9 @@ interface NetworkOutput {
         coverMime: String? = null,
     )
 
+    /** Where the track is, for the receiver's own progress bar. No-op when not streaming. */
+    fun setProgress(positionMs: Long, durationMs: Long)
+
     /** Whether the native sender is active (handshaking or streaming). */
     fun isActive(): Boolean
 }

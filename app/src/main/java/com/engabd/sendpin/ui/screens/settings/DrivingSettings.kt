@@ -460,6 +460,35 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
                 "the sky.",
         )
 
+        // The one grant every path to "car connected" needs — the ACL broadcasts
+        // are sent with it as a required permission, and the adapter query bails
+        // without it. Offered here, beside the line that reports the wait, because
+        // the Driving page's own button is behind a card nobody revisits once the
+        // car is picked; an OS permission reset (or a reinstall that restored the
+        // settings but not the grants) left the alert armed and permanently dark.
+        val carAddress by settings.drivingCarAddress.collectAsState(initial = "")
+        var btJustGranted by remember { mutableStateOf(false) }
+        val btGranted = btJustGranted ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
+        val askBluetooth = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission(),
+        ) { ok ->
+            if (ok) {
+                btJustGranted = true
+                val app = com.engabd.sendpin.SendpinApp.instance
+                // The query is a no-op until this grant lands; ask again now that it
+                // has, and restart the monitor so its idle line is re-worded.
+                app.drivingMode.refreshCarConnection()
+                app.speedMonitor.start()
+            }
+        }
+        if (carAddress.isNotBlank() && !btGranted) {
+            OledButton("Allow Bluetooth", accent = WarnAmber, outline = true) {
+                askBluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+        }
+
         // Android refusing the background location service is the one failure that
         // looks exactly like success from this screen: fixes arrive here, and the
         // watch goes quiet the moment the map comes forward. It used to go to logcat.

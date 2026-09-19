@@ -88,9 +88,6 @@ internal fun LibrariesSection(
         detail == PICK_ROUTE ->
             ProviderPicker(accent) { onDetail(newServerRoute(it)) }
 
-        serverIdOfPlayerRoute(detail) != null ->
-            MaPlayerCards(settings = settings, accent = accent, scope = scope)
-
         else -> {
             val existing = servers.firstOrNull { it.id == detail }
             val newKind = pendingKind(detail)
@@ -141,7 +138,6 @@ internal fun LibrariesSection(
                 settings = settings,
                 accent = accent,
                 scope = scope,
-                onOpenPlayer = { onDetail(playerRoute(config.id)) },
                 onDone = { onDetail(null) },
                 onSaved = {
                     config = existing ?: config
@@ -505,8 +501,6 @@ private fun ServerDetail(
     settings: AppSettings,
     @Suppress("UNUSED_PARAMETER") accent: Color,
     scope: CoroutineScope,
-    /** Opens this server's "this phone as a player" page. Music Assistant only. */
-    onOpenPlayer: () -> Unit,
     onDone: () -> Unit,
     /** Re-point the route at the stored server once a new one has been saved. */
     onSaved: (String) -> Unit,
@@ -516,7 +510,7 @@ private fun ServerDetail(
     // on the app's own inks. See ProviderSkin.
     val skin = providerSkin(configIn.kind)
     ProviderTheme(skin) {
-        ServerDetailBody(skin, configIn, isNew, isActive, libraryVm, settings, scope, onOpenPlayer, onDone, onSaved)
+        ServerDetailBody(skin, configIn, isNew, isActive, libraryVm, settings, scope, onDone, onSaved)
     }
 }
 
@@ -529,7 +523,6 @@ private fun ServerDetailBody(
     libraryVm: LibraryViewModel,
     settings: AppSettings,
     scope: CoroutineScope,
-    onOpenPlayer: () -> Unit,
     onDone: () -> Unit,
     onSaved: (String) -> Unit,
 ) {
@@ -623,7 +616,11 @@ private fun ServerDetailBody(
             },
         ) {
             if (config.kind.hasAddress) {
-                DiscoveredServerPicker(config.kind, accent) { found -> url = found.url }
+                // Only while adding: the scan answers "which server do I even add",
+                // and a stored server has answered that. On its page the rows just
+                // sat above an address field already holding the same address,
+                // offering to "Use" it.
+                if (isNew) DiscoveredServerPicker(config.kind, accent) { found -> url = found.url }
                 OledField(url, { url = it }, "Server address", config.kind.urlHint, accent)
             }
             if (config.kind == ServerKind.MPD) {
@@ -827,26 +824,18 @@ private fun ServerDetailBody(
             }
         }
 
-        // The player this phone registers with *this* server.
+        // The player this phone registers with *this* server — on this page, not
+        // behind a row.
         //
-        // It used to live in its own top-level "CAMusic player" section, a screen away
-        // from the server it belongs to and from the library it plays — so setting up
-        // Music Assistant meant filling in an address here, then going elsewhere to say
-        // what the player was called and what it should ask for. Server, library and
-        // player are one setup, so they live together — but as two pages rather than
-        // one scroll. Inlined, this row expanded into seven more cards (name, codec,
-        // announcements, latency trim, MA's own gapless config, a status readout and
-        // the streaming request), which made a page that opened on "what is the
-        // address of your server" and ended, two thousand pixels later, on a
-        // millisecond-level sync offset. Those are not the same question.
+        // It used to live in its own top-level "CAMusic player" section, then behind
+        // a "This phone as a player" row here that opened a second page. Both put the
+        // player's settings somewhere other than the server they configure, and the
+        // second page in particular was a surprise: the row read as one more setting
+        // and opened a screen with seven. Every setting for a Music Assistant server
+        // is one scroll now, in the order it is set up — where it is, how it is
+        // spoken to, what this phone is to it.
         if (config.kind == ServerKind.MUSIC_ASSISTANT && !isNew) {
-            NavRow(
-                icon = Icons.Default.Speaker,
-                title = "This phone as a player",
-                subtitle = "Its name in Music Assistant, the codec it offers, announcements, " +
-                    "and its timing against the rest of a group",
-                accent = accent,
-            ) { onOpenPlayer() }
+            MaPlayerCards(settings, accent, scope)
         }
 
         // Per-server playback options, for the kinds that stream to this phone.
@@ -915,23 +904,6 @@ private fun ServerDetailBody(
 
 // ── Routing ───────────────────────────────────────────────────────────────
 
-/**
- * The route for one server's "this phone as a player" page.
- *
- * A suffix on the server's own id rather than a second piece of hoisted state: the
- * whole of Settings routes on one nullable string, and a page three levels down is
- * still just a place that string can name.
- *
- * Only Music Assistant has one. It is the only server this phone registers *with* as
- * a player, so it is the only one for which "what is this phone called, what codec
- * does it advertise, how far ahead of the group is it" are questions at all.
- */
-internal fun playerRoute(serverId: String) = "$serverId#player"
-
-/** The server id behind a [playerRoute], or null when [route] is not one. */
-internal fun serverIdOfPlayerRoute(route: String?): String? =
-    route?.takeIf { it.endsWith("#player") }?.removeSuffix("#player")
-
 /** The detail route for the "which kind?" picker. */
 internal const val PICK_ROUTE = "__pick__"
 
@@ -962,12 +934,8 @@ internal fun serverKindOfRoute(detail: String, servers: List<ServerConfig>): Ser
  * Name, codec, what to ask the server for, its own gapless/crossfade config and the
  * announcement keep-alive — all of it describes one phone registered with one server,
  * and all of it is stored in that server's `options` (see `ServerConfig.OPT_PLAYER_NAME`
- * and its neighbours). Rendered here so the server, the library and the player are set
- * up together; the old top-level "CAMusic player" section now points at this page.
- *
- * Its own page under the server, reached from a row there — see [playerRoute]. It was
- * rendered inline until it had grown to seven cards, at which point the server page
- * ran from "what is your server's address" to a millisecond sync trim without a break.
+ * and its neighbours). Rendered on the server's own page so the server, the library
+ * and the player are set up together, in one place.
  */
 @Composable
 private fun MaPlayerCards(settings: AppSettings, accent: Color, scope: CoroutineScope) {

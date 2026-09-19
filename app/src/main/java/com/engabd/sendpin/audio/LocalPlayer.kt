@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.data.Http
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -32,8 +33,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -431,6 +436,37 @@ class LocalPlayer(private val context: Context) {
                         applyGain()
                     }
                 }
+            }
+            // What the receiver shows for the track: name, artist, album, the
+            // cover, and where in it we are. From here — the player — rather than
+            // from the Now Playing screen, which used to push it from a
+            // LaunchedEffect and so only while that screen was open: start an
+            // album from an artist page and the Apple TV showed nothing at all.
+            // The cover and the progress are what it draws its own screen from;
+            // the text alone only names the track in a corner.
+            scope.launch {
+                combine(out.connected, current) { connected, track -> track.takeIf { connected } }
+                    .distinctUntilChanged { a, b -> a?.id == b?.id }
+                    .collectLatest { track ->
+                        if (track == null) return@collectLatest
+                        val cover = withContext(Dispatchers.IO) { coverBytes(track.artUrl) }
+                        // Progress before the text: the receiver's screen is built
+                        // from the timeline, and the sender puts it first on the wire.
+                        out.setProgress(_positionMs.value, _durationMs.value)
+                        out.setNowPlaying(
+                            track.title, track.artist.orEmpty(), track.album.orEmpty(),
+                            cover?.first, cover?.second,
+                        )
+                        // Re-sent on a cadence rather than on every tick: it is one
+                        // small RTSP request, and the receiver advances the bar
+                        // itself between them. The cadence is also what pulls a
+                        // seek — or a pause, during which the receiver keeps
+                        // counting — back to the truth within a few seconds.
+                        while (true) {
+                            delay(AIRPLAY_PROGRESS_MS)
+                            out.setProgress(_positionMs.value, _durationMs.value)
+                        }
+                    }
             }
         }
         scope.launch {
@@ -1638,6 +1674,32 @@ class LocalPlayer(private val context: Context) {
     /** True while an AirPlay receiver is the output; the local track gain is zero then. */
     @Volatile private var airPlayMuted = false
 
+    /**
+     * The cover as the bytes the receiver wants, with its MIME type — or null when
+     * there is none, it is not an image the receiver draws, or it is too large to be
+     * worth sending over the session's control channel.
+     */
+    private fun coverBytes(artUrl: String?): Pair<ByteArray, String>? {
+        if (artUrl.isNullOrBlank()) return null
+        val bytes = runCatching {
+            if (artUrl.startsWith("file:")) {
+                java.io.File(android.net.Uri.parse(artUrl).path ?: return null).readBytes()
+            } else {
+                Http.base.newCall(okhttp3.Request.Builder().url(artUrl).build()).execute().use { resp ->
+                    if (!resp.isSuccessful) return null
+                    resp.body?.bytes()
+                }
+            }
+        }.getOrNull() ?: return null
+        if (bytes.size < 4 || bytes.size > AIRPLAY_COVER_MAX_BYTES) return null
+        val mime = when {
+            bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> "image/jpeg"
+            bytes[0] == 0x89.toByte() && bytes[1] == 'P'.code.toByte() -> "image/png"
+            else -> return null
+        }
+        return bytes to mime
+    }
+
     private fun applyGain() {
         if (airPlayMuted) {
             player.volume = 0f
@@ -2150,6 +2212,12 @@ class LocalPlayer(private val context: Context) {
          * own tick so both players feel the same.
          */
         const val POSITION_TICK_MS = 250L
+
+        /** How often an AirPlay receiver is told where the track is. */
+        const val AIRPLAY_PROGRESS_MS = 10_000L
+
+        /** A cover bigger than this is not sent to an AirPlay receiver. */
+        const val AIRPLAY_COVER_MAX_BYTES = 4 * 1024 * 1024
 
         /**
          * How often the loop runs while a DJ Radio transition is in flight.

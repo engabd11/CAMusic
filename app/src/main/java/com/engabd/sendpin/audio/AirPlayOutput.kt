@@ -178,6 +178,11 @@ class AirPlayOutput : NetworkOutput {
         return nativeIsActive()
     }
 
+    override fun setProgress(positionMs: Long, durationMs: Long) {
+        if (nativePtr == 0L) return
+        nativeSetProgress(positionMs, durationMs)
+    }
+
     fun destroy() {
         if (nativePtr != 0L) {
             nativeDestroy()
@@ -270,6 +275,7 @@ class AirPlayOutput : NetworkOutput {
         title: String, artist: String, album: String,
         cover: ByteArray?, coverMime: String?,
     )
+    private external fun nativeSetProgress(positionMs: Long, durationMs: Long)
     private external fun nativeIsWaitingForPin(): Boolean
     private external fun nativeIsActive(): Boolean
 }

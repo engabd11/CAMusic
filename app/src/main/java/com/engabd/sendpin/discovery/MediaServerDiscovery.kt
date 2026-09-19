@@ -39,7 +39,15 @@ class MediaServerDiscovery(private val context: Context) {
     companion object {
         private const val TAG = "MediaServerDiscovery"
         private const val DISCOVERY_PORT = 7359
-        private const val MESSAGE = "who is JellyfinServer?"
+
+        /**
+         * One beacon per fork. The two servers share the port and the reply shape
+         * but each answers only its own question: Jellyfin's `UdpServer` matches
+         * "who is JellyfinServer?" and Emby's "who is EmbyServer?", and neither
+         * recognises the other's. Both go out on the one socket; the replies are
+         * folded together by address below.
+         */
+        private val MESSAGES = listOf("who is JellyfinServer?", "who is EmbyServer?")
     }
 
     /** One server that answered the beacon. */
@@ -62,8 +70,10 @@ class MediaServerDiscovery(private val context: Context) {
             }
             bindToWifiIfAvailable(socket)
 
-            val message = MESSAGE.toByteArray(Charsets.UTF_8)
-            socket.send(DatagramPacket(message, message.size, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
+            for (text in MESSAGES) {
+                val message = text.toByteArray(Charsets.UTF_8)
+                socket.send(DatagramPacket(message, message.size, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
+            }
 
             val buf = ByteArray(2048)
             val deadline = System.currentTimeMillis() + timeoutMs
