@@ -44,6 +44,7 @@ import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.Bloom
+import com.engabd.sendpin.ui.design.DiscoveredServerPicker
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.ServerKindTile
 import com.engabd.sendpin.ui.design.TitleGap
@@ -420,6 +421,7 @@ private fun ConfigStep(
         Spacer(Modifier.height(18.dp))
 
         if (kind.needsAddress) {
+            DiscoveredServerPicker(kind, accent) { found -> url = found.url }
             OutlinedTextField(
                 value = url, onValueChange = { url = it },
                 label = { Text("Server address") },
