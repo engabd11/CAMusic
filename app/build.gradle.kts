@@ -309,8 +309,21 @@ dependencies {
     // Was pinned to 1.8.0 because 1.9+ needs compileSdk 36 and AGP 8.7.3 topped out
     // at 35. Both moved in the same change that brought Material3 Expressive in, so
     // the pin is gone.
-    implementation("androidx.media3:media3-exoplayer:1.10.1")
-    implementation("androidx.media3:media3-session:1.10.1")
+    //
+    // 1.11.1 exactly, and the exactness is the point — **never 1.11.0**.
+    //
+    // Why move at all: from 1.11.0 media3 adds, by itself, the browse-validation
+    // activity that Android 16 and 17 require before a car's Bluetooth stack will
+    // browse an app's catalogue over AVRCP. This app targets SDK 36 and did not have
+    // it, so that browse was broken in every car regardless of Android Auto.
+    //
+    // Why not 1.11.0: it regressed the legacy-browser connect path, deadlocking the
+    // service's main thread when onGetLibraryRoot returns a future that completes
+    // later (androidx/media#3393). CarLibrarySessionCallback no longer does that —
+    // the root is immediate now, for this among other reasons — but the shape is one
+    // step away from any future edit, and 1.11.1 is the release that fixes it.
+    implementation("androidx.media3:media3-exoplayer:1.11.1")
+    implementation("androidx.media3:media3-session:1.11.1")
 
     // The embedded Spotify client (experimental direct Spotify source). The
     // coordinates are the ones librespot-android proves work on Android: the
