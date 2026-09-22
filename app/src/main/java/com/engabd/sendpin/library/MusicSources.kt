@@ -148,6 +148,7 @@ object MusicSources {
         // anything with state of its own.
         ServerKind.DOWNLOADS -> com.engabd.sendpin.local.DownloadsSource(
             (context.applicationContext as com.engabd.sendpin.SendpinApp).downloads,
+            (context.applicationContext as com.engabd.sendpin.SendpinApp).downloadedPlaylists,
         )
 
         // Qobuz is an account, not a server: the login is the address. The app

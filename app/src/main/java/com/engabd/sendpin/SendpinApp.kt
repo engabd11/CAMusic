@@ -84,6 +84,19 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val downloads: DownloadManager by lazy { DownloadManager(this) }
 
     /**
+     * Playlists downloaded *as* playlists, beside the files themselves.
+     *
+     * Separate from [downloads] rather than folded into it because it answers a
+     * different question. [downloads] is "which files are on this phone"; this is
+     * "which containers the user asked to keep, and in what order" — and the two have
+     * different lifetimes, since deleting a track to free space must not destroy the
+     * playlist it was in.
+     */
+    val downloadedPlaylists: com.engabd.sendpin.local.DownloadedPlaylists by lazy {
+        com.engabd.sendpin.local.DownloadedPlaylists(this)
+    }
+
+    /**
      * The one authority on which player owns this phone's audio output.
      *
      * Five places used to infer this, each slightly differently, and four of the

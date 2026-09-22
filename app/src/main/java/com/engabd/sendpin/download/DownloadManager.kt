@@ -145,6 +145,15 @@ class DownloadManager(
 
     private val dao = com.engabd.sendpin.local.db.LocalMediaDatabase.get(context).downloadDao()
 
+    /**
+     * Playlist membership, so deleting a file cannot leave a playlist pointing at it.
+     *
+     * The DAO directly rather than `SendpinApp.downloadedPlaylists`: this class takes
+     * a plain `Context` and is constructed before the app's lazies are touched.
+     */
+    private val playlistDao =
+        com.engabd.sendpin.local.db.LocalMediaDatabase.get(context).downloadPlaylistDao()
+
     private companion object {
         const val TAG = "DownloadManager"
         /** Goes at one file before it is called failed. */
@@ -531,11 +540,20 @@ class DownloadManager(
             if (_downloads.value.none { it.id != id && it.coverPath == path }) runCatching { File(path).delete() }
         }
         dao.delete(id)
+        // Hygiene rather than correctness: a playlist read joins onto `downloads`, so
+        // a membership row whose file is gone is already invisible. Left alone it
+        // would sit in the table for the life of the install, and the storage-cap
+        // eviction loop deletes enough tracks over time for that to add up.
+        runCatching { playlistDao.forgetTrack(id) }
     }
 
     suspend fun deleteAll(): Unit = withContext(Dispatchers.IO) {
         _downloads.value.forEach { runCatching { File(it.filePath).delete() } }
         runCatching { coverDir.listFiles()?.forEach { it.delete() } }
         dao.deleteAll()
+        // The playlists go with the files. Keeping them would leave a Downloads
+        // library full of empty playlists after "delete everything", which reads as
+        // the delete having failed.
+        runCatching { playlistDao.removeAll() }
     }
 }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -81,6 +82,10 @@ fun DownloadsScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val downloads by viewModel.downloads.collectAsStateWithLifecycle()
     val jobs by viewModel.downloadJobs.collectAsStateWithLifecycle()
+    // Playlists kept as playlists. Usually empty, so the section below draws nothing
+    // at all rather than an explanatory placeholder — this screen is already dense.
+    val keptPlaylists by viewModel.downloadedPlaylists.playlists
+        .collectAsStateWithLifecycle(initialValue = emptyList())
 
     // Retry replies land here. Without a collector a retry that cannot run — no
     // connection, Wi-Fi only, a track the server no longer has — just made the failed
@@ -178,6 +183,30 @@ fun DownloadsScreen(
                 }
 
                 if (downloads.isEmpty()) return@LazyColumn
+
+                // ── Kept playlists ───────────────────────────────────────
+                // Above the albums because a playlist is a thing the user asked for
+                // by name, and the albums below are how the same files got filed.
+                // Hidden while searching: the box filters tracks, and leaving a
+                // playlist list unfiltered above filtered results reads as a bug.
+                if (keptPlaylists.isNotEmpty() && query.isBlank()) {
+                    item("playlists-header") { SectionLabel("Playlists") }
+                    items(
+                        keptPlaylists,
+                        key = { "dlpl-${it.itemId}" },
+                        contentType = { "playlist" },
+                    ) { pl ->
+                        Box(Modifier.animateItem(placementSpec = Motion.itemPlacement())) {
+                            DownloadedPlaylistRow(
+                                name = pl.name,
+                                subtitle = pl.subtitle.orEmpty(),
+                                onPlay = { viewModel.playDownloadedPlaylist(pl.itemId) },
+                                onForget = { viewModel.forgetDownloadedPlaylist(pl.itemId, pl.name) },
+                            )
+                        }
+                    }
+                    item("playlists-gap") { Spacer(Modifier.height(16.dp)) }
+                }
 
                 if (shown.isEmpty()) {
                     item("no-match") {
@@ -469,6 +498,61 @@ private fun AlbumHeader(album: DownloadAlbum, onPlay: () -> Unit, onDelete: () -
             tint = if (confirming) ErrorRed else TextMuted,
         ) {
             if (confirming) onDelete() else confirming = true
+        }
+    }
+}
+
+/**
+ * One playlist that was kept as a playlist.
+ *
+ * The trailing action is *forget*, not delete, and the two-tap confirm says so. A
+ * downloaded playlist owns no files of its own — its tracks are the same files filed
+ * under their albums below — so removing it must not remove them, and the wording is
+ * the only thing standing between the user and assuming otherwise.
+ */
+@Composable
+private fun DownloadedPlaylistRow(
+    name: String,
+    subtitle: String,
+    onPlay: () -> Unit,
+    onForget: () -> Unit,
+) {
+    var confirming by remember(name) { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onPlay).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            Modifier.size(48.dp).clip(RoundedCornerShape(10.dp)).background(Glass),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.QueueMusic,
+                null,
+                tint = TextMuted,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text(
+                name, color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.ExtraBold, fontSize = 15.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                if (confirming) "Tap again — the songs stay downloaded" else subtitle,
+                color = if (confirming) ErrorRed else TextMuted,
+                fontFamily = AppFont, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconChip(
+            if (confirming) Icons.Default.PlaylistRemove else Icons.Default.Close,
+            if (confirming) "Tap again to remove this playlist" else "Remove this playlist",
+            tint = if (confirming) ErrorRed else TextMuted,
+        ) {
+            if (confirming) onForget() else confirming = true
         }
     }
 }

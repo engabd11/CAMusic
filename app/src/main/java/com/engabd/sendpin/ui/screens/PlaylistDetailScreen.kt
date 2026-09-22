@@ -66,6 +66,8 @@ fun PlaylistDetailScreen(
     val snackbar = remember { SnackbarHostState() }
     // The track whose long-press menu is open, if any.
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
+    // Whether the "keep it as a playlist?" chooser is up — see [DownloadChoiceDialog].
+    var downloadChoice by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
     BackHandler { onBack() }
@@ -117,6 +119,11 @@ fun PlaylistDetailScreen(
                             onFavorite = if (provider == SubsonicClient.PROVIDER) null
                             else viewModel::togglePlaylistFavorite,
                             favorite = playlist?.favorite == true,
+                            // This screen had no download control at all, which is
+                            // the one place a user would look for one.
+                            onDownload = if (viewModel.downloadable && tracks.isNotEmpty()) {
+                                { downloadChoice = true }
+                            } else null,
                         )
                     }
 
@@ -160,6 +167,17 @@ fun PlaylistDetailScreen(
                 }
             }
 
+            if (downloadChoice) {
+                DownloadChoiceDialog(
+                    playlistName = playlist?.name ?: name,
+                    onDismiss = { downloadChoice = false },
+                    onChoose = { keepPlaylist ->
+                        downloadChoice = false
+                        viewModel.download(keepPlaylist)
+                    },
+                )
+            }
+
             // Long-press on a track: queue it without losing what's playing.
             actionsFor?.let { picked ->
                 MediaActionsSheet(
@@ -192,6 +210,8 @@ private fun PlaylistHero(
     /** Null on Navidrome, whose `star` has no playlist parameter. */
     onFavorite: (() -> Unit)? = null,
     favorite: Boolean = false,
+    /** Null where the library cannot hand the files over — Downloads and MA. */
+    onDownload: (() -> Unit)? = null,
 ) {
     val accent = LocalAccent.current
 
@@ -252,6 +272,9 @@ private fun PlaylistHero(
                     if (favorite) "Remove from favourites" else "Add to favourites",
                     onClick = it,
                 )
+            }
+            onDownload?.let {
+                IconChip(Icons.Default.Download, "Download for offline", onClick = it)
             }
         }
     }

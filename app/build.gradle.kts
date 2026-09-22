@@ -373,6 +373,10 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+    // Room's MigrationTestHelper, for LocalMediaDatabaseMigrationTest. It needs a
+    // real SQLite, so it belongs here rather than beside the `room-testing` already
+    // in testImplementation — there is no Robolectric in this project.
+    androidTestImplementation("androidx.room:room-testing:$roomVersion")
 }
 
 // librespot's transitives drag kotlin-stdlib to 2.4.x, newer than this project's
