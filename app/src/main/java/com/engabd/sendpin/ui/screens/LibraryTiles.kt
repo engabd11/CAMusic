@@ -81,7 +81,16 @@ import com.engabd.sendpin.ui.theme.*
  * (see [Motion]).
  */
 @Composable
-internal fun CategoryCard(item: MaItem, modifier: Modifier = Modifier, onClick: () -> Unit) {
+internal fun CategoryCard(
+    item: MaItem,
+    /**
+     * Size and corner, from the user's Library look. The defaults are the tile
+     * exactly as it shipped, so an install that never opens that page is unchanged.
+     */
+    metrics: CategoryMetrics = categoryMetrics(CategoryStyle.CARDS, CategorySize.REGULAR, CategoryShape.SOFT),
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val hue = rememberCategoryHue(item.itemId)
     val light = LocalSendspinColors.current.isLight
     // An album swatch is lifted to sit on black. On the off-white page the same colour
@@ -94,12 +103,12 @@ internal fun CategoryCard(item: MaItem, modifier: Modifier = Modifier, onClick: 
     val ghost = if (light) 0.14f else 0.10f
     val mark = if (light) lerp(hue, Color.Black, 0.45f) else hue
     val press = rememberPressScale()
-    val shape = RoundedCornerShape(18.dp)
-    val glyph = categoryIcon(item.itemId)
+    val shape = RoundedCornerShape(metrics.cornerDp.dp)
+    val glyph = categoryIconOf(item.itemId)
     Box(
         modifier
             .pressScale(press)
-            .height(CategoryTileHeight)
+            .height(metrics.heightDp.dp)
             .clip(shape)
             .background(
                 Brush.linearGradient(
@@ -136,13 +145,18 @@ internal fun CategoryCard(item: MaItem, modifier: Modifier = Modifier, onClick: 
             ) { Icon(glyph, null, tint = mark, modifier = Modifier.size(16.dp)) }
             Text(
                 item.name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-                fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                fontSize = metrics.labelSp.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
     }
 }
 
-/** Tall enough for a glyph chip, a name, and the ghost glyph to have somewhere to go. */
+/**
+ * Tall enough for a glyph chip, a name, and the ghost glyph to have somewhere to go.
+ *
+ * Still the Regular height, and still what [categoryMetrics] returns for
+ * `CARDS`/`REGULAR` — kept as the one written-down figure the metrics are anchored to.
+ */
 internal val CategoryTileHeight = 96.dp
 
 /**
@@ -154,7 +168,7 @@ internal val CategoryTileHeight = 96.dp
  */
 @Composable
 private fun rememberCategoryHue(id: String): Color {
-    val target = LocalPalette.current.swatch(categoryHue(id))
+    val target = LocalPalette.current.swatch(categoryHueOf(id))
     val eased by animateColorAsState(target, Motion.effects(), label = "categoryHue")
     return eased
 }
@@ -167,7 +181,7 @@ private fun rememberCategoryHue(id: String): Color {
  * often on neighbouring ones. Spacing them by hand is three lines and it is the
  * difference between a set and a coincidence.
  */
-private fun categoryHue(id: String): Int = when (id) {
+internal fun categoryHueOf(id: String): Int = when (id) {
     "artists" -> 0
     "albums" -> 2
     "tracks" -> 4
@@ -182,7 +196,7 @@ private fun categoryHue(id: String): Int = when (id) {
     else -> 0
 }
 
-private fun categoryIcon(id: String): ImageVector = when (id) {
+internal fun categoryIconOf(id: String): ImageVector = when (id) {
     "artists" -> Icons.Default.Person
     "albums" -> Icons.Default.Album
     "tracks" -> Icons.Default.MusicNote
@@ -471,7 +485,7 @@ internal fun ItemRow(
             isCategory -> Box(
                 Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(accent.a(0.12f)),
                 contentAlignment = Alignment.Center,
-            ) { Icon(categoryIcon(item.itemId), null, tint = accent, modifier = Modifier.size(20.dp)) }
+            ) { Icon(categoryIconOf(item.itemId), null, tint = accent, modifier = Modifier.size(20.dp)) }
 
             item.image != null -> {
                 val art = rememberArtRequest(item.image, pixels = 120)
