@@ -707,3 +707,103 @@ html, body {
     background: var(--surface-bright);
     border-radius: 4px;
 }
+/* ── Light show ──────────────────────────────────────────────────────────
+ *
+ * Two canvases, one engine. The ambient layer sits behind the whole interface at
+ * a low opacity; the full-screen one covers everything.
+ *
+ * Both are `position: fixed` and sized by CSS rather than by their width/height
+ * attributes — lightshow.js reads clientWidth/clientHeight and resizes the backing
+ * store to match, so the drawing buffer is always the panel's own resolution and
+ * never a stretched 300x150 default.
+ *
+ * `pointer-events: none` on the ambient layer is load-bearing: it spans the screen,
+ * and without it nothing underneath could be clicked.
+ */
+
+.light-ambient {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    pointer-events: none;
+    /* Low enough to read white text over on every scene. The engine's own comfort
+       pass caps the colours; this caps how much of the interface they tint. */
+    opacity: 0.34;
+    transition: opacity 600ms ease;
+}
+
+.light-ambient.off { opacity: 0; }
+
+/* The interface sits above the ambient wash. */
+#app { position: relative; z-index: 1; }
+
+.light-full {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: #000;
+}
+
+.light-full.hidden { display: none; }
+
+.light-full-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+/* Bottom-left, in the title-safe area every TV guarantees. */
+.light-full-info {
+    position: absolute;
+    left: var(--safe);
+    bottom: var(--safe);
+    max-width: 60%;
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.85);
+    transition: opacity 1200ms ease;
+}
+
+.light-full-info.faded { opacity: 0; }
+
+.light-full-title {
+    font-size: 44px;
+    font-weight: 700;
+    color: #fff;
+}
+
+.light-full-artist {
+    font-size: 28px;
+    color: rgba(255, 255, 255, 0.75);
+    margin-top: 4px;
+}
+
+.light-full-hint {
+    font-size: 22px;
+    color: rgba(255, 255, 255, 0.5);
+    margin-top: 18px;
+}
+
+.lights-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    max-width: 1200px;
+}
+
+.lights-lead {
+    font-size: 26px;
+    color: var(--on-surface-dim);
+    max-width: 900px;
+}
+
+.lights-controls {
+    display: flex;
+    gap: 16px;
+}
+
+.lights-status {
+    font-size: 24px;
+    color: var(--on-surface-dim);
+}

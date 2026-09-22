@@ -57,6 +57,10 @@
         positionMs: 0,
         durationMs: 0,
 
+        // Light show
+        lightShow: null,
+        lightFullscreen: false,
+
         // Hue
         hueConnected: false,
         hueSyncing: false,
@@ -447,6 +451,23 @@
             const result = await this._callService('getLightCount', {});
             return result.count || 0;
         }
+
+        /**
+         * Push one frame of colours to the bridge.
+         *
+         * The service has exposed this since it was written and **nothing ever
+         * called it**, so webOS Hue sync connected, reported itself as syncing, and
+         * sent no colour at all. The light show feeds it now, which is also what
+         * makes the lamps and the television agree.
+         *
+         * Fire-and-forget by design: this runs many times a second and a dropped
+         * frame is invisible, while awaiting each one would couple the render loop
+         * to Luna IPC latency.
+         */
+        updateLights(colors) {
+            if (!this.syncing) return;
+            this._callService('updateLights', { colors }).catch(() => {});
+        }
     }
 
     // ════════════════════════════════════════════════════════════
@@ -494,6 +515,9 @@
             this.audio.play().catch(e => console.error('Play failed:', e));
         }
 
+        /** The raw element, for the light show's analyser tap. */
+        get element() { return this.audio; }
+
         pause() { this.audio.pause(); }
         resume() { this.audio.play().catch(e => console.error('Resume failed:', e)); }
 
@@ -519,6 +543,7 @@
             this._setupNowPlaying();
             this._setupSearch();
             this._setupHue();
+            this._setupLights();
             this._setupSettings();
             this._buildFocusMap();
         },
@@ -556,6 +581,23 @@
                     return; // Let the input handle the key
                 }
 
+                // Full screen owns the D-pad while it is up: there is nothing behind
+                // it to navigate, and letting focus move under an opaque overlay is
+                // how a viewer ends up pressing OK on something they cannot see.
+                if (state.lightFullscreen) {
+                    if (e.keyCode === KEYS.BACK || e.keyCode === KEYS.EXIT) {
+                        App.exitLightFullscreen();
+                    } else if (e.keyCode === KEYS.LEFT) {
+                        this._cycleLightScene(-1);
+                    } else if (e.keyCode === KEYS.RIGHT) {
+                        this._cycleLightScene(1);
+                    } else if (e.keyCode === KEYS.PLAY || e.keyCode === KEYS.ENTER) {
+                        if (state.isPlaying) state.audio.pause();
+                        else if (state.currentTrack) state.audio.resume();
+                    }
+                    return;
+                }
+
                 switch (e.keyCode) {
                     case KEYS.BACK:
                         this._handleBack();
@@ -573,6 +615,11 @@
                         this._moveFocus(0, 1);
                         break;
                     case KEYS.ENTER:
+                        // An AudioContext starts suspended until a gesture, and a
+                        // suspended one hands the analyser nothing but zeroes — which
+                        // the engine would eventually read as a dead tap and fall
+                        // back from. Any key press is gesture enough.
+                        if (state.lightShow) state.lightShow.resume();
                         this._activateFocused();
                         break;
                     case KEYS.PLAY:
@@ -587,6 +634,14 @@
         },
 
         _handleBack() {
+            // Full screen first: it covers everything, so Back has to mean "leave
+            // this" before it can mean anything else. webOS's Back is 461 - see
+            // KEYS - and an overlay that swallowed it would strand the viewer with
+            // no pointer and no other way out.
+            if (state.lightFullscreen) {
+                App.exitLightFullscreen();
+                return;
+            }
             // If in album detail, restore the library shelves
             if (state.albumDetail) {
                 state.albumDetail = null;
@@ -894,7 +949,17 @@
             const track = state.currentTrack;
             document.getElementById('npTitle').textContent = track.title || 'Unknown';
             document.getElementById('npArtist').textContent = track.artist || '';
-            document.getElementById('npArt').src = state.subsonicClient?.coverUrl(track.coverArt, 300) || '';
+            const art = state.subsonicClient?.coverUrl(track.coverArt, 300) || '';
+            document.getElementById('npArt').src = art;
+
+            // The light show takes its colours from the sleeve when the palette is
+            // set to Album art. Only on a change of track — re-deriving a palette on
+            // every progress tick would decode a cover thirty times a second.
+            if (state.lightShow && this._lastArt !== art) {
+                this._lastArt = art;
+                state.lightShow.setCoverArt(art);
+            }
+            if (state.lightFullscreen) this.updateLightFullscreenInfo();
 
             const playBtn = document.getElementById('npPlayBtn');
             playBtn.textContent = state.isPlaying ? '⏸' : '▶';
@@ -906,6 +971,41 @@
             document.getElementById('npDuration').textContent = this._formatTime(dur / 1000);
             const pct = dur > 0 ? (pos / dur * 100) : 0;
             document.getElementById('npSeekbarFill').style.width = pct + '%';
+        },
+
+        /**
+         * Step through the scenes from the full-screen view.
+         *
+         * The only control there is, because it is the only one worth having with no
+         * interface on screen — everything else lives on the Light Show tab. Also
+         * re-shows the caption, so a viewer who has just changed something can see
+         * what they changed it to.
+         */
+        _cycleLightScene(delta) {
+            if (!state.lightShow) return;
+            const keys = Object.keys(window.LightShowScenes);
+            const cur = keys.indexOf(state.lightShow.scene);
+            const next = keys[(cur + delta + keys.length) % keys.length];
+            state.lightShow.setScene(next);
+            const select = document.getElementById('lightScene');
+            if (select) select.value = next;
+            const saved = Storage.get('lightShow', {});
+            saved.scene = next;
+            Storage.set('lightShow', saved);
+
+            const info = document.getElementById('lightFullInfo');
+            const hint = info.querySelector('.light-full-hint');
+            if (hint) hint.textContent = window.LightShowScenes[next].label;
+            info.classList.remove('faded');
+            clearTimeout(App._lightHintTimer);
+            App._lightHintTimer = setTimeout(() => info.classList.add('faded'), 4000);
+        },
+
+        /** What is playing, over the full-screen show. */
+        updateLightFullscreenInfo() {
+            const t = state.currentTrack;
+            document.getElementById('lightFullTitle').textContent = t ? (t.title || '') : 'Nothing playing';
+            document.getElementById('lightFullArtist').textContent = t ? (t.artist || '') : '';
         },
 
         // ── Hue view ────────────────────────────────────────────
@@ -951,6 +1051,96 @@
                     }
                 }
             });
+        },
+
+        // ── Light Show view ─────────────────────────────────────
+
+        /**
+         * The Light Show tab: four controls and an honest status line.
+         *
+         * The status line matters more than it looks. Whether the show reacts to the
+         * music depends on something the app cannot promise — webOS allows an app one
+         * audio element because there is one hardware decoder, and whether that
+         * element can also be routed through a Web Audio graph is the TV's decision.
+         * So rather than claiming reactivity and quietly not having it, the page says
+         * which engine is running.
+         */
+        _setupLights() {
+            const scene = document.getElementById('lightScene');
+            const palette = document.getElementById('lightPalette');
+            const brightness = document.getElementById('lightBrightness');
+
+            Object.keys(window.LightShowScenes).forEach(key => {
+                const o = document.createElement('option');
+                o.value = key;
+                o.textContent = window.LightShowScenes[key].label;
+                scene.appendChild(o);
+            });
+            Object.keys(window.LightShowPalettes).forEach(key => {
+                const o = document.createElement('option');
+                o.value = key;
+                o.textContent = window.LightShowPalettes[key].label;
+                palette.appendChild(o);
+            });
+
+            const saved = Storage.get('lightShow', {});
+            scene.value = saved.scene || 'auto';
+            palette.value = saved.palette || 'album';
+            brightness.value = String(saved.ceiling || 0.34);
+
+            const persist = () => Storage.set('lightShow', {
+                scene: scene.value,
+                palette: palette.value,
+                ceiling: parseFloat(brightness.value),
+                ambient: state.lightShow ? state.lightShow.ambientEnabled : true,
+            });
+
+            scene.addEventListener('change', () => {
+                if (state.lightShow) state.lightShow.setScene(scene.value);
+                persist();
+            });
+            palette.addEventListener('change', () => {
+                if (state.lightShow) state.lightShow.setPalette(palette.value);
+                persist();
+            });
+            brightness.addEventListener('change', () => {
+                if (state.lightShow) state.lightShow.setCeiling(parseFloat(brightness.value));
+                persist();
+            });
+
+            document.getElementById('lightFullBtn').addEventListener('click', () => {
+                App.enterLightFullscreen();
+            });
+
+            const ambientBtn = document.getElementById('lightAmbientBtn');
+            ambientBtn.addEventListener('click', () => {
+                if (!state.lightShow) return;
+                const next = !state.lightShow.ambientEnabled;
+                state.lightShow.setAmbient(next);
+                document.getElementById('lightAmbient').classList.toggle('off', !next);
+                ambientBtn.textContent = 'Ambient: ' + (next ? 'On' : 'Off');
+                persist();
+            });
+
+            if (saved.ambient === false) {
+                document.getElementById('lightAmbient').classList.add('off');
+                ambientBtn.textContent = 'Ambient: Off';
+            }
+
+            this.updateLightStatus();
+        },
+
+        /** Say which engine is actually running. See [_setupLights]. */
+        updateLightStatus() {
+            const el = document.getElementById('lightReactive');
+            if (!el) return;
+            if (!state.lightShow) {
+                el.textContent = 'not started';
+            } else if (state.lightShow.reactive) {
+                el.textContent = 'yes — following the audio';
+            } else {
+                el.textContent = 'no — this TV will not share its audio, so the show runs on a timer';
+            }
         },
 
         // ── Settings view ───────────────────────────────────────
@@ -1062,6 +1252,10 @@
             // Create audio player (single <audio> element)
             state.audio = new AudioPlayer();
 
+            // The light show. Started before the UI so the Light Show tab can
+            // report which engine it got.
+            this._setupLightShow();
+
             // Create Hue service
             state.hueService = new HueService();
 
@@ -1087,6 +1281,66 @@
             }
 
             console.log('CAMusic webOS app initialized');
+        },
+
+        /**
+         * Build the light show and point it at the audio element.
+         *
+         * Started immediately rather than on first play, so the ambient wash is
+         * there when the app opens rather than appearing on the first track. The
+         * engine costs one 160x90 canvas and a 30fps loop that it stops itself
+         * whenever the app is backgrounded — see [_setupLifecycle].
+         */
+        _setupLightShow() {
+            if (typeof window.LightShow === 'undefined') {
+                console.warn('lightshow.js not loaded');
+                return;
+            }
+            const saved = Storage.get('lightShow', {});
+            const show = new window.LightShow({
+                ambientCanvas: document.getElementById('lightAmbient'),
+                fullCanvas: document.getElementById('lightFullCanvas'),
+                // The lamps get the same colours the panel does. `updateLights` has
+                // existed on the JS service since it was written and nothing ever
+                // called it, so webOS Hue sync was sending nothing at all.
+                onColors: (colors) => {
+                    if (state.hueService && state.hueService.syncing) {
+                        state.hueService.updateLights(colors);
+                    }
+                },
+            });
+            show.setScene(saved.scene || 'auto');
+            show.setCeiling(saved.ceiling || 0.34);
+            show.setAmbient(saved.ambient !== false);
+            show.attach(state.audio.element);
+            show.setPalette(saved.palette || 'album');
+            show.start();
+            state.lightShow = show;
+        },
+
+        enterLightFullscreen() {
+            if (!state.lightShow) return;
+            state.lightFullscreen = true;
+            document.getElementById('lightFullscreen').classList.remove('hidden');
+            state.lightShow.resume();
+            state.lightShow.setFullscreen(true);
+            UI.updateLightFullscreenInfo();
+            // The hint fades on its own. On a television an overlay that never
+            // leaves is worse than never having shown one.
+            const info = document.getElementById('lightFullInfo');
+            info.classList.remove('faded');
+            clearTimeout(this._lightHintTimer);
+            this._lightHintTimer = setTimeout(() => info.classList.add('faded'), 6000);
+        },
+
+        exitLightFullscreen() {
+            state.lightFullscreen = false;
+            document.getElementById('lightFullscreen').classList.add('hidden');
+            if (state.lightShow) state.lightShow.setFullscreen(false);
+            clearTimeout(this._lightHintTimer);
+            // The focus map was built for the view underneath and is still valid,
+            // but the focused element may have scrolled; rebuilding is cheap.
+            UI._buildFocusMap();
         },
 
         activateServer(serverId) {
@@ -1211,9 +1465,16 @@
                     if (state.hueService && state.hueService.syncing) {
                         state.hueService.stopSync().catch(() => {});
                     }
+                    // The render loop goes with the audio. requestAnimationFrame is
+                    // usually throttled when hidden but webOS does not guarantee it,
+                    // and a TV burning a canvas loop in the background for a song
+                    // that is not playing is exactly the kind of thing that gets an
+                    // app rejected.
+                    if (state.lightShow) state.lightShow.stop();
                     console.log('App suspended — audio paused');
                 } else {
                     // App returning to foreground
+                    if (state.lightShow) state.lightShow.start();
                     console.log('App resumed');
                 }
             });
