@@ -82,6 +82,8 @@
              the two-pane in-car layout, neither of which a set-top box has. The
              <uses-feature> half is removed above the <application> tag. -->
         <meta-data android:name="com.android.automotive" tools:node="remove" />
+        <!-- The car's attribution mark goes the same way, for the same reason. -->
+        <meta-data android:name="androidx.car.app.TintableAttributionIcon" tools:node="remove" />
         <!-- Its cover-art provider goes with it: nothing on a TV holds a token to
              ask this about, and a provider with no caller is a component to
              instantiate at every process start for nothing. -->
