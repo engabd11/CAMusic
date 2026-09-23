@@ -21,8 +21,8 @@ android {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
         targetSdk = 36
-        versionCode = 68
-        versionName = "0.12.4"
+        versionCode = 69
+        versionName = "0.13.0"
 
         // app/src/androidTest had no runner because it had no tests. The two below
         // are the ones Phase 0 found by hand, and neither can run on the JVM: both

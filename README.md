@@ -526,12 +526,22 @@ playing. `LocalDsp` sits ahead of the tap so the show reacts to what you actuall
 
 ## Recent releases
 
-**Unreleased**, on top of v0.12.1: the **Music Assistant progress bar** rebuilt on the official
-app's model (no more snapping after a seek, and short tracks no longer loop back to 0:00);
-**AirPlay from Now Playing**; a settings page for each streaming account with the service's own
-settings and every server page in its server's colours; **foobar2000** as a remote player over
-Beefweb; server families in the picker and the setup wizard; and an onboarding fix for Music
-Assistant servers that require a login.
+**v0.13.0**: **playlists download as playlists** and stay playlists in Downloads, in order,
+instead of scattering into their albums; **five looks for the library's category buttons**
+(cards, chips, list, icon grid, artwork) with size, corners and a say in which appear at all;
+the **webOS TV app becomes the light show** — the panel itself as the lamp, with scenes, the
+Hue colour schemes and a luminance clamp that keeps red and yellow comfortable in a dark room;
+and an **Android Auto** pass that closes a set of conformance gaps, fixes cover art that could
+never load in a car, restores Bluetooth catalogue browsing on Android 16/17 (media3 1.11.1),
+and adds a readiness panel that reads the phone instead of guessing.
+
+**v0.12.4–v0.12.2**: the **Music Assistant progress bar** rebuilt on the official app's model
+(no more snapping after a seek, and short tracks no longer loop back to 0:00); **AirPlay from
+Now Playing**; a settings page for each streaming account with the service's own settings and
+every server page in its server's colours; **foobar2000** as a remote player over Beefweb;
+server families in the picker and the setup wizard; an onboarding fix for Music Assistant
+servers that require a login; the Driving Mode Bluetooth gate, the AirPlay R8 crash and the
+download retry pass.
 
 **v0.12.1**: Driving Mode only holds the GPS while the designated car is connected.
 **v0.12.0**: **Spotify, Qobuz and Tidal** as streaming accounts (experimental, played on the
