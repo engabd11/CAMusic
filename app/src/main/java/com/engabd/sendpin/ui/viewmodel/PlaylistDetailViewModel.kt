@@ -10,6 +10,7 @@ import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.queueFrom
+import com.engabd.sendpin.library.Capability
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -45,6 +46,8 @@ class PlaylistDetailViewModel(
     /** Process-scoped, not owned by this screen — see the note in [AlbumDetailViewModel]. */
     private val localPlayer = (app as SendpinApp).localPlayer
     private val downloads = (app as SendpinApp).downloads
+    /** Playlists kept as playlists in Downloads — see [download]. */
+    private val downloadedPlaylists = (app as SendpinApp).downloadedPlaylists
 
     /** Built once per load rather than per action. Null until the playlist resolves. */
     /** The library this phone plays itself — see the same field on [AlbumDetailViewModel]. */
@@ -246,6 +249,75 @@ class PlaylistDetailViewModel(
             } catch (e: Exception) {
                 _playlist.value = _playlist.value?.copy(favorite = !wanted)
                 _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+            }
+        }
+    }
+
+    /**
+     * Whether this playlist can be taken offline from here.
+     *
+     * Downloads themselves are not downloadable, and a Music Assistant playlist is
+     * the server's to serve — the same rule `LibraryViewModel.download` applies.
+     */
+    val downloadable: Boolean
+        get() = isLocal &&
+            provider != MusicSources.DOWNLOAD_PROVIDER &&
+            source?.has(Capability.DOWNLOAD) == true
+
+    /**
+     * Take the whole playlist offline.
+     *
+     * This screen had no download control at all, which is the one place a user would
+     * actually look for one: the long-press sheet in the library grid was the only
+     * route, and it is not where you are standing when you decide to take a playlist
+     * on a flight.
+     *
+     * @param keepPlaylist preserve it as a playlist in Downloads rather than only
+     *   filing its songs. See [com.engabd.sendpin.ui.screens.DownloadChoiceDialog].
+     */
+    fun download(keepPlaylist: Boolean) {
+        val sc = source
+        if (!downloadable || sc == null) { _toast.tryEmit("That library isn't connected"); return }
+        val all = _tracks.value.filter { it.mediaType == "track" }
+        if (all.isEmpty()) { _toast.tryEmit("Nothing here to download"); return }
+        val pending = all.filterNot { downloads.isDownloaded(it.itemId) }
+        viewModelScope.launch {
+            if (pending.isNotEmpty()) {
+                _toast.tryEmit("Downloading ${pending.size} tracks…")
+                val ok = downloads.downloadAll(
+                    pending,
+                    urlFor = { sc.downloadUrl(it.itemId) },
+                    wifiOnly = settings.downloadWifiOnly.first(),
+                    storageCapMb = settings.downloadStorageCapMb.first(),
+                )
+                _toast.tryEmit(
+                    when (ok) {
+                        pending.size -> "Downloaded ${_playlist.value?.name ?: "playlist"}"
+                        0 -> "Download failed"
+                        else -> "Downloaded $ok of ${pending.size}"
+                    },
+                )
+            }
+            if (!keepPlaylist) {
+                if (pending.isEmpty()) _toast.tryEmit("Already downloaded")
+                return@launch
+            }
+            // Recorded from what is on disk rather than from what was asked for, so a
+            // half-finished run produces a half playlist instead of rows naming files
+            // that were never written. Ordered by [all], which is the playlist's own
+            // order — the transfers completed in whatever order they liked.
+            val landed = all.map { it.itemId }.filter { downloads.isDownloaded(it) }
+            if (landed.isEmpty()) return@launch
+            runCatching {
+                downloadedPlaylists.record(
+                    provider = sc.providerId,
+                    sourceId = itemId,
+                    name = _playlist.value?.name ?: initialName,
+                    image = _playlist.value?.image ?: initialArt,
+                    trackIds = landed,
+                )
+            }.onSuccess {
+                _toast.tryEmit("Saved \"${_playlist.value?.name ?: initialName}\" to Downloads")
             }
         }
     }

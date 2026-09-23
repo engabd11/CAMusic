@@ -342,6 +342,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** Process-scoped, so Now Playing and the media notification see the same player. */
     val localPlayer = (app as SendpinApp).localPlayer
     val downloadManager = (app as SendpinApp).downloads
+    /** Playlists kept as playlists in Downloads — see [recordPlaylist]. */
+    val downloadedPlaylists = (app as SendpinApp).downloadedPlaylists
     /** Offline per-track analysis (bpm, key) — for Harmonic DJ mode's ranking bonus. */
     private val trackScans = (app as SendpinApp).trackScans
     val downloads: StateFlow<List<DownloadedTrack>> get() = downloadManager.downloads
@@ -942,7 +944,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (_node.value.title == DOWNLOADS_TITLE) _node.value = Node(DOWNLOADS_TITLE, downloadItems(list))
             }
         }
+        // Whether the Downloads library has any playlists to show. See
+        // [hasDownloadedPlaylists] for why a capability alone is not the right gate,
+        // and why the root has to be rebuilt when this flips: the first playlist a
+        // user ever keeps has to make the category appear without a restart.
+        viewModelScope.launch {
+            downloadedPlaylists.playlists.collect { list ->
+                val was = hasDownloadedPlaylists
+                hasDownloadedPlaylists = list.isNotEmpty()
+                if (was != hasDownloadedPlaylists && _depth.value == 0) {
+                    _node.value = Node("Library", rootItems())
+                }
+            }
+        }
     }
+
+    /**
+     * Whether anything has been kept as a playlist in Downloads.
+     *
+     * The Downloads library declares `PLAYLIST_READ` because it genuinely can read
+     * playlists now — but almost nobody has one, and a capability alone would put an
+     * always-empty Playlists tile in front of every user who has never used the
+     * feature. That is the exact thing [Capability]'s own note warns against.
+     *
+     * Cached rather than queried because [rootItems] is synchronous.
+     */
+    private var hasDownloadedPlaylists = false
 
     /**
      * The music libraries on the connected Jellyfin server, for the settings picker.
@@ -1903,8 +1930,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * Download [item] for offline. A track downloads itself; an album, playlist or
      * artist resolves to its tracks and downloads the lot — downloading an album
      * one track at a time through the UI was not a real answer.
+     *
+     * @param keepPlaylist for a playlist, whether to preserve it *as* a playlist in
+     *   Downloads. Ignored for anything else. See [DownloadChoice] for where the
+     *   question is asked and why it is asked at all.
      */
-    fun download(item: MaItem, replyTo: MutableSharedFlow<String> = _toast) {
+    fun download(
+        item: MaItem,
+        replyTo: MutableSharedFlow<String> = _toast,
+        keepPlaylist: Boolean = false,
+    ) {
         viewModelScope.launch {
             // Resolved from the *item's* library rather than the active one. A track
             // being played through "play at original quality" is a Navidrome file
@@ -1934,7 +1969,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 replyTo.tryEmit(e.message ?: "Couldn't list that")
                 return@launch
             }
-            runDownload(tracks, sc, replyTo)
+            // The container is carried through the run rather than resolved here,
+            // because only the run knows which tracks actually landed — and a
+            // playlist recorded from the *request* would list files that were never
+            // written.
+            val container = if (keepPlaylist && item.mediaType == "playlist") item else null
+            runDownload(tracks, sc, replyTo, container)
         }
     }
 
@@ -1977,9 +2017,28 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         sc: MusicSource,
         /** Where the running commentary goes — see [playerToast] for why it varies. */
         replyTo: MutableSharedFlow<String> = _toast,
+        /**
+         * The playlist this run came from, when it is to be kept as one.
+         *
+         * Recorded after the run rather than before, from what is on disk rather than
+         * from what was asked for.
+         */
+        container: MaItem? = null,
     ) {
         val pending = tracks.filterNot { downloadManager.isDownloaded(it.itemId) }
-        if (pending.isEmpty()) { replyTo.tryEmit("Already downloaded"); return }
+        if (pending.isEmpty()) {
+            // Not a no-op when there is a container. Every track being present is
+            // exactly what happens when a playlist is re-downloaded after its songs
+            // arrived some other way — through their albums, or through an earlier
+            // "just the songs" run — and that is the case where recording the
+            // playlist is most useful, not least.
+            if (container != null) {
+                recordPlaylist(container, tracks, sc, replyTo)
+            } else {
+                replyTo.tryEmit("Already downloaded")
+            }
+            return
+        }
 
         // Wi-Fi-only and storage cap are enforced inside downloadAll now,
         // so the check happens per-file at the moment it starts, not just once
@@ -2016,6 +2075,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         )
 
+        // After the transfer, so membership names files that exist. Before the
+        // storage-cap eviction below on purpose: eviction deletes through
+        // `downloadManager.delete`, which prunes membership as it goes, so a playlist
+        // recorded first stays honest while one recorded after would list evicted
+        // tracks.
+        if (container != null) recordPlaylist(container, tracks, sc, replyTo)
+
         // Storage cap — evict oldest-first until back under the limit. The index is
         // appended to on each download, so the head of the list is the oldest.
         // Bounded by the snapshot rather than looping on live state: a file that has
@@ -2034,6 +2100,36 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             if (downloadManager.bytesUsed() > capBytes) {
                 replyTo.tryEmit("Downloads are over the ${capMb / 1000} GB limit")
             }
+        }
+    }
+
+    /**
+     * File a finished run under its playlist, keeping the server's order.
+     *
+     * Only the tracks that are genuinely on disk are recorded — [tracks] is the whole
+     * playlist as the server gave it, and the filter is what makes a half-finished
+     * download produce a half playlist rather than rows pointing at nothing. The
+     * order is [tracks]' own, so the playlist plays the way it does on the server
+     * even though the files arrived in whatever order the transfers completed.
+     */
+    private suspend fun recordPlaylist(
+        container: MaItem,
+        tracks: List<MaItem>,
+        sc: MusicSource,
+        replyTo: MutableSharedFlow<String>,
+    ) {
+        val landed = tracks.map { it.itemId }.filter { downloadManager.isDownloaded(it) }
+        if (landed.isEmpty()) return
+        runCatching {
+            downloadedPlaylists.record(
+                provider = sc.providerId,
+                sourceId = container.itemId,
+                name = container.name,
+                image = container.image,
+                trackIds = landed,
+            )
+        }.onSuccess {
+            replyTo.tryEmit("Saved \"${container.name}\" to Downloads")
         }
     }
 
@@ -3258,8 +3354,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             reloadStack.addLast(reload)
             // Reads the in-memory index rather than the server, but refreshing it is
             // still the right answer to "this list looks stale".
-            reload = Reload(DOWNLOADS_TITLE) { downloadItems(downloads.value) to emptyList() }
+            //
+            // This is the *offline* route into downloads — the flat one, used when
+            // every server is unreachable and the pseudo-library's own categories are
+            // not available. Kept playlists go at the top of it, because offline is
+            // exactly when someone reaches for the playlist they saved and the flat
+            // list is otherwise the one place they would not find it.
+            reload = Reload(DOWNLOADS_TITLE) { downloadNodeItems() to emptyList() }
             _node.value = Node(DOWNLOADS_TITLE, downloadItems(downloads.value))
+            viewModelScope.launch {
+                if (_node.value.title == DOWNLOADS_TITLE) {
+                    _node.value = Node(DOWNLOADS_TITLE, downloadNodeItems())
+                }
+            }
             _depth.value = stack.size
             return
         }
@@ -3938,7 +4045,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // capability rather than added unconditionally: a source that cannot
                 // enumerate songs would otherwise offer an empty screen.
                 if (src == null || src.has(Capability.TRACKS)) add(category("tracks", "Tracks"))
-                if (src == null || src.has(Capability.PLAYLIST_READ)) add(category("playlists", "Playlists"))
+                if (src == null || (src.has(Capability.PLAYLIST_READ) && playlistsWorthShowing(src))) {
+                    add(category("playlists", "Playlists"))
+                }
                 if (src == null || src.has(Capability.GENRES)) add(category("genres", "Genres"))
                 if (src == null || src.has(Capability.FAVORITES)) add(category("starred", "Starred"))
                 add(category("newest", "Recently Added"))
@@ -3956,6 +4065,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Whether a source's Playlists category is worth a tile.
+     *
+     * Every server answers yes: a library with no playlists on it is a library the
+     * user could still make one in, and the category is where they would look. The
+     * Downloads library is the exception — nothing can be created there, playlists
+     * only arrive by being downloaded as playlists, and until one has been the
+     * category can only ever open onto nothing.
+     */
+    private fun playlistsWorthShowing(src: MusicSource): Boolean =
+        src.providerId != MusicSources.DOWNLOAD_PROVIDER || hasDownloadedPlaylists
+
     private fun category(id: String, name: String) =
         MaItem(id, CATEGORY_PROVIDER, name, null, "category", null, null, null)
 
@@ -3966,6 +4087,44 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun downloadItems(list: List<DownloadedTrack>): List<MaItem> =
         com.engabd.sendpin.local.DownloadsIndex.items(list)
+
+    /** [downloadItems] with any kept playlists in front of it. See [openCategory]. */
+    private suspend fun downloadNodeItems(): List<MaItem> =
+        runCatching { downloadedPlaylists.all() }.getOrDefault(emptyList()) +
+            downloadItems(downloads.value)
+
+    /**
+     * Play a downloaded playlist from disk, in its own order.
+     *
+     * Goes through the playlist store rather than through the download index, because
+     * the order is the thing the store exists to keep — grouping the same files by
+     * album would play them in a different order than the playlist does.
+     */
+    fun playDownloadedPlaylist(playlistId: String) {
+        viewModelScope.launch {
+            val tracks = runCatching { downloadedPlaylists.tracks(playlistId) }.getOrDefault(emptyList())
+            if (tracks.isEmpty()) { _toast.tryEmit("Nothing in that playlist is downloaded"); return@launch }
+            // [playDownloads] rather than a queue built here: it routes through the
+            // download play context, which plays from disk instead of reaching for a
+            // server that may not be there — the whole point of a downloaded playlist.
+            playDownloads(tracks)
+        }
+    }
+
+    /**
+     * Forget a downloaded playlist, keeping its files.
+     *
+     * Deliberately never deletes audio. A track in a playlist is almost always also in
+     * an album the user is keeping, so "remove this playlist" meaning "delete these
+     * songs" would be a destructive surprise — and the files remain individually
+     * deletable from the list below it.
+     */
+    fun forgetDownloadedPlaylist(playlistId: String, name: String) {
+        viewModelScope.launch {
+            runCatching { downloadedPlaylists.remove(playlistId) }
+                .onSuccess { _toast.tryEmit("Removed \"$name\" — the songs are still downloaded") }
+        }
+    }
 
     /**
      * One mapping from a downloaded file to a library item, shared with

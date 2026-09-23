@@ -168,6 +168,11 @@ fun LibraryScreen(
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
     // grid rather than a child of a row that scrolls out from under it.
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
+
+    // The playlist awaiting a "keep it as a playlist, or just the songs?" answer.
+    // Held separately from [actionsFor] so the sheet can close underneath the dialog
+    // rather than stacking two overlays on top of each other.
+    var downloadChoiceFor by remember { mutableStateOf<MaItem?>(null) }
     // Library switch overlay state
     var showLibrarySwitch by remember { mutableStateOf(false) }
 
@@ -270,7 +275,13 @@ fun LibraryScreen(
                 // Hard-coding Navidrome here is what left a Jellyfin track with no
                 // Download in this sheet while the bar above it offered the album.
                 onDownload = if (isDownloadable(picked, capabilities)) {
-                    { viewModel.download(picked) }
+                    {
+                        // A playlist is the one thing where "download" has two
+                        // honest meanings, so it asks. Everything else is
+                        // unambiguous and goes straight through.
+                        if (picked.mediaType == "playlist") downloadChoiceFor = picked
+                        else viewModel.download(picked)
+                    }
                 } else null,
                 // Only Music Assistant can generate a queue, and only from something
                 // with a URI to seed it with.
@@ -296,6 +307,19 @@ fun LibraryScreen(
                 onToggleFavourite = if (isFavouritable(picked, capabilities)) {
                     { viewModel.toggleFavorite(picked) }
                 } else null,
+            )
+        }
+
+        // "Keep it as a playlist, or just the songs?" — see [DownloadChoiceDialog]
+        // for why this is asked rather than assumed.
+        downloadChoiceFor?.let { pending ->
+            DownloadChoiceDialog(
+                playlistName = pending.name,
+                onDismiss = { downloadChoiceFor = null },
+                onChoose = { keepPlaylist ->
+                    downloadChoiceFor = null
+                    viewModel.download(pending, keepPlaylist = keepPlaylist)
+                },
             )
         }
 

@@ -32,7 +32,10 @@ import java.io.File
  * reads [DownloadManager.downloads] fresh. This is the one thing not to copy from the
  * template next door.
  */
-class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
+class DownloadsSource(
+    private val downloads: DownloadManager,
+    private val playlistStore: DownloadedPlaylists,
+) : MusicSource {
 
     override val kind: ServerKind = ServerKind.DOWNLOADS
     override val providerId: String = MusicSources.DOWNLOAD_PROVIDER
@@ -42,11 +45,16 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
     override var streamFormat: String = "raw"
 
     /**
-     * Search, and the format badge, and nothing else.
+     * Search, the format badge, and — since playlists can now be downloaded *as*
+     * playlists — `PLAYLIST_READ`.
      *
-     * No `PLAYLIST_READ`, no `GENRES`, no `FAVORITES` — see [Capability]'s own note
-     * that a shelf which is always empty is worse than the feature being absent.
-     * `DOWNLOAD` in particular would be circular.
+     * That last one was deliberately absent, on the grounds that a shelf which is
+     * always empty is worse than the feature being absent (see [Capability]'s own
+     * note). It is no longer always empty. It is still *usually* empty, which is
+     * handled where the category is offered rather than here: the Playlists category
+     * only appears once something has actually been kept.
+     *
+     * Still no `GENRES`, no `FAVORITES`, and `DOWNLOAD` would be circular.
      *
      * [Capability.REPLAY_GAIN] holds because the measurement came down with the file:
      * a download stores the `MaAudioFormat` the library reported, gain fields and all,
@@ -59,6 +67,7 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
         Capability.TRACKS,
         Capability.RICH_FORMAT,
         Capability.REPLAY_GAIN,
+        Capability.PLAYLIST_READ,
     )
 
     private fun all(): List<DownloadedTrack> = downloads.downloads.value
@@ -71,7 +80,7 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
     override suspend fun albums(offset: Int, limit: Int): List<MaItem> =
         DownloadsIndex.albums(all()).drop(offset).take(limit)
 
-    override suspend fun playlists(): List<MaItem> = emptyList()
+    override suspend fun playlists(): List<MaItem> = playlistStore.all()
 
     override suspend fun artistDetail(id: String): Pair<MaItem?, List<MaItem>> =
         DownloadsIndex.artistDetail(all(), id)
@@ -79,7 +88,7 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
     override suspend fun albumDetail(id: String): Pair<MaItem?, List<MaItem>> =
         DownloadsIndex.albumDetail(all(), id)
 
-    override suspend fun playlistTracks(id: String): List<MaItem> = emptyList()
+    override suspend fun playlistTracks(id: String): List<MaItem> = playlistStore.trackItems(id)
 
     override suspend fun tracks(offset: Int, limit: Int): List<MaItem> =
         DownloadsIndex.items(all()).drop(offset).take(limit)
@@ -87,11 +96,17 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
     override suspend fun children(item: MaItem): List<MaItem> = when (item.mediaType) {
         "artist" -> DownloadsIndex.artistAlbums(all(), item.itemId)
         "album" -> DownloadsIndex.albumTracks(all(), item.itemId)
+        "playlist" -> playlistStore.trackItems(item.itemId)
         else -> emptyList()
     }
 
-    override suspend fun tracksUnder(item: MaItem): List<MaItem> =
-        DownloadsIndex.tracksUnder(all(), item)
+    override suspend fun tracksUnder(item: MaItem): List<MaItem> = when (item.mediaType) {
+        // Not routed through [DownloadsIndex.tracksUnder], which is pure and knows
+        // nothing about the playlist tables. Order matters here: it is the one thing
+        // a playlist has that grouping by album cannot reconstruct.
+        "playlist" -> playlistStore.trackItems(item.itemId)
+        else -> DownloadsIndex.tracksUnder(all(), item)
+    }
 
     override suspend fun song(id: String): MaItem? = downloads.get(id)?.let(DownloadsIndex::item)
 
@@ -107,8 +122,16 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
     override suspend fun randomAlbums(limit: Int): List<MaItem> =
         DownloadsIndex.albums(all()).shuffled().take(limit)
 
-    override suspend fun search(query: String, limit: Int): MaSearchResults =
-        DownloadsIndex.search(all(), query, limit)
+    override suspend fun search(query: String, limit: Int): MaSearchResults {
+        val base = DownloadsIndex.search(all(), query, limit)
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) return base
+        // Searched by name here rather than in [DownloadsIndex], which is pure and has
+        // no access to the playlist tables.
+        return base.copy(
+            playlists = playlistStore.all().filter { it.name.lowercase().contains(q) }.take(limit),
+        )
+    }
 
     /**
      * A `file://` URL, not the bare path: media3 resolves the former, and

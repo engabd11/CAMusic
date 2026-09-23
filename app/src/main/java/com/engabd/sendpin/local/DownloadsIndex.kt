@@ -36,6 +36,40 @@ object DownloadsIndex {
 
     fun artistId(name: String): String = "dlartist:${name.lowercase()}"
 
+    /**
+     * A stable local id for a playlist downloaded as a playlist.
+     *
+     * Namespaced by the library it came from, because two servers can both hand out
+     * playlist "3" and the two are not the same playlist. Also namespaced *away* from
+     * the server's own id space: this id is stored and referred to locally, and it
+     * must not collide with an album or artist id above.
+     */
+    fun playlistId(provider: String?, sourceId: String): String =
+        "dlplaylist:${(provider ?: "?").lowercase()}|$sourceId"
+
+    /**
+     * One downloaded playlist as a library item.
+     *
+     * [trackCount] is the number of its tracks actually present on the phone, not the
+     * number the server said it had — see [com.engabd.sendpin.local.db.DownloadPlaylistDao].
+     * A partial download should read as partial rather than claim to be whole.
+     */
+    fun playlistItem(
+        id: String,
+        name: String,
+        trackCount: Int,
+        image: String? = null,
+    ): MaItem = MaItem(
+        itemId = id,
+        provider = PROVIDER,
+        name = name,
+        uri = id,
+        mediaType = "playlist",
+        subtitle = "$trackCount ${if (trackCount == 1) "song" else "songs"}",
+        image = image,
+        duration = null,
+    )
+
     private fun albumName(t: DownloadedTrack) = t.album?.takeIf { it.isNotBlank() } ?: "Unknown album"
 
     private fun artistName(t: DownloadedTrack) = t.artist?.takeIf { it.isNotBlank() } ?: "Unknown artist"

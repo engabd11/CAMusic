@@ -13,15 +13,25 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  *
  * Version 2 adds a downloaded track's disc number. Version 3 adds [PlayHistoryEntity]
  * for the Stats screen. Version 4 adds a bpm/key/energy snapshot to it, for the Stats
- * screen's Listening DNA section. Migrated rather than rebuilt: the rows are the index
+ * screen's Listening DNA section. Version 6 adds downloaded playlists and their
+ * ordering. Migrated rather than rebuilt: the rows are the index
  * of files already on the phone, and dropping the table would strand every one of
  * them — gigabytes on disk that the app would no longer know it had, and no way back
  * but downloading the lot again.
  */
-@Database(entities = [DownloadedTrackEntity::class, PlayHistoryEntity::class], version = 5)
+@Database(
+    entities = [
+        DownloadedTrackEntity::class,
+        PlayHistoryEntity::class,
+        DownloadedPlaylistEntity::class,
+        DownloadedPlaylistTrackEntity::class,
+    ],
+    version = 6,
+)
 abstract class LocalMediaDatabase : RoomDatabase() {
     abstract fun downloadDao(): DownloadDao
     abstract fun playHistoryDao(): PlayHistoryDao
+    abstract fun downloadPlaylistDao(): DownloadPlaylistDao
 
     companion object {
         @Volatile
@@ -98,13 +108,58 @@ abstract class LocalMediaDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v5 → v6: two new, empty tables for playlists downloaded *as* playlists.
+         *
+         * Nothing existing to migrate, and deliberately nothing inferred either. It is
+         * tempting to backfill from `albumId`, but an album is not a playlist and a
+         * download run recorded no container at all before this, so there is no honest
+         * way to reconstruct one. Playlists downloaded before this version stay a pile
+         * of tracks; the next download of one preserves it.
+         *
+         * No foreign key onto `downloads` — see [DownloadedPlaylistTrackEntity] for
+         * why a cascade would be wrong here.
+         */
+        /**
+         * The v6 statements, as data rather than buried in [MIGRATION_5_6].
+         *
+         * Named so they can be checked against Room's own exported `6.json` by a
+         * plain JVM test — see `LocalMediaSchemaTest`. The on-device
+         * `runMigrationsAndValidate` does the authoritative comparison, but CI here
+         * has no emulator and runs unit tests only, so without this the one change
+         * that can destroy a user's download index would be unguarded on every
+         * ordinary push.
+         */
+        internal val MIGRATION_5_6_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `downloaded_playlists` (" +
+                "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `sourceProvider` TEXT, " +
+                "`sourceId` TEXT, `image` TEXT, `coverPath` TEXT, " +
+                "`createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`))",
+            "CREATE TABLE IF NOT EXISTS `downloaded_playlist_tracks` (" +
+                "`playlistId` TEXT NOT NULL, `trackId` TEXT NOT NULL, " +
+                "`position` INTEGER NOT NULL, PRIMARY KEY(`playlistId`, `trackId`))",
+            "CREATE INDEX IF NOT EXISTS `index_downloaded_playlist_tracks_playlistId` " +
+                "ON `downloaded_playlist_tracks` (`playlistId`)",
+            "CREATE INDEX IF NOT EXISTS `index_downloaded_playlist_tracks_trackId` " +
+                "ON `downloaded_playlist_tracks` (`trackId`)",
+        )
+
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_5_6_SQL.forEach { db.execSQL(it) }
+            }
+        }
+
         fun get(context: Context): LocalMediaDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     LocalMediaDatabase::class.java,
                     "local_media.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
+                ).addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
+                ).build().also { instance = it }
             }
     }
 }
