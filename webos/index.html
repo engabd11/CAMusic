@@ -7,6 +7,14 @@
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+    <!--
+      The light show's two surfaces. The ambient one sits behind the whole UI and
+      the full-screen one covers it; both are painted from one offscreen buffer in
+      lightshow.js. aria-hidden because neither carries information - they are
+      lighting, and a screen reader announcing them would be noise.
+    -->
+    <canvas id="lightAmbient" class="light-ambient" aria-hidden="true"></canvas>
+
     <div id="app">
         <!-- Header -->
         <header id="header">
@@ -17,6 +25,7 @@
                 <div class="nav-tabs" id="navTabs">
                     <button class="nav-tab spotlight" data-tab="library" data-focused="true">Library</button>
                     <button class="nav-tab spotlight" data-tab="search">Search</button>
+                    <button class="nav-tab spotlight" data-tab="lights">Light Show</button>
                     <button class="nav-tab spotlight" data-tab="hue">Hue Sync</button>
                     <button class="nav-tab spotlight" data-tab="settings">Settings</button>
                 </div>
@@ -52,6 +61,45 @@
                     <input type="text" id="searchInput" class="search-input spotlight"
                            placeholder="Search for music..." data-focused="true">
                     <div id="searchResults" class="search-results"></div>
+                </div>
+            </div>
+
+            <!-- Light Show view -->
+            <div id="view-lights" class="view">
+                <div class="lights-container">
+                    <h2 class="section-title">Light Show</h2>
+                    <p class="lights-lead">
+                        Turn the television into the light. In a dark room the panel is
+                        the largest lamp you own &mdash; no Hue bridge needed.
+                    </p>
+
+                    <div class="lights-controls">
+                        <button class="hue-button spotlight" id="lightFullBtn">Full screen</button>
+                        <button class="hue-button spotlight" id="lightAmbientBtn">Ambient: On</button>
+                    </div>
+
+                    <label class="setting-row">
+                        <span class="setting-label">Scene</span>
+                        <select id="lightScene" class="setting-input spotlight"></select>
+                    </label>
+                    <label class="setting-row">
+                        <span class="setting-label">Colours</span>
+                        <select id="lightPalette" class="setting-input spotlight"></select>
+                    </label>
+                    <label class="setting-row">
+                        <span class="setting-label">Brightness</span>
+                        <select id="lightBrightness" class="setting-input spotlight">
+                            <option value="0.18">Very dim &mdash; late night</option>
+                            <option value="0.26">Dim</option>
+                            <option value="0.34" selected>Comfortable</option>
+                            <option value="0.46">Bright</option>
+                            <option value="0.60">Brightest</option>
+                        </select>
+                    </label>
+
+                    <div class="lights-status">
+                        <p>Reacting to the music: <span id="lightReactive">checking&hellip;</span></p>
+                    </div>
                 </div>
             </div>
 
@@ -160,9 +208,24 @@
                 <button class="np-btn spotlight" id="npNextBtn">&#x23ED;</button>
             </div>
         </footer>
+
+        <!--
+          Full-screen mode. Hidden until asked for, and exited with BACK - which on
+          webOS is keyCode 461, not 8. The hint fades out on its own: on a TV an
+          overlay that never leaves is worse than no hint at all.
+        -->
+        <div id="lightFullscreen" class="light-full hidden">
+            <canvas id="lightFullCanvas" class="light-full-canvas" aria-hidden="true"></canvas>
+            <div class="light-full-info" id="lightFullInfo">
+                <div class="light-full-title" id="lightFullTitle"></div>
+                <div class="light-full-artist" id="lightFullArtist"></div>
+                <div class="light-full-hint">Press Back to exit &middot; Left / Right to change scene</div>
+            </div>
+        </div>
     </div>
 
     <script src="webOSTV.js"></script>
+    <script src="js/lightshow.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>
