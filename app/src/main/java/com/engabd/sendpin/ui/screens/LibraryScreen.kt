@@ -68,6 +68,9 @@ import coil.compose.AsyncImage
 import com.engabd.sendpin.ui.design.sharedArt
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.ma.CATEGORY_PROVIDER
+import androidx.compose.ui.platform.LocalContext
+import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.ma.LibraryShelves
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ma.MaItem
@@ -425,6 +428,34 @@ private val SubsonicActionTypes = setOf("track", "album", "artist")
 private val MaActionTypes =
     setOf("track", "album", "artist", "playlist", "podcast", "podcast_episode", "audiobook")
 
+/**
+ * Covers to fill a [CategoryStyle.MOSAIC] tile with.
+ *
+ * Drawn from the shelves the page has *already loaded* rather than by asking the
+ * library for more, which is the whole reason this look is affordable: a mosaic costs
+ * no extra request, only the covers the front page was going to fetch anyway.
+ *
+ * Matched roughly on purpose. "Albums" wants album covers and "Artists" wants artist
+ * pictures, but a library whose favourites are empty has neither — so each category
+ * falls back through the other shelves rather than showing a hole, and a category
+ * with no plausible artwork at all (Shuffle all, Genres) returns nothing and gets the
+ * plain tinted tile.
+ */
+private fun mosaicArtFor(categoryId: String, shelves: LibraryShelves): List<String> {
+    fun art(items: List<MaItem>) = items.mapNotNull { it.image }.filter { it.isNotBlank() }
+    val albums = art(shelves.recentlyAdded) + art(shelves.favoriteAlbums) + art(shelves.recent)
+    val artists = art(shelves.favoriteArtists)
+    return when (categoryId) {
+        "artists" -> (artists + albums)
+        "albums", "newest" -> (albums + artists)
+        "tracks", "playlists", "starred", "podcasts", "radios", "downloads" ->
+            (art(shelves.inProgress) + albums)
+        // Nothing in the library is a picture of "everything, shuffled" or of a
+        // genre, so these keep the plain tile rather than borrowing someone's cover.
+        else -> emptyList()
+    }.distinct().take(4)
+}
+
 @Composable
 private fun Browse(
     viewModel: LibraryViewModel,
@@ -460,6 +491,26 @@ private fun Browse(
     val previewingId by viewModel.previewing.collectAsStateWithLifecycle()
     val capabilities by viewModel.sourceCapabilities.collectAsStateWithLifecycle()
     val rows = RowState(downloadedIds, favorites, previewingId, capabilities)
+
+    // The look of the category row. Read here rather than inside the renderer so the
+    // whole row changes on one recomposition, and so the metrics are computed once
+    // per pass instead of once per tile.
+    val context = LocalContext.current
+    val settings = remember(context) { AppSettings(context) }
+    val styleKey by settings.libraryCategoryStyle.collectAsStateWithLifecycle(initialValue = "cards")
+    val sizeKey by settings.libraryCategorySize.collectAsStateWithLifecycle(initialValue = "regular")
+    val shapeKey by settings.libraryCategoryShape.collectAsStateWithLifecycle(initialValue = "soft")
+    val categoryOrderPref by settings.libraryCategoryOrder.collectAsStateWithLifecycle(initialValue = emptyList())
+    val categoryHidden by settings.libraryCategoryHidden.collectAsStateWithLifecycle(initialValue = emptySet())
+    val categoryStyle = CategoryStyle.byKey(styleKey)
+    val categoryMetrics = remember(styleKey, sizeKey, shapeKey, gridCols) {
+        categoryMetrics(
+            categoryStyle,
+            CategorySize.byKey(sizeKey),
+            CategoryShape.byKey(shapeKey),
+            gridCols,
+        )
+    }
 
     // DJ Radio's button sits at the very top of the root, above the categories —
     // see [DjRadioCard] for why it looks nothing like the rest of the page.
@@ -635,17 +686,46 @@ private fun Browse(
                 }
             }
             // Root shelf: the category grid, then dynamic shelves of content.
-            itemsIndexed(
-                node.items,
-                key = { i, cat -> itemKey("cat", i, cat) },
-                contentType = { _, _ -> "category" },
-                span = { _, _ -> GridItemSpan(3) },
-            ) { _, cat ->
-                // Categories come and go with the backend — switching to Music
-                // Assistant adds Radio and Podcasts, switching away removes them —
-                // and without this they popped in and out. Same modifier the shelves
-                // below already use.
-                CategoryCard(cat, Modifier.animateItem(placementSpec = Motion.itemPlacement())) { viewModel.open(cat) }
+            // The user's order and selection applied to whatever this library
+            // actually offers — never a replacement for it. See [categoryOrder].
+            val shownCategories = run {
+                val byId = node.items.associateBy { it.itemId }
+                categoryOrder(node.items.map { it.itemId }, categoryOrderPref, categoryHidden)
+                    .mapNotNull { byId[it] }
+            }
+            if (categoryMetrics.wrapping) {
+                // Chips are intrinsically sized and wrap, so they are one full-width
+                // cell that lays itself out rather than N equal grid cells.
+                item(span = { full(gridCols) }, contentType = "categoryChips") {
+                    CategoryChipRow(
+                        shownCategories,
+                        categoryMetrics,
+                        Modifier.animateItem(placementSpec = Motion.itemPlacement()),
+                    ) { viewModel.open(it) }
+                }
+            } else {
+                itemsIndexed(
+                    shownCategories,
+                    key = { i, cat -> itemKey("cat", i, cat) },
+                    contentType = { _, _ -> "category" },
+                    span = { _, _ -> GridItemSpan(categoryMetrics.span) },
+                ) { _, cat ->
+                    // Categories come and go with the backend — switching to Music
+                    // Assistant adds Radio and Podcasts, switching away removes them —
+                    // and without this they popped in and out. Same modifier the shelves
+                    // below already use.
+                    CategoryEntry(
+                        item = cat,
+                        style = categoryStyle,
+                        metrics = categoryMetrics,
+                        modifier = Modifier.animateItem(placementSpec = Motion.itemPlacement()),
+                        mosaicArt = if (categoryStyle == CategoryStyle.MOSAIC) {
+                            mosaicArtFor(cat.itemId, shelves)
+                        } else {
+                            emptyList()
+                        },
+                    ) { viewModel.open(cat) }
+                }
             }
             val openItem: (MaItem) -> Unit = { item ->
                 when (item.mediaType) {

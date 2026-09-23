@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui.screens.settings
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DirectionsCar
@@ -54,6 +55,7 @@ internal const val AUDIO_BEHAVIOUR_ROUTE = "audio_behaviour"
 internal const val LOOK_THEME_ROUTE = "look_theme"
 internal const val LOOK_PLAYER_ROUTE = "look_player"
 internal const val LOOK_MOTION_ROUTE = "look_motion"
+internal const val LOOK_LIBRARY_ROUTE = "look_library"
 
 // ── Driving & Android Auto ────────────────────────────────────────────────
 internal const val DRIVE_MODE_ROUTE = "drive_mode"
@@ -125,6 +127,12 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
             "Now Playing & seek bar",
             "A tab or an overlay, and how the progress line is drawn",
             Icons.Default.PlayCircle,
+        ),
+        SubPage(
+            LOOK_LIBRARY_ROUTE,
+            "Library look",
+            "The shape, size and order of the category buttons on the library page",
+            Icons.Default.GridView,
         ),
         SubPage(
             LOOK_MOTION_ROUTE,

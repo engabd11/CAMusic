@@ -119,6 +119,16 @@ class AppSettings(private val context: Context) {
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
         private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" (default) | "wave" | "pill" | "glow"
+        // The library's category buttons: shape, size, corner, and which of them
+        // appear and in what order. Every default is the row exactly as it shipped,
+        // so an install that never opens the Library look page is unchanged.
+        private val LIBRARY_CATEGORY_STYLE = stringPreferencesKey("library_category_style")
+        private val LIBRARY_CATEGORY_SIZE = stringPreferencesKey("library_category_size")
+        private val LIBRARY_CATEGORY_SHAPE = stringPreferencesKey("library_category_shape")
+        /** Comma-joined category ids, in the user's order. Empty means the default order. */
+        private val LIBRARY_CATEGORY_ORDER = stringPreferencesKey("library_category_order")
+        /** Comma-joined category ids the user has switched off. */
+        private val LIBRARY_CATEGORY_HIDDEN = stringPreferencesKey("library_category_hidden")
         private val CHAMELEON_BLOOM = booleanPreferencesKey("chameleon_bloom")
         private val GLASS_BLUR = booleanPreferencesKey("glass_blur")
         // Appearance. Defaults are the app as designed — OLED black with the accent
@@ -876,6 +886,23 @@ class AppSettings(private val context: Context) {
     val nowPlayingLayout: Flow<String> = pref { it[NOW_PLAYING_LAYOUT] ?: "tab" }
     /** How the Now Playing seek bar is drawn — a straight line, or a wobbling wave. */
     val seekBarStyle: Flow<String> = pref { it[SEEK_BAR_STYLE] ?: "line" }
+
+    /**
+     * How the library's category buttons are drawn — see
+     * [com.engabd.sendpin.ui.screens.CategoryStyle]. "cards" is the row as it
+     * shipped.
+     *
+     * Stored as the enum's own key string rather than as an ordinal, so reordering
+     * or inserting a style cannot silently repoint everyone's saved choice at a
+     * different look.
+     */
+    val libraryCategoryStyle: Flow<String> = pref { it[LIBRARY_CATEGORY_STYLE] ?: "cards" }
+    val libraryCategorySize: Flow<String> = pref { it[LIBRARY_CATEGORY_SIZE] ?: "regular" }
+    val libraryCategoryShape: Flow<String> = pref { it[LIBRARY_CATEGORY_SHAPE] ?: "soft" }
+    /** The user's category order. Empty list means "whatever the library offers". */
+    val libraryCategoryOrder: Flow<List<String>> = pref { decodeCsv(it[LIBRARY_CATEGORY_ORDER]) }
+    /** Categories switched off. Never allowed to be all of them — see `categoryOrder`. */
+    val libraryCategoryHidden: Flow<Set<String>> = pref { decodeCsv(it[LIBRARY_CATEGORY_HIDDEN]).toSet() }
     /** Chameleon dynamic canvas and ambient bloom behind Now Playing. Off by default. */
     val chameleonBloom: Flow<Boolean> = pref { it[CHAMELEON_BLOOM] ?: false }
     /**
@@ -1273,6 +1300,47 @@ class AppSettings(private val context: Context) {
     suspend fun setSeekBarStyle(style: String) {
         context.dataStore.edit { it[SEEK_BAR_STYLE] = style }
     }
+
+    suspend fun setLibraryCategoryStyle(key: String) {
+        context.dataStore.edit { it[LIBRARY_CATEGORY_STYLE] = key }
+    }
+
+    suspend fun setLibraryCategorySize(key: String) {
+        context.dataStore.edit { it[LIBRARY_CATEGORY_SIZE] = key }
+    }
+
+    suspend fun setLibraryCategoryShape(key: String) {
+        context.dataStore.edit { it[LIBRARY_CATEGORY_SHAPE] = key }
+    }
+
+    suspend fun setLibraryCategoryOrder(ids: List<String>) {
+        context.dataStore.edit { it[LIBRARY_CATEGORY_ORDER] = ids.joinToString(",") }
+    }
+
+    suspend fun setLibraryCategoryHidden(ids: Set<String>) {
+        context.dataStore.edit { it[LIBRARY_CATEGORY_HIDDEN] = ids.joinToString(",") }
+    }
+
+    /** Put the library's category row back to exactly how it shipped. */
+    suspend fun resetLibraryCategoryLook() {
+        context.dataStore.edit {
+            it.remove(LIBRARY_CATEGORY_STYLE)
+            it.remove(LIBRARY_CATEGORY_SIZE)
+            it.remove(LIBRARY_CATEGORY_SHAPE)
+            it.remove(LIBRARY_CATEGORY_ORDER)
+            it.remove(LIBRARY_CATEGORY_HIDDEN)
+        }
+    }
+
+    /**
+     * A comma-joined id list, read back.
+     *
+     * Blanks are dropped rather than kept as empty ids: `"a,,b"` and a trailing comma
+     * both arise from ordinary editing, and an empty id would match no category and
+     * sit in the stored order for ever.
+     */
+    private fun decodeCsv(raw: String?): List<String> =
+        raw?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
 
     suspend fun setChameleonBloom(enabled: Boolean) {
         context.dataStore.edit { it[CHAMELEON_BLOOM] = enabled }

@@ -453,6 +453,10 @@ private fun LazyListScope.sectionItems(
                 card("look_layout") { NowPlayingLayoutCard(settings, scope) }
                 card("look_seekbar") { SeekBarCard(settings, scope) }
             }
+            LOOK_LIBRARY_ROUTE -> {
+                card("look_library") { LibraryLookCard(settings, accent, scope) }
+                card("look_library_categories") { LibraryCategoriesCard(settings, accent, scope) }
+            }
             LOOK_MOTION_ROUTE -> {
                 card("look_bloom") { ChameleonCard(settings, accent, scope) }
                 card("look_glass") { GlassBlurCard(settings, accent, scope) }
