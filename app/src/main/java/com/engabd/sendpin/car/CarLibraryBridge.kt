@@ -97,6 +97,38 @@ class CarLibraryBridge(private val app: SendpinApp) {
     }
 
     /**
+     * The last options read from settings, so the browse root needs no I/O.
+     *
+     * The root is the one call a browser blocks its whole connection on, and Google's
+     * guidance is explicit that it must return immediately. Reading DataStore there
+     * meant the first thing a freshly-bound car waited on was a file read on a cold
+     * process — and, through [CarLibrarySessionCallback]'s future bridge, it waited on
+     * it *asynchronously*, which is the shape media3 has had connection bugs in.
+     *
+     * [CarMediaLibraryService] primes this from the same flow it already collects, so
+     * by the time a car is plugged in this is almost always warm. Null only in the
+     * window before the first emission arrives, where the shipped defaults are the
+     * right answer anyway — and the collector re-publishes the root the moment the
+     * real values land.
+     */
+    @Volatile
+    private var cachedOptions: CarBrowseOptions? = null
+
+    /** See [cachedOptions]. Called by [CarMediaLibraryService]'s settings collector. */
+    fun primeOptions(options: CarBrowseOptions) {
+        cachedOptions = options
+    }
+
+    /** Note that a browser connected, for the readiness panel. See [CarConnectionLog]. */
+    fun recordConnection(packageName: String?) {
+        CarConnectionLog.record(app, packageName)
+    }
+
+    /** The options, from cache when warm and from settings the first time. */
+    private suspend fun options(): CarBrowseOptions =
+        cachedOptions ?: settings.carBrowseOptionsNow().also { cachedOptions = it }
+
+    /**
      * Drop everything remembered about the tree.
      *
      * Called when the appearance settings change under a car that is already plugged
@@ -111,7 +143,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
     // ── Root / browse tree ──────────────────────────────────────────────────
 
     suspend fun children(parentId: String, rootChildrenLimit: Int): List<MediaItem> {
-        val options = settings.carBrowseOptionsNow()
+        val options = options()
         return when (parentId) {
             CarMediaId.ROOT -> rootChildren(options, rootChildrenLimit)
             CarMediaId.MORE -> {
@@ -157,7 +189,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
      * and an unanswered one comes back as an error rather than as a row.
      */
     suspend fun item(mediaId: String): MediaItem? {
-        val options = settings.carBrowseOptionsNow()
+        val options = options()
         if (mediaId == CarMediaId.ROOT) return rootItem(options)
         if (mediaId == CarMediaId.MORE) return moreFolderItem(options)
         return when (val id = CarMediaId.parse(mediaId)) {
@@ -227,9 +259,15 @@ class CarLibraryBridge(private val app: SendpinApp) {
     private fun rootParams(options: CarBrowseOptions): LibraryParams =
         LibraryParams.Builder().setExtras(defaultStyleExtras(options)).build()
 
-    /** The root and its params together, so a caller reads the settings once. */
-    suspend fun rootResult(): Pair<MediaItem, LibraryParams> {
-        val options = settings.carBrowseOptionsNow()
+    /**
+     * The root and its params together — **synchronously**, and never touching I/O.
+     *
+     * This is the call a connecting browser blocks on, so it answers from
+     * [cachedOptions] and the shipped defaults rather than from DataStore. See that
+     * field for why that matters more here than anywhere else in the tree.
+     */
+    fun rootResult(): Pair<MediaItem, LibraryParams> {
+        val options = cachedOptions ?: CarBrowseOptions()
         return rootItem(options) to rootParams(options)
     }
 
@@ -240,6 +278,9 @@ class CarLibraryBridge(private val app: SendpinApp) {
     private fun defaultStyleExtras(options: CarBrowseOptions): Bundle = CarContentStyle.extras(
         browsableChildren = options.folderStyle(),
         playableChildren = options.itemStyle("track"),
+        // Root only — this is the flag that makes a head unit honour the two hints
+        // above instead of quietly using its own layout. See [CarContentStyle].
+        supported = true,
     )
 
     private suspend fun visibleLibraries(options: CarBrowseOptions): List<ServerConfig> =
@@ -370,7 +411,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
     }
 
     private suspend fun searchAll(query: String): List<MediaItem> = coroutineScope {
-        val options = settings.carBrowseOptionsNow()
+        val options = options()
         val servers = visibleLibraries(options)
         servers.map { config ->
             async {
@@ -546,7 +587,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
      * silently blank thumbnail is worth more than the calls saved.
      */
     suspend fun grantArtwork(packageName: String?, items: List<MediaItem>) {
-        if (packageName.isNullOrBlank()) return
+        val target = grantTarget(packageName) ?: return
         val uris = items.mapNotNull { it.mediaMetadata.artworkUri }
         if (uris.isEmpty()) return
         // Off the callback's main dispatcher: each grant is a blocking call into
@@ -555,9 +596,33 @@ class CarLibraryBridge(private val app: SendpinApp) {
         // moment this result reaches it.
         withContext(Dispatchers.IO) {
             for (uri in uris) {
-                runCatching { app.grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                runCatching { app.grantUriPermission(target, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             }
         }
+    }
+
+    /**
+     * The package a cover grant should actually name, or null to skip granting.
+     *
+     * A legacy `MediaBrowserCompat` — which is exactly what Android Auto is — does not
+     * always reach media3 with a resolvable caller package. Where it cannot be
+     * determined, the platform reports the sentinel
+     * `MediaSessionManager.RemoteUserInfo.LEGACY_CONTROLLER`, the literal string
+     * `"android.media.session.MediaController"`. That is not an installed package, so
+     * `grantUriPermission` for it grants nothing at all — and because each grant is
+     * already wrapped in `runCatching`, it failed *silently*. The visible symptom is
+     * the one that is hardest to attribute: every browse row in the car is blank where
+     * its cover should be, with nothing in the log.
+     *
+     * So the sentinel is translated to the only browser it can mean here, and anything
+     * else that does not resolve to an installed package is skipped rather than
+     * guessed at.
+     */
+    private fun grantTarget(packageName: String?): String? {
+        if (packageName.isNullOrBlank()) return null
+        val candidate = if (packageName == LEGACY_CONTROLLER_PACKAGE) ANDROID_AUTO_PACKAGE else packageName
+        val installed = runCatching { app.packageManager.getApplicationInfo(candidate, 0) }.isSuccess
+        return candidate.takeIf { installed }
     }
 
     private fun artworkUri(url: String?, options: CarBrowseOptions): Uri? =
@@ -625,6 +690,10 @@ class CarLibraryBridge(private val app: SendpinApp) {
      * No artwork, deliberately. None of these *is* a record — a cover on a folder
      * would have to be one of the covers inside it, which is a decision this app has
      * no basis for making and the car has no space to show.
+     *
+     * It is still typed as a folder rather than left unset: a browser that knows a row
+     * is a folder draws its own folder placeholder there, which is the right picture
+     * for exactly the rows that will never have one of their own.
      */
     private fun browsableItem(id: String, title: String, extras: Bundle): MediaItem = MediaItem.Builder()
         .setMediaId(id)
@@ -633,6 +702,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
                 .setTitle(title)
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
+                .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
                 .setExtras(extras)
                 .build(),
         )
@@ -669,6 +739,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
                     .setSubtitle(subtitle)
                     .setIsBrowsable(browsable)
                     .setIsPlayable(playable)
+                    .setMediaType(CarContentStyle.mediaType(mediaType, browsable))
                     .setArtworkUri(artworkUri(image, options))
                     .setExtras(
                         CarContentStyle.extras(
@@ -695,6 +766,18 @@ class CarLibraryBridge(private val app: SendpinApp) {
         const val SEARCH_PER_SOURCE_LIMIT = 15
         const val SEARCH_RESULT_CAP = 50
         const val SEARCH_TIMEOUT_MS = 7_000L
+
+        /**
+         * `MediaSessionManager.RemoteUserInfo.LEGACY_CONTROLLER` — see [grantTarget].
+         *
+         * Spelled out rather than imported for the same reason the browser-protocol
+         * strings in [CarLibrarySessionCallback] are: this app depends on media3, not
+         * on the legacy `media-compat` artifact the constant is declared in.
+         */
+        const val LEGACY_CONTROLLER_PACKAGE = "android.media.session.MediaController"
+
+        /** Android Auto's phone-side projection package. */
+        const val ANDROID_AUTO_PACKAGE = "com.google.android.projection.gearhead"
 
         /**
          * How long a folder's contents may take before the car gets an answer anyway.

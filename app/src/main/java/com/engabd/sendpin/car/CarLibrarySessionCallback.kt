@@ -10,6 +10,7 @@ import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionError
 import com.google.common.collect.ImmutableList
+import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -39,17 +40,56 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         scope.cancel()
     }
 
-    override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult =
-        MediaSession.ConnectionResult.accept(
+    /**
+     * Every controller is accepted, and the connection is written down.
+     *
+     * Deliberately not an allow-list. This session hands out no credential and no
+     * stream URL — see [CarLibraryBridge]'s class note — so there is nothing here to
+     * protect by rejecting callers, and a browse tree that silently refuses the one
+     * host that matters is far worse than one that answers a caller it did not need
+     * to. Covers are the one thing that *is* gated, per URI, in
+     * [CarLibraryBridge.grantArtwork].
+     *
+     * The record is the diagnostic half — see [CarConnectionLog] for why "did a car
+     * ever reach this app" was unanswerable without it.
+     */
+    override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+        bridge.recordConnection(controller.packageName)
+        return MediaSession.ConnectionResult.accept(
             MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS,
             MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS,
         )
+    }
 
     override fun onGetLibraryRoot(
         session: MediaLibrarySession,
         browser: MediaSession.ControllerInfo,
         params: LibraryParams?,
-    ): ListenableFuture<LibraryResult<MediaItem>> = future {
+    ): ListenableFuture<LibraryResult<MediaItem>> {
+        // A request for the *recent* root is not a request to browse. It is the system
+        // (or the car) asking "what was playing last, so I can offer to resume it",
+        // and it expects a root whose one child is that item.
+        //
+        // This app cannot answer it yet and says so, rather than falling through and
+        // returning the ordinary browse root — which is what used to happen, and is
+        // worse than declining. A caller handed the browse root for a resumption
+        // request takes it as a yes: it draws a resume tile whose target is the
+        // library root, which is browsable and not playable, so tapping it does
+        // nothing at all. An explicit error is read as "this app has nothing to
+        // resume" and no tile is drawn.
+        //
+        // Answering it properly needs a record this app does not keep. `play_history`
+        // stores a `trackId` and a `provider` but neither the server id nor the uri
+        // that [CarMediaId.Item] needs to address a track again, so a resume target
+        // cannot be rebuilt from it. That is the work, and it is not a one-line
+        // change; see the PR notes.
+        if (params?.isRecent == true) {
+            return Futures.immediateFuture(
+                LibraryResult.ofError(
+                    SessionError(SessionError.ERROR_NOT_SUPPORTED, "Nothing to resume"),
+                ),
+            )
+        }
         // The one call that carries it. A legacy browser - which is what Android Auto
         // is - sends its root hints to `MediaBrowserServiceCompat.onGetRoot` and
         // nothing else, so media3 has a `LibraryParams` to hand here and passes
@@ -68,11 +108,17 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
             ?.getInt(EXTRA_MEDIA_ART_SIZE_HINT_PIXELS, 0)
             ?.takeIf { it > 0 }
             ?.let { bridge.setArtworkSizeHint(it) }
-        // Not awaited: the root itself is answered from settings alone, and the
-        // browser is kept waiting for that answer before it can ask for anything else.
+        // Not awaited: warming the libraries is what makes the *first folder* fast,
+        // and has nothing to do with answering the root.
         scope.launch { runCatching { bridge.warmUp() } }
+        // Immediate, deliberately — this is the call a connecting browser blocks its
+        // whole connection on. It used to be answered through [future], which parks
+        // the result on a coroutine and completes the future later; Google's guidance
+        // is that the root must return quickly, and media3 has had real connection
+        // bugs in the non-immediate path (androidx/media#3393). Nothing here needs
+        // I/O, so nothing here should wait for any.
         val (root, rootParams) = bridge.rootResult()
-        LibraryResult.ofItem(root, rootParams)
+        return Futures.immediateFuture(LibraryResult.ofItem(root, rootParams))
     }
 
     override fun onGetChildren(
@@ -83,9 +129,19 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         pageSize: Int,
         params: LibraryParams?,
     ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = future {
-        val children = bridge.children(parentId, rootChildrenLimit).page(page, pageSize)
-        bridge.grantArtwork(browser.packageName, children)
-        LibraryResult.ofItemList(children, null)
+        // Caught rather than allowed to fail the future. A folder that throws — a home
+        // server out of Wi-Fi range is the ordinary case, on a phone that has just been
+        // driven away from the house — used to reach the car as an unexplained failure
+        // and, on some head units, as a dead tab for the rest of the trip.
+        runCatching {
+            val children = bridge.children(parentId, rootChildrenLimit).page(page, pageSize)
+            bridge.grantArtwork(browser.packageName, children)
+            LibraryResult.ofItemList(children, null)
+        }.getOrElse {
+            LibraryResult.ofError(
+                SessionError(SessionError.ERROR_IO, "Couldn't reach your library"),
+            )
+        }
     }
 
     override fun onGetItem(
@@ -96,7 +152,11 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         bridge.item(mediaId)
             ?.also { bridge.grantArtwork(browser.packageName, listOf(it)) }
             ?.let { LibraryResult.ofItem(it, null) }
-            ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+            // A bare error code reaches the car as an unexplained failure. media3 turns
+            // the message into what the head unit shows, so it is worth writing one.
+            ?: LibraryResult.ofError(
+                SessionError(SessionError.ERROR_BAD_VALUE, "That item is no longer in your library"),
+            )
     }
 
     override fun onGetSearchResult(

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The attribution mark Android Auto draws on a media card, where the content is the
+  subject and this only says which app it came from.
+
+  The same CAMusic mushroom as ic_launcher_foreground, redrawn on a 24dp viewport and
+  as a single flat colour. Both of those are requirements rather than style: the car
+  tints this icon to its own theme, so anything with colours of its own comes out
+  wrong, and it is rendered at whatever size the head unit likes, so it has to be a
+  vector. The paths are the launcher's, scaled by 24/108 about the same centre, which
+  leaves the mark spanning y 6.4..17.6 — centred, with room on every side.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- Cap: a dome overhanging the stem, flat along its underside. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M6.67,12.89 C6.67,8.96 9.04,6.44 12,6.44 C14.96,6.44 17.33,8.96 17.33,12.89 Z" />
+
+    <!-- Stem: tapers in under the cap, then rounds off at the foot. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M10.76,12.89 L13.24,12.89 C13.24,14.67 13.02,16.27 12.49,17.24 C12.31,17.58 11.69,17.58 11.51,17.24 C10.98,16.27 10.76,14.67 10.76,12.89 Z" />
+</vector>

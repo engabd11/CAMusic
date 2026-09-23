@@ -1,5 +1,6 @@
 package com.engabd.sendpin.car
 
+import android.app.PendingIntent
 import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
@@ -11,7 +12,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 /**
@@ -45,8 +45,30 @@ class CarMediaLibraryService : MediaLibraryService() {
             // Must differ from LocalPlaybackService's "local" and SendspinService's
             // "sendspin" - a media3 MediaSession id has to be unique per process.
             .setId("auto")
+            .apply { sessionActivity()?.let { setSessionActivity(it) } }
             .build()
         watchBrowseOptions(libraryBridge)
+    }
+
+    /**
+     * Where "open the app" goes from the car.
+     *
+     * A session with no activity attached leaves the browser nothing to launch, so the
+     * app's own icon on the car's now-playing card does nothing — and the phone, which
+     * is the only screen where this app's real settings live, cannot be reached from
+     * the driver's seat without unplugging.
+     *
+     * `FLAG_IMMUTABLE` because nothing outside this process has any business filling in
+     * the intent, matching every other `PendingIntent` in the app.
+     */
+    private fun sessionActivity(): PendingIntent? {
+        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return null
+        return PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     /**
@@ -55,17 +77,27 @@ class CarMediaLibraryService : MediaLibraryService() {
      * Android Auto subscribes to the root once and then trusts it: a browse tree that
      * only re-read its settings on the next connection meant changing the layout with
      * the phone plugged in did nothing visible until the cable was pulled, which reads
-     * as a setting that does not work rather than one that is deferred. `drop(1)` skips
-     * the flow's own first emission — that is the state the tree was just built from,
-     * not a change to it.
+     * as a setting that does not work rather than one that is deferred.
      *
      * The cached rows go with it: each was built with the old options, down to whether
      * it carries a cover.
+     *
+     * This also **primes** the bridge's own copy of the options, which is what lets
+     * [CarLibrarySessionCallback.onGetLibraryRoot] answer a connecting browser without
+     * touching DataStore — see [CarLibraryBridge.primeOptions]. The first emission is
+     * the priming one and invalidates nothing, because that is the state the tree was
+     * just built from rather than a change to it; every later one is a real change.
      */
     private fun watchBrowseOptions(libraryBridge: CarLibraryBridge) {
         val settings = AppSettings(this)
         scope.launch {
-            settings.carBrowseOptions.drop(1).collect {
+            var seen = false
+            settings.carBrowseOptions.collect { options ->
+                libraryBridge.primeOptions(options)
+                if (!seen) {
+                    seen = true
+                    return@collect
+                }
                 libraryBridge.invalidate()
                 // Int.MAX_VALUE, not a real count: the browser is being told the root
                 // changed, not how much of it. It comes back through onGetChildren for

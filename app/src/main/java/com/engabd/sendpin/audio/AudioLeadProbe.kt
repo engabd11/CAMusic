@@ -117,14 +117,16 @@ class AudioLeadProbe(
      * configures — behind media3's own 16-bit converter — so whatever it saw had
      * already been flattened to 16 bits, whatever the file held. Reported rather
      * than acted on - this override changes nothing.
+     *
+     * The signature is media3 1.11's. It replaced `configure(Format, int, IntArray)`
+     * with a single config object and made the old three-argument form **final**, so
+     * overriding that one stopped compiling rather than silently stopping working —
+     * which is the good outcome, since a probe that is never called reports a
+     * confident wrong answer about the user's audio resolution.
      */
-    override fun configure(
-        inputFormat: androidx.media3.common.Format,
-        specifiedBufferSize: Int,
-        outputChannels: IntArray?,
-    ) {
-        SignalPath.onDecoderOutput(inputFormat)
-        super.configure(inputFormat, specifiedBufferSize, outputChannels)
+    override fun configure(config: AudioSink.AudioSinkConfig) {
+        SignalPath.onDecoderOutput(config.format)
+        super.configure(config)
     }
 
     override fun setOutputStreamOffsetUs(outputStreamOffsetUs: Long) {

@@ -1,6 +1,7 @@
 package com.engabd.sendpin.car
 
 import android.os.Bundle
+import androidx.media3.common.MediaMetadata
 
 /**
  * Android Auto's content style hints, and the one rule about them worth writing down.
@@ -29,6 +30,16 @@ import android.os.Bundle
  */
 internal object CarContentStyle {
 
+    /**
+     * Declares that this app speaks the content-style protocol at all.
+     *
+     * Set on the **root** only. Several head units treat the per-node hints below as
+     * meaningless unless the root says the app understands them, and fall back to
+     * their own default layout — which looks exactly like the app choosing that
+     * layout, so the setting appears to do nothing rather than to be ignored.
+     */
+    const val KEY_SUPPORTED = "android.media.browse.CONTENT_STYLE_SUPPORTED"
+
     /** How the browsable children of this node are drawn. */
     const val KEY_BROWSABLE = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT"
 
@@ -54,19 +65,47 @@ internal object CarContentStyle {
     }
 
     /**
+     * This app's media-type strings, as `MediaMetadata`'s own constants.
+     *
+     * Every row this app handed the car used to leave `mediaType` unset, which means
+     * `MEDIA_TYPE_MIXED` — "I do not know what this is". A browser uses it to pick a
+     * placeholder when there is no artwork and to decide what a row means to a voice
+     * query, so an artist and an album were indistinguishable to it.
+     *
+     * Unknown strings stay mixed rather than guessing: that is the honest answer and
+     * it is also the previous behaviour, so nothing regresses on a type not listed.
+     */
+    fun mediaType(mediaType: String?, browsable: Boolean): Int = when (mediaType) {
+        "artist" -> MediaMetadata.MEDIA_TYPE_ARTIST
+        "album" -> MediaMetadata.MEDIA_TYPE_ALBUM
+        "playlist" -> MediaMetadata.MEDIA_TYPE_PLAYLIST
+        "genre" -> MediaMetadata.MEDIA_TYPE_GENRE
+        "podcast" -> MediaMetadata.MEDIA_TYPE_PODCAST
+        "podcast_episode" -> MediaMetadata.MEDIA_TYPE_PODCAST_EPISODE
+        "audiobook" -> MediaMetadata.MEDIA_TYPE_AUDIO_BOOK
+        "chapter" -> MediaMetadata.MEDIA_TYPE_AUDIO_BOOK_CHAPTER
+        "radio" -> MediaMetadata.MEDIA_TYPE_RADIO_STATION
+        "track" -> MediaMetadata.MEDIA_TYPE_MUSIC
+        else -> if (browsable) MediaMetadata.MEDIA_TYPE_FOLDER_MIXED else MediaMetadata.MEDIA_TYPE_MIXED
+    }
+
+    /**
      * The extras for one node.
      *
      * @param browsableChildren how the folders inside this node should be drawn.
      * @param playableChildren how the tracks inside it should be drawn.
      * @param self this row's own shape, for a row whose siblings differ from it.
      * @param group the heading this row belongs under, or null for no grouping.
+     * @param supported see [KEY_SUPPORTED]. True on the root, false everywhere else.
      */
     fun extras(
         browsableChildren: CarRowStyle? = null,
         playableChildren: CarRowStyle? = null,
         self: CarRowStyle? = null,
         group: String? = null,
+        supported: Boolean = false,
     ): Bundle = Bundle().apply {
+        if (supported) putBoolean(KEY_SUPPORTED, true)
         browsableChildren?.let { putInt(KEY_BROWSABLE, value(it)) }
         playableChildren?.let { putInt(KEY_PLAYABLE, value(it)) }
         self?.let { putInt(KEY_SINGLE_ITEM, value(it)) }

@@ -26,6 +26,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.car.CarBrowseOptions
+import com.engabd.sendpin.car.CarConnectionLog
+import com.engabd.sendpin.car.CarReadiness
 import com.engabd.sendpin.car.CarBrowseStyle
 import com.engabd.sendpin.car.CarLibraryAbilities
 import com.engabd.sendpin.car.CarRowStyle
@@ -38,7 +40,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /** The package name Android Auto's phone-side projection runs under. */
-private const val GEARHEAD = "com.google.android.projection.gearhead"
+private const val GEARHEAD = CarReadiness.ANDROID_AUTO_PACKAGE
 
 /**
  * Android Auto: what the car will show, how it is laid out, and where a track tapped
@@ -65,8 +67,12 @@ internal fun AndroidAutoCard(settings: AppSettings, accent: Color) {
     // screen sits open, and the answer is only interesting at the moment it is read.
     // The manifest declares a <queries> entry for this package, which is what makes
     // it visible at all on Android 11 and later.
-    val autoInstalled = remember(context) {
-        runCatching { context.packageManager.getPackageInfo(GEARHEAD, 0) }.isSuccess
+    val autoInstalled = remember(context) { CarReadiness.autoInstalled(context.packageManager) }
+
+    // The real diagnosis, read off this phone rather than guessed at — see
+    // [CarReadiness] for why this card needed one.
+    val findings = remember(context) {
+        CarReadiness.findings(context, CarConnectionLog.last(context))
     }
 
     val visible = options.libraries(servers) { it.id }
@@ -85,10 +91,7 @@ internal fun AndroidAutoCard(settings: AppSettings, accent: Color) {
             "the car on the next trip.",
     ) {
         StatusPanel {
-            StatusRow(
-                "Android Auto",
-                if (autoInstalled) "Installed on this phone" else "Not installed",
-            )
+            findings.forEach { StatusRow(it.label, it.value) }
             StatusRow(
                 "Libraries in the car",
                 when (visible.size) {
@@ -108,11 +111,17 @@ internal fun AndroidAutoCard(settings: AppSettings, accent: Color) {
             StatusRow("Music plays on", "This phone, always")
         }
 
-        if (!autoInstalled) {
-            Note(
-                "Android Auto is not on this phone, so nothing here can be tried until a car " +
-                    "asks for it. It comes built in on most phones from Android 10 onward.",
-            )
+        // One note per check that has something to say, so the panel above stays a
+        // glance and the explanations sit under it in the order they were diagnosed.
+        findings.forEach { finding ->
+            finding.detail?.let { detail ->
+                Note(
+                    finding.value,
+                    warn = finding.level != CarReadiness.Level.OK,
+                    title = finding.label,
+                    info = detail,
+                )
+            }
         }
 
         if (servers.isEmpty()) {
@@ -139,15 +148,17 @@ internal fun AndroidAutoCard(settings: AppSettings, accent: Color) {
         )
 
         Note(
-            "Not yet driven.",
+            "Proven on a phone, not yet in a car.",
             title = "Status of this feature",
-            info = "The browse tree, search, the cover-art provider and the session facade are " +
-                "written and compile, and the unit tests cover the id scheme and the layout " +
-                "rules that connect them. What has not happened is a trip in a real car, or a " +
-                "pass through Google's Desktop Head Unit.\n\nSo treat this as untested rather " +
-                "than broken: if a folder is empty in the car that has music on the phone, if " +
-                "a cover never appears, or if a tapped track does nothing, that is worth " +
-                "reporting — see Diagnostics.",
+            info = "What is now tested: an instrumented test drives this app's browse service " +
+                "exactly the way Android Auto does — as a legacy media browser — and checks " +
+                "that it connects, hands back the right root, declares its layout hints and " +
+                "returns rows. That test passes, and the release APK has been unpacked to " +
+                "confirm the car declarations survive the optimiser.\n\nWhat is still " +
+                "untested is a real trip: a car, or a pass through Google's Desktop Head " +
+                "Unit, which needs a phone plugged into a computer.\n\nSo if CAMusic does " +
+                "not appear in your car, work down the panel at the top of this page first — " +
+                "it reads the state of this phone, which is where the remaining causes live.",
         )
 
         if (autoInstalled) {
