@@ -230,6 +230,13 @@ interface MusicSource {
      */
     suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) = Unit
 
+    /**
+     * The track [id] really ended - moved on, ran out, or was cleared - at
+     * [positionMs] of [durationMs]. Only servers with a live session need it
+     * (Jellyfin closes its "Now Playing" session here); the default is a no-op.
+     */
+    suspend fun reportStopped(id: String, positionMs: Long, durationMs: Long) = Unit
+
     suspend fun createPlaylist(name: String, songIds: List<String> = emptyList()): String? = null
     suspend fun addToPlaylist(playlistId: String, songIds: List<String>) = Unit
     suspend fun deletePlaylist(id: String) = Unit

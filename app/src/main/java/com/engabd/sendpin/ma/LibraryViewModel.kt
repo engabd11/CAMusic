@@ -55,6 +55,10 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -925,10 +929,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // gate meant precisely the listening this audience does most —
                 // untouched, straight from the source — was the listening that never
                 // counted towards play counts or "recently played".
+                // the previous track's session ends here, before the next one opens -
+                // whatever the next one is, even a track no server hears about
+                progressJob?.cancel()
+                closeReportedSession()
                 val songId = track.scrobbleId ?: return@collect
                 val sink = scrobbleSink(track.scrobbleProvider) ?: return@collect
                 val startedAtMs = System.currentTimeMillis()
                 runCatching { sink.scrobble(songId, completed = false) }
+                reportedSession = sink to songId
+                reportedPositionMs = 0L
+                reportedDurationMs = localPlayer.durationMs.value
                 submissionJob?.cancel()
                 submissionJob = viewModelScope.launch { submitWhenPlayed(sink, songId, startedAtMs) }
                 progressJob?.cancel()
@@ -3105,6 +3116,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             localPlayer.exhausted.collect {
+                // the last track finished: its session is over, top-up or not
+                reportedPositionMs = reportedDurationMs.takeIf { it > 0 } ?: reportedPositionMs
+                closeReportedSession()
                 if (!canTopUp()) return@collect
                 val queue = localPlayer.queue.value
                 if (queue.isEmpty()) return@collect
@@ -3752,28 +3766,70 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private var progressJob: kotlinx.coroutines.Job? = null
 
     /**
-     * Keep the server's session alive for as long as [id] is the playing track.
+     * Keep the server's session alive — and its playhead honest — for as long as
+     * [id] is the playing track.
      *
      * A no-op for every provider except Jellyfin, whose session — and therefore its
      * "Now Playing" panel and its resume positions — times out after about a minute
-     * of silence from the client. [PROGRESS_REPORT_MS] is well inside that, and far
-     * enough apart that it costs one request per ten seconds of listening.
+     * of silence from the client. [PROGRESS_REPORT_MS] is well inside that.
+     *
+     * The report is also what anything following the session steers by: Hue Ghost
+     * mirrors a Jellyfin session to drive the lights, and between reports Jellyfin
+     * only extrapolates. So a pause, a resume or a seek is reported the moment it
+     * happens instead of up to a whole interval later, and the position is read at
+     * send time ([LocalPlayer.livePositionMs]) rather than from the quarter-second
+     * scrub-bar value — measured against a Jellyfin session, those reports landed
+     * 0.1-0.25 s off the playhead.
      *
      * Cancelled and restarted by the caller on every track change, so the loop only
      * has to notice the track moving on underneath it, not race with its successor.
      */
-    private suspend fun reportProgressWhile(sink: MusicSource, id: String) {
-        while (true) {
-            delay(PROGRESS_REPORT_MS)
-            if (localPlayer.current.value?.scrobbleId != id) return
-            runCatching {
-                sink.reportProgress(
-                    id = id,
-                    positionMs = localPlayer.positionMs.value,
-                    paused = !localPlayer.playing.value,
-                )
-            }
+    private suspend fun reportProgressWhile(sink: MusicSource, id: String) = coroutineScope {
+        val changed = Channel<Unit>(Channel.CONFLATED)
+        val watch = launch {
+            merge(localPlayer.playing.drop(1).map { }, localPlayer.seeks.map { })
+                .collect { changed.trySend(Unit) }
         }
+        try {
+            while (true) {
+                withTimeoutOrNull(PROGRESS_REPORT_MS) { changed.receive() }
+                if (localPlayer.current.value?.scrobbleId != id) {
+                    // gone without a successor (queue cleared): nothing else will close it
+                    if (localPlayer.current.value == null) closeReportedSession(id)
+                    return@coroutineScope
+                }
+                val position = localPlayer.livePositionMs()
+                reportedPositionMs = position
+                reportedDurationMs = localPlayer.durationMs.value
+                runCatching {
+                    sink.reportProgress(
+                        id = id,
+                        positionMs = position,
+                        paused = !localPlayer.playing.value,
+                    )
+                }
+            }
+        } finally {
+            watch.cancel()
+        }
+    }
+
+    /** The track whose server session is open - the one [closeReportedSession] ends. */
+    private var reportedSession: Pair<MusicSource, String>? = null
+    private var reportedPositionMs = 0L
+    private var reportedDurationMs = 0L
+
+    /**
+     * End the open server session: the track moved on, the queue ran out, or it was
+     * cleared. Until now the only "stopped" a session ever got was the halfway
+     * "listened to" report, which closed it while the song was still playing.
+     * [onlyId]: close it only if it is still that track's.
+     */
+    private suspend fun closeReportedSession(onlyId: String? = null) {
+        val (sink, id) = reportedSession ?: return
+        if (onlyId != null && onlyId != id) return
+        reportedSession = null
+        runCatching { sink.reportStopped(id, reportedPositionMs, reportedDurationMs) }
     }
 
     /**
@@ -4187,10 +4243,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
          * How often to tell a session-based server the track is still playing.
          *
          * Jellyfin times a session out at roughly a minute, so this has plenty of
-         * margin while staying cheap — one request per ten seconds of listening, and
-         * none at all for providers that don't implement `reportProgress`.
+         * margin while staying cheap — one request per five seconds of listening, and
+         * none at all for providers that don't implement `reportProgress`. Five, not
+         * ten: it is also how often a follower of the session (Hue Ghost) gets a
+         * timed position to correct against, the same cadence the Apple TV's Moonfin
+         * client gives it.
          */
-        const val PROGRESS_REPORT_MS = 10_000L
+        const val PROGRESS_REPORT_MS = 5_000L
 
         /**
          * How many recently-played items to ask Music Assistant for.
