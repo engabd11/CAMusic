@@ -685,24 +685,33 @@ class JellyfinClient(
      * is easy to make.
      */
     suspend fun reportPlayback(id: String, completed: Boolean, positionMs: Long = 0) {
-        if (completed) {
-            // "Listened to" (half the track, or four minutes) is not "stopped": the
-            // track is still playing. Sending the stop here closed the server's
-            // session halfway through every song - "Now Playing" went blank, and
-            // Hue Ghost, which follows the session to drive the lights, switched
-            // them off mid-song and back on at the next one. The play is only
-            // noted here and settled by [reportStopped] when the track really ends.
-            countedId = id
-            return
+        if (!completed) {
+            playSessionId = UUID.randomUUID().toString()
+            countedId = null
         }
-        playSessionId = UUID.randomUUID().toString()
-        countedId = null
-        post("/Sessions/Playing", sessionBody(id, positionMs, paused = false))
+        val body = sessionBody(id, positionMs, paused = false)
+        if (completed) {
+            post("/Sessions/Playing/Stopped", body)
+            playSessionId = ""
+        } else {
+            post("/Sessions/Playing", body)
+        }
     }
 
-    /** The track [reportPlayback] counted as played, until its session stops. */
+    /** The track [markCounted] counted as played, until its session stops. */
     @Volatile
     private var countedId: String? = null
+
+    /**
+     * [id] has been listened to (half the track, or four minutes) - and is still
+     * playing. This used to go out as the session's *stop*, which closed it halfway
+     * through every song: "Now Playing" went blank, and Hue Ghost, which follows the
+     * session to drive the lights, switched them off mid-song. The play is only
+     * noted here and settled by [reportStopped] when the track really ends.
+     */
+    fun markCounted(id: String) {
+        countedId = id
+    }
 
     /**
      * The track really ended: moved on, ran out, or was cleared.
@@ -714,9 +723,8 @@ class JellyfinClient(
      */
     suspend fun reportStopped(id: String, positionMs: Long, durationMs: Long) {
         if (playSessionId.isBlank()) return
-        post("/Sessions/Playing/Stopped", sessionBody(id, positionMs, paused = false))
-        playSessionId = ""
         val counted = countedId == id
+        reportPlayback(id, completed = true, positionMs = positionMs)
         countedId = null
         if (counted && (durationMs <= 0 || positionMs < durationMs * PLAYED_MARK)) {
             runCatching { post("/Users/$userId/PlayedItems/$id") }
