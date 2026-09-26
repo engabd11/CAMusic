@@ -929,10 +929,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // gate meant precisely the listening this audience does most —
                 // untouched, straight from the source — was the listening that never
                 // counted towards play counts or "recently played".
+                // the previous track's session ends here, before the next one opens -
+                // whatever the next one is, even a track no server hears about
+                progressJob?.cancel()
+                closeReportedSession()
                 val songId = track.scrobbleId ?: return@collect
                 val sink = scrobbleSink(track.scrobbleProvider) ?: return@collect
                 val startedAtMs = System.currentTimeMillis()
                 runCatching { sink.scrobble(songId, completed = false) }
+                reportedSession = sink to songId
+                reportedPositionMs = 0L
+                reportedDurationMs = localPlayer.durationMs.value
                 submissionJob?.cancel()
                 submissionJob = viewModelScope.launch { submitWhenPlayed(sink, songId, startedAtMs) }
                 progressJob?.cancel()
@@ -3109,6 +3116,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             localPlayer.exhausted.collect {
+                // the last track finished: its session is over, top-up or not
+                reportedPositionMs = reportedDurationMs.takeIf { it > 0 } ?: reportedPositionMs
+                closeReportedSession()
                 if (!canTopUp()) return@collect
                 val queue = localPlayer.queue.value
                 if (queue.isEmpty()) return@collect
@@ -3783,11 +3793,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         try {
             while (true) {
                 withTimeoutOrNull(PROGRESS_REPORT_MS) { changed.receive() }
-                if (localPlayer.current.value?.scrobbleId != id) return@coroutineScope
+                if (localPlayer.current.value?.scrobbleId != id) {
+                    // gone without a successor (queue cleared): nothing else will close it
+                    if (localPlayer.current.value == null) closeReportedSession(id)
+                    return@coroutineScope
+                }
+                val position = localPlayer.livePositionMs()
+                reportedPositionMs = position
+                reportedDurationMs = localPlayer.durationMs.value
                 runCatching {
                     sink.reportProgress(
                         id = id,
-                        positionMs = localPlayer.livePositionMs(),
+                        positionMs = position,
                         paused = !localPlayer.playing.value,
                     )
                 }
@@ -3795,6 +3812,24 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         } finally {
             watch.cancel()
         }
+    }
+
+    /** The track whose server session is open - the one [closeReportedSession] ends. */
+    private var reportedSession: Pair<MusicSource, String>? = null
+    private var reportedPositionMs = 0L
+    private var reportedDurationMs = 0L
+
+    /**
+     * End the open server session: the track moved on, the queue ran out, or it was
+     * cleared. Until now the only "stopped" a session ever got was the halfway
+     * "listened to" report, which closed it while the song was still playing.
+     * [onlyId]: close it only if it is still that track's.
+     */
+    private suspend fun closeReportedSession(onlyId: String? = null) {
+        val (sink, id) = reportedSession ?: return
+        if (onlyId != null && onlyId != id) return
+        reportedSession = null
+        runCatching { sink.reportStopped(id, reportedPositionMs, reportedDurationMs) }
     }
 
     /**

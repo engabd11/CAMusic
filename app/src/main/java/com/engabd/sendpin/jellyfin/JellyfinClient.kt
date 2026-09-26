@@ -62,6 +62,9 @@ class JellyfinClient(
     companion object {
         const val PROVIDER = "jellyfin"
 
+        /** Jellyfin's default "played" mark (MaxResumePct): a stop past it counts itself. */
+        private const val PLAYED_MARK = 0.9
+
         private const val CLIENT = "CAMusic"
         private const val DEVICE = "Android"
         private const val VERSION = "1.0"
@@ -682,13 +685,41 @@ class JellyfinClient(
      * is easy to make.
      */
     suspend fun reportPlayback(id: String, completed: Boolean, positionMs: Long = 0) {
-        if (!completed) playSessionId = UUID.randomUUID().toString()
-        val body = sessionBody(id, positionMs, paused = false)
         if (completed) {
-            post("/Sessions/Playing/Stopped", body)
-            playSessionId = ""
-        } else {
-            post("/Sessions/Playing", body)
+            // "Listened to" (half the track, or four minutes) is not "stopped": the
+            // track is still playing. Sending the stop here closed the server's
+            // session halfway through every song - "Now Playing" went blank, and
+            // Hue Ghost, which follows the session to drive the lights, switched
+            // them off mid-song and back on at the next one. The play is only
+            // noted here and settled by [reportStopped] when the track really ends.
+            countedId = id
+            return
+        }
+        playSessionId = UUID.randomUUID().toString()
+        countedId = null
+        post("/Sessions/Playing", sessionBody(id, positionMs, paused = false))
+    }
+
+    /** The track [reportPlayback] counted as played, until its session stops. */
+    @Volatile
+    private var countedId: String? = null
+
+    /**
+     * The track really ended: moved on, ran out, or was cleared.
+     *
+     * Jellyfin records a play itself when a stop lands past its "played" mark (90 %
+     * by default). A track that was counted - listened past half - but stopped
+     * before that mark is marked played explicitly, so play counts come out the same
+     * as when the stop was sent at the halfway point, without ever counting twice.
+     */
+    suspend fun reportStopped(id: String, positionMs: Long, durationMs: Long) {
+        if (playSessionId.isBlank()) return
+        post("/Sessions/Playing/Stopped", sessionBody(id, positionMs, paused = false))
+        playSessionId = ""
+        val counted = countedId == id
+        countedId = null
+        if (counted && (durationMs <= 0 || positionMs < durationMs * PLAYED_MARK)) {
+            runCatching { post("/Users/$userId/PlayedItems/$id") }
         }
     }
 
