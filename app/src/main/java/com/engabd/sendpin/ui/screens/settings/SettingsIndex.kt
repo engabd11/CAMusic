@@ -2,6 +2,7 @@ package com.engabd.sendpin.ui.screens.settings
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Backup
@@ -48,6 +49,7 @@ internal data class SubPage(
 internal const val AUDIO_OUTPUT_ROUTE = "audio_output"
 internal const val AUDIO_EQ_ROUTE = "audio_eq"
 internal const val AUDIO_GAIN_ROUTE = "audio_gain"
+internal const val AUDIO_SCROBBLE_ROUTE = "audio_scrobble"
 internal const val AUDIO_BETWEEN_ROUTE = "audio_between"
 internal const val AUDIO_BEHAVIOUR_ROUTE = "audio_behaviour"
 
@@ -112,6 +114,12 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
             "Playback behaviour",
             "Shake and swipe gestures, the visualiser, the auto-queue's taste, lyrics timing",
             Icons.Default.Gesture,
+        ),
+        SubPage(
+            AUDIO_SCROBBLE_ROUTE,
+            "Scrobbling",
+            "ListenBrainz and Last.fm, and listens kept safe until they can be sent",
+            Icons.Default.History,
         ),
     )
 

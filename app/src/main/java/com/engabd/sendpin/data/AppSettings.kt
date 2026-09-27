@@ -154,6 +154,17 @@ class AppSettings(private val context: Context) {
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // keep the music going past the queue
         private val SEARCH_ALL_LIBRARIES = booleanPreferencesKey("search_all_libraries") // library search asks every server
+        // Scrobbling to ListenBrainz / Last.fm (see scrobble/). Tokens are encrypted.
+        private val LB_ENABLED = booleanPreferencesKey("listenbrainz_enabled")
+        private val LB_TOKEN = stringPreferencesKey("listenbrainz_token")
+        private val LB_URL = stringPreferencesKey("listenbrainz_url")
+        private val LB_USER = stringPreferencesKey("listenbrainz_user")
+        private val LASTFM_ENABLED = booleanPreferencesKey("lastfm_enabled")
+        private val LASTFM_SESSION = stringPreferencesKey("lastfm_session")
+        private val LASTFM_USER = stringPreferencesKey("lastfm_user")
+        private val LASTFM_API_KEY = stringPreferencesKey("lastfm_api_key")
+        private val LASTFM_API_SECRET = stringPreferencesKey("lastfm_api_secret")
+        private val LASTFM_API_ROOT = stringPreferencesKey("lastfm_api_root")
         private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
         private val BEAT_MATCHED_CROSSFADE = booleanPreferencesKey("beat_matched_crossfade") // time the fade to land on a beat
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
@@ -483,6 +494,7 @@ class AppSettings(private val context: Context) {
         private val ENCRYPTED_KEY_NAMES = setOf(
             MA_PASSWORD.name, NAV_PASSWORD.name, HA_TOKEN.name,
             HUE_APP_KEY.name, HUE_CLIENT_KEY.name,
+            LB_TOKEN.name, LASTFM_SESSION.name, LASTFM_API_SECRET.name,
         )
 
         /** Not a real preference key — [SERVERS]' decrypted export lives under this in the JSON. */
@@ -1213,6 +1225,37 @@ class AppSettings(private val context: Context) {
      * while the toggle that sets it lives on Now Playing.
      */
     val radioMode: Flow<Boolean> = pref { it[RADIO_MODE] ?: false }
+
+    // --- scrobbling -----------------------------------------------------------
+    val listenBrainzEnabled: Flow<Boolean> = pref { it[LB_ENABLED] ?: false }
+    val listenBrainzToken: Flow<String> = pref { Crypto.decrypt(it[LB_TOKEN] ?: "") }
+    /** Blank means api.listenbrainz.org; anything else is a ListenBrainz-compatible server. */
+    val listenBrainzUrl: Flow<String> = pref { it[LB_URL] ?: "" }
+    val listenBrainzUser: Flow<String> = pref { it[LB_USER] ?: "" }
+    val lastFmEnabled: Flow<Boolean> = pref { it[LASTFM_ENABLED] ?: false }
+    val lastFmSession: Flow<String> = pref { Crypto.decrypt(it[LASTFM_SESSION] ?: "") }
+    val lastFmUser: Flow<String> = pref { it[LASTFM_USER] ?: "" }
+    /** The user's own Last.fm app pair; blank means the build's (BuildConfig). */
+    val lastFmApiKey: Flow<String> = pref { it[LASTFM_API_KEY] ?: "" }
+    val lastFmApiSecret: Flow<String> = pref { Crypto.decrypt(it[LASTFM_API_SECRET] ?: "") }
+    /** Blank means Last.fm; Libre.fm and other compatible services set their own. */
+    val lastFmApiRoot: Flow<String> = pref { it[LASTFM_API_ROOT] ?: "" }
+
+    suspend fun setListenBrainz(enabled: Boolean, token: String, url: String, user: String) {
+        context.dataStore.edit {
+            it[LB_ENABLED] = enabled; it[LB_TOKEN] = Crypto.encrypt(token); it[LB_URL] = url.trim(); it[LB_USER] = user
+        }
+    }
+
+    suspend fun setLastFm(enabled: Boolean, session: String, user: String) {
+        context.dataStore.edit { it[LASTFM_ENABLED] = enabled; it[LASTFM_SESSION] = Crypto.encrypt(session); it[LASTFM_USER] = user }
+    }
+
+    suspend fun setLastFmApp(key: String, secret: String, root: String) {
+        context.dataStore.edit {
+            it[LASTFM_API_KEY] = key.trim(); it[LASTFM_API_SECRET] = Crypto.encrypt(secret.trim()); it[LASTFM_API_ROOT] = root.trim()
+        }
+    }
 
     /**
      * Whether the Library tab's search asks every configured library at once rather
