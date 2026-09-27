@@ -482,12 +482,18 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         // honestly ±25 m needs that radius widened by 25 m or it lands beside every
         // road it is actually on.
         val accuracy = if (location.hasAccuracy()) location.accuracy else 0f
+        // A GPS bearing is noise at walking pace and meaningless stopped; above
+        // ~11 km/h it is the most reliable thing the fix says about which road this is.
+        val heading = location.bearing.takeIf {
+            location.hasBearing() && location.hasSpeed() && location.speed >= MIN_HEADING_SPEED_MS
+        }
         scope.launch {
             try {
                 _detectedLimitKmh.value = provider.getSpeedLimit(
                     location.latitude,
                     location.longitude,
                     accuracyMeters = accuracy,
+                    headingDeg = heading,
                 )
             } catch (_: Exception) {
                 // A lookup that failed says nothing about the road; the last known
@@ -532,6 +538,9 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
          * road, easily a whole speed zone.
          */
         private const val MIN_UPDATE_INTERVAL_MS = 1_000L
+
+        /** Below this (m/s, ~11 km/h) a fix's bearing is not trusted for matching. */
+        private const val MIN_HEADING_SPEED_MS = 3f
 
         /** Two fixes closer together than this cannot be differenced usefully. */
         private const val MIN_DERIVE_GAP_MS = 300L

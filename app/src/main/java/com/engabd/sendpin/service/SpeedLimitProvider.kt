@@ -33,8 +33,10 @@ interface SpeedLimitProvider {
      *         downloaded yet, etc.). Returning null tells [SpeedMonitor] to
      *         fall back to the manually-set limit, so this method should be
      *         honest about what it doesn't know rather than guessing.
+     * @param headingDeg  direction of travel when the fix carries a trustworthy one,
+     *        so a junction answers with the road being driven, not the one crossing it.
      */
-    suspend fun getSpeedLimit(lat: Double, lon: Double, accuracyMeters: Float = 0f): Int?
+    suspend fun getSpeedLimit(lat: Double, lon: Double, accuracyMeters: Float = 0f, headingDeg: Float? = null): Int?
 
     /**
      * Whether the provider has data ready — for the offline provider this
