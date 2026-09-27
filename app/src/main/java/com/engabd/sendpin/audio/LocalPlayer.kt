@@ -372,6 +372,15 @@ class LocalPlayer(private val context: Context) {
     /** Emitted each time a track actually begins — what scrobbling hangs off. */
     val started: SharedFlow<LocalTrack> = _started.asSharedFlow()
 
+    private val _seeks = MutableSharedFlow<Long>(extraBufferCapacity = 1)
+    /**
+     * The user moved the playhead, to the position carried. A session-based server
+     * wants to hear about that at once, not at its next keep-alive: anything
+     * following the session (Hue Ghost mirrors it to drive the lights) otherwise
+     * plays from the old position for up to a whole report interval.
+     */
+    val seeks: SharedFlow<Long> = _seeks.asSharedFlow()
+
     private val _exhausted = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     /**
      * The queue has run out: the last track finished, or a skip found nothing after
@@ -1499,9 +1508,25 @@ class LocalPlayer(private val context: Context) {
         _positionMs.value = target
         remote?.let { r ->
             remoteCall { r.seekTo(target) }
+            _seeks.tryEmit(target)
             return
         }
         player.seekTo(target)
+        _seeks.tryEmit(target)
+    }
+
+    /**
+     * The playhead right now, for a report that goes out now.
+     *
+     * [positionMs] is published at scrub-bar rate ([POSITION_TICK_MS]), so it can be a
+     * quarter of a second old — fine for a screen, not for a progress report. Jellyfin
+     * stamps a report with the moment it *arrives*, not the moment its position was
+     * read, so every millisecond between the two is error in where the server thinks
+     * the playhead is. A remote player has nothing fresher than its last poll,
+     * extrapolated, so that one is used as is.
+     */
+    suspend fun livePositionMs(): Long = withContext(Dispatchers.Main.immediate) {
+        if (remote != null) _positionMs.value else player.currentPosition.coerceAtLeast(0)
     }
 
     fun setVolume(v: Float) {

@@ -117,7 +117,11 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
      * sending 0 forever, which left Jellyfin unable to build a resume point at all.
      */
     override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?, positionMs: Long?) {
-        client.reportPlayback(id, completed, resolvePosition(positionMs, startedAtMs))
+        // "completed" here is the halfway "listened to" mark, not the end of the
+        // track: it must not stop the server's session (see JellyfinClient.markCounted).
+        // The session is stopped by reportStopped when the track really ends.
+        if (completed) client.markCounted(id)
+        else client.reportPlayback(id, completed = false, positionMs = resolvePosition(positionMs, startedAtMs))
     }
 
     companion object {
@@ -136,6 +140,9 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
 
     override suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) =
         client.reportProgress(id, positionMs, paused)
+
+    override suspend fun reportStopped(id: String, positionMs: Long, durationMs: Long) =
+        client.reportStopped(id, positionMs, durationMs)
 
     override suspend fun createPlaylist(name: String, songIds: List<String>): String? =
         client.createPlaylist(name, songIds)
