@@ -199,16 +199,18 @@ class SyncoEngineGestureTest {
         }
     }
 
-    /** Extreme is a different renderer and returns before the gesture layer. */
+    /** Extreme runs Intense's music path now, so a sweep moves it like any other rung. */
     @Test
-    fun `Extreme is untouched by gestures`() {
+    fun `Extreme follows gestures like Intense`() {
         val eng = engine(lineRoom).also { it.mode = SyncMode.EXTREME }
         val ref = engine(lineRoom).also { it.mode = SyncMode.EXTREME }
+        var differed = false
         for (i in 0 until 120) {
             val a = eng.render(quietFrame(i), 1f / 60f, gesture = traversal(-1f, 1f))
             val b = ref.render(quietFrame(i), 1f / 60f)
-            for ((cid, c) in a) assertEquals(b.getValue(cid), c, "Extreme differed on lamp $cid at frame $i")
+            if (a.any { (cid, c) -> c != b.getValue(cid) }) differed = true
         }
+        assertTrue(differed, "a full traversal left Extreme untouched")
     }
 
     // ── Safety ────────────────────────────────────────────────────────────
