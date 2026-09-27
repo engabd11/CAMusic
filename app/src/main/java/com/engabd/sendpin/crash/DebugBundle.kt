@@ -175,6 +175,9 @@ object DebugBundle {
                 appendLine()
             }
         }
+        section("How the app last exited") {
+            attempt { exitReasons(context) }
+        }
         section("Settings (secrets omitted)") {
             attempt {
                 settings.diagnosticSnapshot()
@@ -223,6 +226,55 @@ object DebugBundle {
     }
 
     /** Run [body], and if it throws, write the failure into the file where its section would be. */
+    /**
+     * The platform's own record of how recent processes ended.
+     *
+     * [CrashReporter] only sees what reaches a Java uncaught-exception handler. An ANR
+     * never does, and neither does a crash in native code — the Oboe engine, the
+     * AirPlay sender, the codec — and those are exactly the failures a player is most
+     * likely to have. `ApplicationExitInfo` has them all, kept by the system across
+     * restarts. For an ANR the main thread's stack is included, since that is the one
+     * line of evidence that says what it was stuck on.
+     */
+    private fun StringBuilder.exitReasons(context: Context) {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val exits = am.getHistoricalProcessExitReasons(null, 0, 8)
+        if (exits.isEmpty()) { appendLine("none recorded"); return }
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
+        for (e in exits) {
+            appendLine("--- ${stamp.format(Date(e.timestamp))} · ${exitReasonName(e.reason)} · ${e.description ?: ""}")
+            if (e.reason == android.app.ApplicationExitInfo.REASON_ANR) {
+                val main = runCatching {
+                    e.traceInputStream?.bufferedReader()?.useLines { lines ->
+                        lines.dropWhile { !it.startsWith("\"main\"") }
+                            .takeWhile { it.isNotBlank() }
+                            .take(40)
+                            .toList()
+                    }
+                }.getOrNull()
+                main?.forEach { appendLine("    $it") }
+            }
+        }
+    }
+
+    private fun exitReasonName(reason: Int): String = when (reason) {
+        android.app.ApplicationExitInfo.REASON_ANR -> "ANR"
+        android.app.ApplicationExitInfo.REASON_CRASH -> "crash"
+        android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "native crash"
+        android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "killed for memory"
+        android.app.ApplicationExitInfo.REASON_EXIT_SELF -> "exited itself"
+        android.app.ApplicationExitInfo.REASON_SIGNALED -> "signalled"
+        android.app.ApplicationExitInfo.REASON_USER_REQUESTED -> "stopped by user"
+        android.app.ApplicationExitInfo.REASON_USER_STOPPED -> "force-stopped"
+        android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "excessive resource use"
+        android.app.ApplicationExitInfo.REASON_FREEZER -> "frozen too long"
+        android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "app updated"
+        android.app.ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency died"
+        android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "initialisation failed"
+        android.app.ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "permission changed"
+        else -> "other ($reason)"
+    }
+
     private inline fun StringBuilder.attempt(body: StringBuilder.() -> Unit) {
         try {
             body()
