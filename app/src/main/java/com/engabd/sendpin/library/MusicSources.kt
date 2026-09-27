@@ -42,6 +42,13 @@ object MusicSources {
         PlexClient.PROVIDER,
         MpdClient.PROVIDER,
         FoobarClient.PROVIDER,
+        // The streaming *accounts*: played on this phone by the same engine, so
+        // local in every sense this set is asked about. Their tags carry a
+        // `-direct` suffix so they can never be mistaken for Music Assistant's own
+        // spotify/qobuz/tidal providers — see QobuzClient.PROVIDER.
+        com.engabd.sendpin.qobuz.QobuzClient.PROVIDER,
+        com.engabd.sendpin.tidal.TidalClient.PROVIDER,
+        com.engabd.sendpin.spotify.SpotifyWebApi.PROVIDER,
         "local",
     )
 

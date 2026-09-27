@@ -89,7 +89,7 @@ class QobuzClientParseTest {
         assertEquals("4812793", track!!.itemId)
         assertEquals("Light My Fire (Remastered)", track.name)
         assertEquals("track", track.mediaType)
-        assertEquals("qobuz", track.provider)
+        assertEquals(QobuzClient.PROVIDER, track.provider)
         // The performer wins the subtitle over the album artist.
         assertEquals("The Doors", track.subtitle)
         assertEquals("The Doors", track.album)

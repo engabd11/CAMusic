@@ -67,7 +67,14 @@ class TidalClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     companion object {
-        const val PROVIDER = "tidal"
+        /**
+         * The provider tag this client stamps on its items: deliberately *not* the
+         * bare service name. Music Assistant tags items from its own Tidal provider
+         * with the bare domain (`"tidal"`), and [com.engabd.sendpin.library.MusicSources.isLocalProvider]
+         * routes on the tag alone — so while the two matched, every direct-account
+         * track tapped in the library was sent to Music Assistant instead of played here.
+         */
+        const val PROVIDER = "tidal-direct"
         const val BASE = "https://api.tidal.com/v1"
         const val AUTH = "https://auth.tidal.com/v1/oauth2"
         const val SCOPE = "r_usr w_usr w_sub"
