@@ -1461,17 +1461,19 @@ class DirectLightSync(
     private suspend fun renderLoop() {
         var last = System.nanoTime()
         var next = last
+        idlePacer = IdlePacer(FRAME_PERIOD_NANOS)
         render@ while (running.get()) {
-            next += FRAME_PERIOD_NANOS
+            val period = idlePacer.frameNanos
+            next += period
             val sleep = (next - System.nanoTime()) / 1_000_000L
             if (sleep > 0) kotlinx.coroutines.delay(sleep)
             // A long stall would otherwise leave the loop sprinting to catch up
             // on a backlog of deadlines nobody is waiting for.
-            if (System.nanoTime() - next > FRAME_PERIOD_NANOS * 4) next = System.nanoTime()
+            if (System.nanoTime() - next > period * 4) next = System.nanoTime()
             if (!running.get()) break
 
             val now = System.nanoTime()
-            val dt = ((now - last) / 1e9f).coerceIn(0f, MAX_STEP_S)
+            val dt = ((now - last) / 1e9f).coerceIn(0f, idlePacer.maxStepS(MAX_STEP_S))
             last = now
 
             val eng = engine ?: continue
@@ -1491,6 +1493,8 @@ class DirectLightSync(
             // show would quietly paint over the effect on every single tick.
             val amb = if (gameMode) null else ambience
             if (amb != null) {
+                // An ambience show is never "idle": lightning at 10 Hz is not lightning.
+                if (idlePacer.onFrame(false, now)) acquireLocks()
                 if (_framesFresh.value) _framesFresh.value = false
                 val painted = try {
                     amb.renderLights()
@@ -1535,6 +1539,12 @@ class DirectLightSync(
             val frame = if (fresh) latestFrame ?: SILENCE else SILENCE
             val isIdle = !playerPlaying || !fresh
             if (_framesFresh.value != fresh) _framesFresh.value = fresh
+            // An ambience show returned above, so this only ever sees the music
+            // show and its idle drift. See IdlePacer for what "deep" gives up.
+            if (idlePacer.onFrame(isIdle, now)) {
+                if (idlePacer.deep) releaseWifiLock() else acquireLocks()
+                Log.i(TAG, if (idlePacer.deep) "Idle: easing to 10 Hz" else "Music: back to full rate")
+            }
 
             val colours = try {
                 if (isIdle) {
@@ -2081,6 +2091,15 @@ class DirectLightSync(
                 .apply { setReferenceCounted(false); acquire() }
         }
     }
+
+    /** The idle pacer's half of [releaseLocks]: the radio may sleep, the CPU may not. */
+    private fun releaseWifiLock() {
+        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+        wifiLock = null
+    }
+
+    /** See [IdlePacer]. Replaced per render loop, so a new session starts at full rate. */
+    private var idlePacer = IdlePacer(FRAME_PERIOD_NANOS)
 
     private fun releaseLocks() {
         runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
