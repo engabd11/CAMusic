@@ -362,6 +362,22 @@
                 android:resource="@xml/now_playing_widget_info" />
         </receiver>
 
+        <!--
+          Playback resumption. A media button arriving with no session alive — a
+          headset's play after a reboot, a car reconnecting — is delivered here, and
+          media3 starts CarMediaLibraryService and asks it for something to resume
+          (CarLibrarySessionCallback.onPlaybackResumption). Without it those buttons
+          went to whichever other app still had a receiver. Exported because the
+          system delivers MEDIA_BUTTON from outside the app.
+        -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
         <!-- Headset / Bluetooth / steering-wheel media buttons now route through
              each service's media3 MediaSession directly (see ShadePlayer /
              LocalPlaybackService) - no MediaButtonReceiver or MEDIA_BUTTON

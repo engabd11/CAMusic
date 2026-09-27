@@ -594,6 +594,7 @@ class LocalPlayer(private val context: Context) {
      */
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+            scheduleQueueSave()
             livePlayer?.setWakeMode(wakeModeFor(item))
             val at = player.currentMediaItemIndex
             _index.value = at
@@ -640,6 +641,8 @@ class LocalPlayer(private val context: Context) {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _playing.value = isPlaying
+            // A pause is the moment the position matters most to whoever resumes.
+            scheduleQueueSave()
             // Sound is coming out, so whatever went wrong is over.
             if (isPlaying) {
                 consecutiveSkips = 0
@@ -1458,6 +1461,57 @@ class LocalPlayer(private val context: Context) {
         _index.value = player.currentMediaItemIndex
     }
 
+    // --- the saved queue (playback resumption) ---------------------------------
+
+    private val queueStore = QueueStore(java.io.File(context.noBackupFilesDir, "last_queue.json"))
+    private var queueSaveJob: Job? = null
+
+    /**
+     * What would be resumed, if anything: the saved queue, or null. Read by the car's
+     * "recent" root and by media3's playback-resumption callback.
+     */
+    fun savedQueue(): SavedQueue? = queueStore.load()
+
+    /**
+     * Write the queue down — throttled to one write per [QUEUE_SAVE_THROTTLE_MS], and
+     * only for a queue this phone decodes (a remote player keeps its own).
+     */
+    private fun scheduleQueueSave() {
+        if (remote != null || _queue.value.isEmpty()) return
+        if (queueSaveJob?.isActive == true) return
+        queueSaveJob = scope.launch {
+            kotlinx.coroutines.delay(QUEUE_SAVE_THROTTLE_MS)
+            val snapshot = SavedQueue(
+                tracks = _queue.value.map(SavedTrack::of),
+                index = _index.value.coerceAtLeast(0),
+                positionMs = livePlayer?.currentPosition?.coerceAtLeast(0L) ?: _positionMs.value,
+                shuffle = _shuffle.value,
+                repeat = _repeatMode.value,
+                savedAtMs = System.currentTimeMillis(),
+            )
+            withContext(Dispatchers.IO) { queueStore.save(snapshot) }
+        }
+    }
+
+    /**
+     * Load the saved queue into the player, paused, at its position. False when there
+     * is nothing to restore or a queue is already loaded — this never replaces one.
+     */
+    fun restoreSaved(): Boolean {
+        if (_queue.value.isNotEmpty() || remote != null) return false
+        val saved = queueStore.load() ?: return false
+        val tracks = saved.tracks.map { it.toLocalTrack() }
+        sessionEpoch++
+        _queue.value = tracks
+        _hasSession.value = true
+        smoothQueue = tracks.size < 2 || tracks.mapNotNull { it.album }.distinct().size > 1
+        player.setMediaItems(tracks.map(::mediaItem), saved.index, saved.positionMs)
+        setRepeatMode(saved.repeat)
+        if (saved.shuffle) setShuffle(true)
+        player.prepare()
+        return true
+    }
+
     fun clear() {
         stopTicker()
         dropCrossfade()
@@ -1544,7 +1598,12 @@ class LocalPlayer(private val context: Context) {
         }
 
     fun resume() {
-        if (_queue.value.isEmpty()) return
+        // Nothing loaded — the process was restarted, or the queue was never started
+        // this run. Resuming means the last queue, where it was left.
+        if (_queue.value.isEmpty()) {
+            if (remote == null && restoreSaved()) startOutput()
+            return
+        }
         remote?.let { r ->
             _playing.value = true
             remoteCall { r.resume() }
@@ -2402,6 +2461,9 @@ class LocalPlayer(private val context: Context) {
     private fun stopTicker() { ticker?.cancel(); ticker = null }
 
     private companion object {
+        /** At most one queue write per this long; see [scheduleQueueSave]. */
+        private const val QUEUE_SAVE_THROTTLE_MS = 2_000L
+
         /** How long the output-mode keys must hold still before the player is rebuilt. */
         private const val OUTPUT_MODE_SETTLE_MS = 400L
 

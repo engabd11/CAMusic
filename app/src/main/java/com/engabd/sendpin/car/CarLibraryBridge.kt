@@ -54,6 +54,14 @@ import kotlinx.coroutines.withTimeoutOrNull
  * opaque `content://` URIs that [CarArtworkProvider] resolves — see [CarArtwork].
  */
 @OptIn(UnstableApi::class)
+/** Media ids for playback resumption, shared by the bridge, its callback and the session player. */
+object CarResume {
+    /** The one playable item standing for "the last queue, where it was left". */
+    const val RESUME_ID = "__resume__"
+    /** The root a "recent" request is answered with. */
+    const val RECENT_ROOT_ID = "__recent__"
+}
+
 class CarLibraryBridge(private val app: SendpinApp) {
 
     private val settings = AppSettings(app)
@@ -445,7 +453,54 @@ class CarLibraryBridge(private val app: SendpinApp) {
     // speaker the Speakers screen last selected) - correct for the phone UI, wrong
     // here. A track tapped in the car must make sound in the car.
 
+    // ── Resumption ─────────────────────────────────────────────────────────
+    //
+    // The last local queue, from LocalPlayer's saved copy — what the car's resume
+    // tile, a Bluetooth play after a reboot and Android's "pick up where you were"
+    // media card all ask for.
+
+    /** The one playable item that stands for "the last queue, where it was left". */
+    fun resumeItem(): MediaItem? {
+        val saved = app.localPlayer.savedQueue() ?: return null
+        val track = saved.current ?: return null
+        return MediaItem.Builder()
+            .setMediaId(CarResume.RESUME_ID)
+            .setMediaMetadata(
+                androidx.media3.common.MediaMetadata.Builder()
+                    .setTitle(track.title)
+                    .setArtist(track.artist)
+                    .setAlbumTitle(track.album)
+                    .setIsPlayable(true)
+                    .setIsBrowsable(false)
+                    .setMediaType(androidx.media3.common.MediaMetadata.MEDIA_TYPE_MUSIC)
+                    .build(),
+            )
+            .build()
+    }
+
+    /** The root a "recent" request is answered with; its only child is [resumeItem]. */
+    fun recentRoot(): MediaItem = MediaItem.Builder()
+        .setMediaId(CarResume.RECENT_ROOT_ID)
+        .setMediaMetadata(
+            androidx.media3.common.MediaMetadata.Builder()
+                .setTitle("Recent")
+                .setIsBrowsable(true)
+                .setIsPlayable(false)
+                .setMediaType(androidx.media3.common.MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
+                .build(),
+        )
+        .build()
+
+    /** Load the saved queue if nothing is loaded, and play it. */
+    fun resumeSaved(): Boolean {
+        val player = app.localPlayer
+        if (player.queue.value.isEmpty() && !player.restoreSaved()) return false
+        player.resume()
+        return true
+    }
+
     suspend fun play(mediaId: String) {
+        if (mediaId == CarResume.RESUME_ID) { resumeSaved(); return }
         val id = CarMediaId.parse(mediaId) as? CarMediaId.Item ?: return
         if (MusicSources.isLocalProvider(id.provider)) {
             playLocal(id)
