@@ -114,6 +114,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * [com.engabd.sendpin.service.UnifiedNowPlaying]'s doc) — built for the next
      * surface that needs the same answer rather than a fourth derivation of it.
      */
+    /** Scrobbles, server session reports, Stats history and the saved queue — see the class. */
+    val playbackReporter: com.engabd.sendpin.service.PlaybackReporter by lazy {
+        com.engabd.sendpin.service.PlaybackReporter(this)
+    }
+
     val unifiedNowPlaying: com.engabd.sendpin.service.UnifiedNowPlaying by lazy {
         com.engabd.sendpin.service.UnifiedNowPlaying(playback, localPlayer, playbackOwner, maNowPlaying, deviceVolume)
     }
@@ -597,6 +602,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
         appScope.launch {
             localPlayer.current.collect { downloads.protectedId = it?.id }
         }
+        // Reporting plays to the library servers, and to Stats, from the process rather
+        // than from a screen — see PlaybackReporter.
+        playbackReporter.start()
         // Crashes used to be able to upload themselves to GitHub with a stored token.
         // They no longer go anywhere on their own — the debug bundle is what gets
         // shared, by hand — so a token an earlier build stored is removed here.
