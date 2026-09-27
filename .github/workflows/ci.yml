@@ -16,7 +16,7 @@ jobs:
       # lfs: the bundled speed-zone database is an LFS object. Without this the
       # runner checks out its pointer file, and mergeAssets fails trying to
       # gunzip 130 bytes of text: "Not in GZIP format".
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: true
 
