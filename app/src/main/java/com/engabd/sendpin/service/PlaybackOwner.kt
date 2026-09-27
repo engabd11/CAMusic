@@ -6,11 +6,15 @@ import com.engabd.sendpin.audio.LocalPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.runningFold
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /**
  * Which of this phone's two players owns the audio output, and how far.
@@ -136,12 +140,55 @@ class PlaybackOwner(
      * [State] itself exists: `combine` only has typed overloads up to five flows,
      * and [state] below already needs four slots for the Sendspin side.
      */
-    private data class LocalFlags(val active: Boolean, val playing: Boolean, val remoteActive: Boolean)
+    private data class LocalFlags(
+        val active: Boolean,
+        val playing: Boolean,
+        val remoteActive: Boolean,
+        /** See [localYielded]. */
+        val yielded: Boolean,
+    )
+
+    /** The selected Music Assistant player is playing — see [attachRemotePlaying]. */
+    private val remotePlaying = MutableStateFlow(false)
+
+    /**
+     * Feed in whether the selected Music Assistant player is playing, which may be a
+     * speaker in another room. Attached after construction because [MaNowPlaying]
+     * reads this class's [state] — taking its flow in the constructor would be a
+     * cycle between two lazies.
+     */
+    fun attachRemotePlaying(playing: StateFlow<Boolean>) {
+        scope.launch { playing.collect { remotePlaying.value = it } }
+    }
+
+    /**
+     * A paused local queue has been overtaken: something else started playing after
+     * it — this phone's Music Assistant stream, or the selected MA speaker — and the
+     * local queue has not played since.
+     *
+     * It used to keep the session regardless. A paused local queue owned the shade,
+     * so [MaNowPlaying.now] stood down and Music Assistant's session went blank —
+     * and Android sends a headset or Bluetooth button to the last session that was
+     * *playing* it can see, which was the paused local one. Pressing pause on the
+     * music you were hearing resumed the album you had paused an hour ago instead.
+     * The keys belong to whichever player played most recently, and this is that
+     * answer. Playing the local queue again takes the session straight back.
+     */
+    private val localYielded: StateFlow<Boolean> = combine(
+        local.active, local.playing, sendspin.isPlaying, remotePlaying,
+    ) { active, playing, ma, remote -> listOf(active, playing, ma, remote) }
+        .runningFold(false to listOf(false, false, false, false)) { (yielded, prev), cur ->
+            val (active, playing, ma, remote) = cur
+            yieldStep(yielded, active, playing, maStarted = ma && !prev[2], remoteStarted = remote && !prev[3]) to cur
+        }
+        .map { it.first }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, false)
 
     private val localFlags: StateFlow<LocalFlags> = combine(
-        local.active, local.playing, local.remoteActive,
-    ) { active, playing, remote -> LocalFlags(active, playing, remote) }
-        .stateIn(scope, SharingStarted.Eagerly, LocalFlags(active = false, playing = false, remoteActive = false))
+        local.active, local.playing, local.remoteActive, localYielded,
+    ) { active, playing, remote, yielded -> LocalFlags(active, playing, remote, yielded) }
+        .stateIn(scope, SharingStarted.Eagerly, LocalFlags(active = false, playing = false, remoteActive = false, yielded = false))
 
     /**
      * `Eagerly`, not `Lazily`: callers read `.value` synchronously (the audio-focus
@@ -176,7 +223,8 @@ class PlaybackOwner(
                 // win here or both services would post and the phone would carry two
                 // media notifications — which is what `MaNowPlaying.now` returning
                 // null under a local session has always been for.
-                flags.active -> Who.LOCAL
+                // ...unless it has been overtaken — see [localYielded].
+                flags.active && !flags.yielded -> Who.LOCAL
                 sendspinActive -> Who.SENDSPIN
                 else -> Who.NONE
             },
@@ -330,7 +378,24 @@ class PlaybackOwner(
     fun isInternalHandover(): Boolean =
         android.os.SystemClock.elapsedRealtime() - localClaimAtMs < HANDOVER_WINDOW_MS
 
-    private companion object {
+    internal companion object {
+        /**
+         * One step of [localYielded]: no local queue, or the local queue playing,
+         * clears it; another player *starting* sets it; otherwise it holds, so
+         * "most recently played" survives both players being paused.
+         */
+        fun yieldStep(
+            yielded: Boolean,
+            localActive: Boolean,
+            localPlaying: Boolean,
+            maStarted: Boolean,
+            remoteStarted: Boolean,
+        ): Boolean = when {
+            !localActive || localPlaying -> false
+            maStarted || remoteStarted -> true
+            else -> yielded
+        }
+
         /**
          * How long after the local player claims the output a focus loss still
          * counts as this process evicting itself.

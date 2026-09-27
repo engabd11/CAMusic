@@ -154,6 +154,17 @@ class MaNowPlaying(private val app: Context) {
             )
         }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, null)
 
+    /**
+     * Whether the selected player is playing, asked *without* [owner] — which is
+     * what [PlaybackOwner] needs to know whether a speaker overtook a paused local
+     * queue, and [now] cannot answer that because it stands down for that queue.
+     */
+    val selectedPlaying: StateFlow<Boolean> =
+        combine(_players, _target) { players, target ->
+            val id = resolveTargetPlayer(players, target, myPlayerId)
+            players.firstOrNull { it.playerId == id }?.isPlaying == true
+        }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
+
     /** Whether the active queue has shuffle on — the driving bar's shuffle button state. */
     val shuffleActive: StateFlow<Boolean> =
         combine(_players, _queues, _target) { players, queues, target ->

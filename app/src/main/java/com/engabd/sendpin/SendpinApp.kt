@@ -621,19 +621,29 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // that made it blink on every skip. A real stop still costs the wait, which is
         // the right trade — a notification that lingers a minute is a much smaller
         // annoyance than one that flickers on every track.
+        //
+        // The *session*, not `localPlayer.active`: a paused local queue that another
+        // player has overtaken stands down (see PlaybackOwner.localYielded), and its
+        // notification — and the media session inside it, which would otherwise keep
+        // catching the headset buttons — goes at once rather than after the grace,
+        // because Music Assistant's is already up and playing.
+        playbackOwner.attachRemotePlaying(maNowPlaying.selectedPlaying)
         appScope.launch {
             var retire: Job? = null
-            localPlayer.active.collect { active ->
-                retire?.cancel(); retire = null
-                if (active) {
-                    LocalPlaybackService.start(this@SendpinApp)
-                } else {
-                    retire = appScope.launch {
-                        delay(SendspinService.IDLE_GRACE_MS)
-                        LocalPlaybackService.stop(this@SendpinApp)
+            playbackOwner.state
+                .map { (it.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.LOCAL) to it.localActive }
+                .distinctUntilChanged()
+                .collect { (owns, active) ->
+                    retire?.cancel(); retire = null
+                    when {
+                        owns -> LocalPlaybackService.start(this@SendpinApp)
+                        active -> LocalPlaybackService.stop(this@SendpinApp)
+                        else -> retire = appScope.launch {
+                            delay(SendspinService.IDLE_GRACE_MS)
+                            LocalPlaybackService.stop(this@SendpinApp)
+                        }
                     }
                 }
-            }
         }
         // One player at a time, enforced rather than assumed.
         //
