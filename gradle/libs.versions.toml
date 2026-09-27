@@ -6,9 +6,9 @@
 # used twice (coroutines, media3, material3, Room) can no longer drift apart.
 
 [versions]
-agp = "9.3.2"
-kotlin = "2.4.20"
-ksp = "2.3.12"
+agp = "9.4.1"
+kotlin = "2.4.10"
+ksp = "2.3.6"
 room = "2.8.4"
 baselineprofile = "1.5.0-rc02"
 oboe = "1.10.0"
