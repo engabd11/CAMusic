@@ -143,6 +143,9 @@ class DownloadManager(
     /** Legacy JSON index, imported into Room on first access then removed. */
     private val indexFile = File(dir, "index.json")
 
+    /** Downloads asked for and not yet finished — see [DownloadQueue]. */
+    private val queue = DownloadQueue(File(dir, "queue.json"))
+
     private val dao = com.engabd.sendpin.local.db.LocalMediaDatabase.get(context).downloadDao()
 
     /**
@@ -176,6 +179,10 @@ class DownloadManager(
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         initJob = scope.launch {
             migrateLegacyIndex()
+            // Anything asked for before the process last ended picks up where it
+            // stopped — including the partial file, which [download] resumes.
+            val pending = queue.load()
+            if (pending.isNotEmpty()) runs.launch { runQueued(pending) }
             dao.observeAll().collect { entities ->
                 _downloads.value = entities.map { it.toModel() }
             }
@@ -210,13 +217,56 @@ class DownloadManager(
         runCatching { indexFile.delete() }
     }
 
-    /** Whether the device is currently on Wi-Fi. */
-    private fun isOnWifi(context: Context): Boolean {
+    /**
+     * Whether the current network is unmetered — what "Wi-Fi only" actually means.
+     *
+     * Asking for the Wi-Fi *transport* was the wrong question both ways: a phone
+     * tethered to a metered hotspot is on Wi-Fi, and Ethernet (a TV box, a docked
+     * tablet) is not. The platform's own "not metered" flag is the answer the
+     * setting is after.
+     */
+    private fun isUnmetered(): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return true  // if we can't check, don't block
-        val info = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return info.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
+
+    /**
+     * Suspend until an unmetered network is up. A "Wi-Fi only" download used to fail
+     * on the spot with "Not on Wi-Fi", so taking an album offline on the way out of
+     * the door meant remembering to press it again at home. Now it waits, and the
+     * row says so.
+     */
+    private suspend fun awaitUnmetered() {
+        if (isUnmetered()) return
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: android.net.Network, caps: NetworkCapabilities) {
+                if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                ) ready.complete(Unit)
+            }
+        }
+        cm.registerDefaultNetworkCallback(cb)
+        try { ready.await() } finally { runCatching { cm.unregisterNetworkCallback(cb) } }
+    }
+
+    /**
+     * The file name for an item: a SHA-256 of its library and id.
+     *
+     * It was `itemId.hashCode()` — 32 bits, across every library at once. Two tracks
+     * colliding is about a 1% chance by ten thousand downloads and a 25% chance by
+     * fifty thousand, and when they did the second download overwrote the first's
+     * file under the first's index row.
+     */
+    private fun fileNameFor(provider: String, id: String): String = sha256Hex("$provider|$id")
+
+    private fun sha256Hex(text: String): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(text.toByteArray())
+            .joinToString("") { "%02x".format(it) }
 
     /**
      * Enforce the storage cap: delete the oldest downloaded tracks until the total
@@ -227,18 +277,28 @@ class DownloadManager(
      * multiply: this used to evict at MiB while the other half of the same feature
      * refused new downloads at MB.
      */
-    private suspend fun enforceStorageCap(capMb: Int) {
+    suspend fun enforceStorageCap(capMb: Int) {
         val capBytes = AppSettings.storageCapBytes(capMb) ?: return
         // Never the track being listened to. Deleting the file out from under the
         // player is the one eviction a user would experience as the app breaking, and
         // it is also what the Downloads settings page promises does not happen.
         val playing = protectedId
-        while (bytesUsed() > capBytes) {
-            val oldest = _downloads.value
-                .filterNot { it.id == playing }
-                .minByOrNull { runCatching { File(it.filePath).lastModified() }.getOrDefault(Long.MAX_VALUE) }
-                ?: return   // nothing left that may be evicted
-            delete(oldest.id)
+        // Nor anything in a downloaded playlist. Taking a playlist offline is the one
+        // download that says "keep these together"; evicting its oldest members first
+        // (they were fetched in one go, so they *are* the oldest) quietly hollowed it out.
+        val inPlaylists = runCatching { playlistDao.allTrackIds().toSet() }.getOrDefault(emptySet())
+        // Each file is measured once. This used to re-stat every file on every pass of
+        // the loop — quadratic in the size of the library, on a cap that exists because
+        // the library is large.
+        val sizes = _downloads.value.associateWith { runCatching { File(it.filePath).length() }.getOrDefault(0L) }
+        var used = sizes.values.sum()
+        val candidates = sizes.keys
+            .filterNot { it.id == playing || it.id in inPlaylists }
+            .sortedBy { runCatching { File(it.filePath).lastModified() }.getOrDefault(Long.MAX_VALUE) }
+        for (victim in candidates) {
+            if (used <= capBytes) break
+            delete(victim.id, victim.sourceProvider)
+            used -= sizes[victim] ?: 0L
         }
     }
 
@@ -251,9 +311,26 @@ class DownloadManager(
     @Volatile
     var protectedId: String? = null
 
-    fun isDownloaded(id: String): Boolean = _downloads.value.any { it.id == id }
-    fun localPath(id: String): String? = _downloads.value.firstOrNull { it.id == id }?.filePath
-    fun get(id: String): DownloadedTrack? = _downloads.value.firstOrNull { it.id == id }
+    /**
+     * The download of [id], if there is one — from [provider]'s library.
+     *
+     * Ids are only unique within one server (see schema v7), so a lookup that knows
+     * which library it means asks for that one. [provider] null, or the Downloads
+     * index's own tag, means "whichever": an item already *from* the downloads has no
+     * other library to mean. A row written before v7 records no provider and matches
+     * any, which is how it has always behaved; an exact match is preferred to it.
+     */
+    fun get(id: String, provider: String? = null): DownloadedTrack? {
+        val rows = _downloads.value.filter { it.id == id }
+        if (rows.isEmpty()) return null
+        if (provider == null || provider == MusicSources.DOWNLOAD_PROVIDER) return rows.first()
+        return rows.firstOrNull { it.sourceProvider == provider }
+            ?: rows.firstOrNull { it.sourceProvider.isNullOrEmpty() }
+    }
+
+    fun isDownloaded(id: String, provider: String? = null): Boolean = get(id, provider) != null
+    fun isDownloaded(item: MaItem): Boolean = get(item.itemId, item.provider) != null
+    fun localPath(id: String, provider: String? = null): String? = get(id, provider)?.filePath
 
     /**
      * A library item as something [com.engabd.sendpin.audio.LocalPlayer] can open.
@@ -265,7 +342,7 @@ class DownloadManager(
      * its own path.
      */
     fun toLocalTrack(item: MaItem, streamUrl: String? = null, localPathFallback: String? = null): LocalTrack {
-        val dl = get(item.itemId)
+        val dl = get(item.itemId, item.provider)
         return LocalTrack(
             id = item.itemId,
             title = item.name,
@@ -323,14 +400,18 @@ class DownloadManager(
         wifiOnly: Boolean = false,
         storageCapMb: Int = 0,
     ): Boolean = withContext(Dispatchers.IO) {
-        if (isDownloaded(item.itemId)) return@withContext true
-        if (wifiOnly && !isOnWifi(context)) {
-            // Mark as failed so the UI shows why, rather than silently skipping.
-            fail(item, "Not on Wi-Fi")
-            return@withContext false
+        if (isDownloaded(item)) return@withContext true
+        if (wifiOnly && !isUnmetered()) {
+            putJob(job(item, 0f, reason = "Waiting for Wi-Fi"))
+            awaitUnmetered()
         }
         putJob(job(item, 0f))
-        val file = File(dir, "${item.itemId.hashCode()}.audio")
+        val file = File(dir, "${fileNameFor(item.provider, item.itemId)}.audio")
+        // Written beside the real name and renamed into place only once complete, so a
+        // file under its final name is always a whole one. It used to be written in
+        // place: a download cut off by the process dying left a short file, and a
+        // retry started again from byte zero.
+        val part = File(dir, file.name + ".part")
         try {
             // A whole album is twenty requests back to back to one server, and one
             // of them dropping — a reset connection, a read that stalls, a 503 from
@@ -344,21 +425,24 @@ class DownloadManager(
             while (true) {
                 attempt++
                 val outcome = try {
-                    fetch(item, url, file)
+                    fetch(item, url, part)
                 } catch (e: IOException) {
                     Log.w(TAG, "download ${item.name}: attempt $attempt failed: $e")
                     Outcome.Retry(e.message ?: e.javaClass.simpleName)
                 }
                 when (outcome) {
                     Outcome.Done -> break
-                    is Outcome.Refused -> return@withContext fail(item, outcome.reason, file)
+                    is Outcome.Refused -> return@withContext fail(item, outcome.reason, part)
                     is Outcome.Retry -> {
-                        if (attempt >= ATTEMPTS) return@withContext fail(item, outcome.reason, file)
+                        // The partial file is kept: the next attempt resumes it.
+                        if (attempt >= ATTEMPTS) return@withContext fail(item, outcome.reason)
                         putJob(job(item, 0f))
                         delay(RETRY_BACKOFF_MS * attempt)
                     }
                 }
             }
+            file.delete()
+            if (!part.renameTo(file)) throw IOException("Could not move the finished download into place")
             val cover = cacheCover(item, coverUrl ?: item.image)
             val entity = DownloadedTrack(
                 id = item.itemId, title = item.name, artist = item.subtitle,
@@ -375,14 +459,14 @@ class DownloadManager(
             enforceStorageCap(storageCapMb)
             true
         } catch (e: CancellationException) {
-            // The run was cancelled, not the file refused: leave no half-written
-            // file and no red row behind for it.
-            runCatching { file.delete() }
+            // The run was cancelled, not the file refused. The partial file stays, so
+            // the same download started again resumes rather than restarting; the red
+            // row does not.
             clearJob(item.itemId)
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "download ${item.name}: $e")
-            fail(item, e.message ?: e.javaClass.simpleName, file)
+            fail(item, e.message ?: e.javaClass.simpleName, part)
         }
     }
 
@@ -396,7 +480,16 @@ class DownloadManager(
 
     /** One attempt at [url] into [file], publishing progress as it goes. Throws [IOException] on the wire. */
     private fun fetch(item: MaItem, url: String, file: File): Outcome {
-        http.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+        // Pick up where a previous attempt stopped. A server that honours the range
+        // answers 206 and the bytes are appended; one that ignores it answers 200 with
+        // the whole file, which simply overwrites.
+        val have = if (file.exists()) file.length() else 0L
+        val request = Request.Builder().url(url).apply {
+            if (have > 0) header("Range", "bytes=$have-")
+        }.build()
+        http.newCall(request).execute().use { resp ->
+            // Asked to start past the end: what is on disk is already the whole file.
+            if (resp.code == 416 && have > 0) return Outcome.Done
             if (!resp.isSuccessful) {
                 // 5xx and 429 are the server's "not now"; 408 is a request timeout.
                 if (resp.code >= 500 || resp.code == 429 || resp.code == 408) return Outcome.Retry("Server said ${resp.code}")
@@ -413,12 +506,14 @@ class DownloadManager(
                 )
             }
             val body = resp.body ?: return Outcome.Retry("Empty response")
-            val total = body.contentLength()
-            var read = 0L
+            val resumed = resp.code == 206 && have > 0
+            val start = if (resumed) have else 0L
+            val total = body.contentLength().let { if (it > 0) it + start else it }
+            var read = start
             var lastPublished = 0f
             val buf = ByteArray(64 * 1024)
             body.byteStream().use { input ->
-                file.outputStream().use { out ->
+                java.io.FileOutputStream(file, /* append = */ resumed).use { out ->
                     while (true) {
                         val n = input.read(buf)
                         if (n <= 0) break
@@ -460,14 +555,32 @@ class DownloadManager(
         coverFor: (MaItem) -> String? = { it.image },
         wifiOnly: Boolean = false,
         storageCapMb: Int = 0,
-    ): Int = runs.async {
-        var ok = 0
-        for (item in items) {
-            if (item.mediaType != "track") continue
-            if (download(item, urlFor(item), coverFor(item), wifiOnly, storageCapMb)) ok++
+    ): Int {
+        val tracks = items.filter { it.mediaType == "track" }
+        val entries = tracks.map { QueuedDownload.of(it, urlFor(it), coverFor(it), wifiOnly, storageCapMb) }
+        // Written down before anything starts, so the run survives the process ending.
+        queue.add(entries.filterNot { isDownloaded(it.itemId, it.provider) })
+        return runs.async { runQueued(entries) }.await()
+    }
+
+    /**
+     * Download [entries] one after another under the foreground [DownloadService],
+     * taking each off the persisted queue once it has an answer — landed, refused, or
+     * failed after its retries. A cancelled run leaves its entries queued.
+     */
+    private suspend fun runQueued(entries: List<QueuedDownload>): Int {
+        DownloadService.hold(context, if (entries.size == 1) entries.first().name else "${entries.size} tracks")
+        try {
+            var ok = 0
+            for (e in entries) {
+                if (download(e.toItem(), e.url, e.coverUrl, e.wifiOnly, e.storageCapMb)) ok++
+                queue.remove(e.provider, e.itemId)
+            }
+            return ok
+        } finally {
+            DownloadService.release(context)
         }
-        ok
-    }.await()
+    }
 
     /**
      * Covers are shared by every track on an album, so they are keyed by album id
@@ -475,7 +588,8 @@ class DownloadManager(
      */
     private fun cacheCover(item: MaItem, url: String?): File? {
         if (url.isNullOrBlank()) return null
-        val key = (item.parentId ?: item.itemId).hashCode()
+        // Same reasoning as [fileNameFor]: a 32-bit hash of an id is not a name.
+        val key = sha256Hex("${item.provider}|${item.parentId ?: item.itemId}")
         val file = File(coverDir, "$key.img")
         if (file.exists() && file.length() > 0) return file
         return try {
@@ -532,14 +646,17 @@ class DownloadManager(
      * "Delete all downloads" over a filled cap is thousands of `unlink` calls and a
      * full table wipe with the UI thread blocked behind them, which is an ANR.
      */
-    suspend fun delete(id: String): Unit = withContext(Dispatchers.IO) {
-        val entry = _downloads.value.firstOrNull { it.id == id } ?: return@withContext
+    suspend fun delete(id: String, provider: String? = null): Unit = withContext(Dispatchers.IO) {
+        val entry = get(id, provider) ?: return@withContext
         runCatching { File(entry.filePath).delete() }
         // The cover is shared across an album — only bin it once the last track goes.
         entry.coverPath?.let { path ->
-            if (_downloads.value.none { it.id != id && it.coverPath == path }) runCatching { File(path).delete() }
+            if (_downloads.value.none { it !== entry && it.coverPath == path }) runCatching { File(path).delete() }
         }
-        dao.delete(id)
+        dao.delete(id, entry.sourceProvider.orEmpty())
+        // Playlist rows name a track by id alone; keep them while another library's
+        // copy with the same id is still on the phone.
+        if (_downloads.value.any { it !== entry && it.id == id }) return@withContext
         // Hygiene rather than correctness: a playlist read joins onto `downloads`, so
         // a membership row whose file is gone is already invisible. Left alone it
         // would sit in the table for the life of the install, and the storage-cap

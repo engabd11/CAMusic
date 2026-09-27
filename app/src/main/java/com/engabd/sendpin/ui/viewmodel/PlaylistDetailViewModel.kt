@@ -280,7 +280,7 @@ class PlaylistDetailViewModel(
         if (!downloadable || sc == null) { _toast.tryEmit("That library isn't connected"); return }
         val all = _tracks.value.filter { it.mediaType == "track" }
         if (all.isEmpty()) { _toast.tryEmit("Nothing here to download"); return }
-        val pending = all.filterNot { downloads.isDownloaded(it.itemId) }
+        val pending = all.filterNot { downloads.isDownloaded(it) }
         viewModelScope.launch {
             if (pending.isNotEmpty()) {
                 _toast.tryEmit("Downloading ${pending.size} tracks…")
@@ -306,7 +306,7 @@ class PlaylistDetailViewModel(
             // half-finished run produces a half playlist instead of rows naming files
             // that were never written. Ordered by [all], which is the playlist's own
             // order — the transfers completed in whatever order they liked.
-            val landed = all.map { it.itemId }.filter { downloads.isDownloaded(it) }
+            val landed = all.filter { downloads.isDownloaded(it) }.map { it.itemId }
             if (landed.isEmpty()) return@launch
             runCatching {
                 downloadedPlaylists.record(

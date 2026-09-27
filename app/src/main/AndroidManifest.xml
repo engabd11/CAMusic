@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Downloads run under a dataSync foreground service; see download/DownloadService. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!--
@@ -270,6 +272,16 @@
           a media service that added `location` to its manifest would still start as
           mediaPlayback and change nothing. See DrivingLocationService.
         -->
+        <!--
+          Keeps a download run alive while the app is off screen. dataSync because
+          that is what a user-requested transfer is; it stops itself when the last
+          run ends. See download/DownloadService.
+        -->
+        <service
+            android:name=".download.DownloadService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
         <service
             android:name=".service.DrivingLocationService"
             android:foregroundServiceType="location"

@@ -1,7 +1,6 @@
 package com.engabd.sendpin.local.db
 
 import androidx.room.Entity
-import androidx.room.PrimaryKey
 import com.engabd.sendpin.ma.MaAudioFormat
 
 /**
@@ -11,9 +10,13 @@ import com.engabd.sendpin.ma.MaAudioFormat
  * JSON index can be imported without loss. The source provider is stored as a
  * string because the provider tag is a simple discriminator, not a foreign key.
  */
-@Entity(tableName = "downloads")
+@Entity(tableName = "downloads", primaryKeys = ["id", "sourceProvider"])
 data class DownloadedTrackEntity(
-    @PrimaryKey
+    /**
+     * The item's id *on its own server*. Not unique by itself: Plex, Emby, gonic and
+     * Music Assistant all hand out small numeric ids, so two libraries can both have
+     * a "1234". Unique together with [sourceProvider] — see schema v7.
+     */
     val id: String,
     val title: String,
     val artist: String? = null,
@@ -41,8 +44,12 @@ data class DownloadedTrackEntity(
     val bitRate: Int = 0,
     val channels: Int = 0,
     val sizeBytes: Long = 0L,
-    /** The library this came from, as a MusicSource.providerId. */
-    val sourceProvider: String? = null,
+    /**
+     * The library this came from, as a MusicSource.providerId. Part of the key, so
+     * never null: rows written before v7, which could be null, carry "" and match
+     * any provider on lookup, as they always did.
+     */
+    val sourceProvider: String = "",
 ) {
     fun format(): MaAudioFormat? =
         if (codec.isNullOrBlank()) null

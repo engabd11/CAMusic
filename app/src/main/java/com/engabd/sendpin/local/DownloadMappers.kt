@@ -22,7 +22,7 @@ fun DownloadedTrack.toEntity(): DownloadedTrackEntity = DownloadedTrackEntity(
     bitRate = format?.bitRate ?: 0,
     channels = format?.channels ?: 0,
     sizeBytes = format?.sizeBytes ?: 0L,
-    sourceProvider = sourceProvider,
+    sourceProvider = sourceProvider.orEmpty(),
 )
 
 /** Convert a Room entity back to the public model. */
@@ -39,5 +39,5 @@ fun DownloadedTrackEntity.toModel(): DownloadedTrack = DownloadedTrack(
     discNumber = discNumber,
     albumId = albumId,
     format = format(),
-    sourceProvider = sourceProvider,
+    sourceProvider = sourceProvider.ifEmpty { null },
 )

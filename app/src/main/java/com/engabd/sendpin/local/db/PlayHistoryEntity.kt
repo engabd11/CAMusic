@@ -12,7 +12,9 @@ import androidx.room.PrimaryKey
  * threshold (half the track, or four minutes) so a skip doesn't inflate the stats
  * the same way it doesn't inflate a scrobble.
  */
-@Entity(tableName = "play_history")
+// Indexed on timestamp: every stats query filters on a time window, and without the
+// index each one read the whole history.
+@Entity(tableName = "play_history", indices = [androidx.room.Index("timestamp")])
 data class PlayHistoryEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
