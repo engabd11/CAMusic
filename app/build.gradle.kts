@@ -71,6 +71,21 @@ android {
             "TIDAL_CLIENT_SECRET",
             "\"${providers.gradleProperty("camusic.tidal.clientSecret").getOrElse("")}\"",
         )
+        // Last.fm's app pair, the same arrangement as Qobuz's above: from gradle
+        // properties when this machine has them, blank otherwise — and blank only means
+        // the Scrobbling page asks for a pair of the user's own.
+        //
+        //     camusic.lastfm.apiKey=...        camusic.lastfm.apiSecret=...
+        buildConfigField(
+            "String",
+            "LASTFM_API_KEY",
+            "\"${providers.gradleProperty("camusic.lastfm.apiKey").getOrElse("")}\"",
+        )
+        buildConfigField(
+            "String",
+            "LASTFM_API_SECRET",
+            "\"${providers.gradleProperty("camusic.lastfm.apiSecret").getOrElse("")}\"",
+        )
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"

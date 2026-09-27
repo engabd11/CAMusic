@@ -55,6 +55,9 @@ class PlaybackReporter(private val app: SendpinApp) {
 
     private var started = false
 
+    /** Where a counted listen goes — the server, ListenBrainz, Last.fm — and its queue. */
+    val scrobbler = com.engabd.sendpin.scrobble.Scrobbler(app) { provider -> sinkFor(provider) }
+
     fun start() {
         if (started) return
         started = true
@@ -62,6 +65,7 @@ class PlaybackReporter(private val app: SendpinApp) {
         scope.launch { closeOnQueueEnd() }
         scope.launch { recordLocalHistory() }
         scope.launch { syncSavedQueue() }
+        scrobbler.start()
     }
 
     // ── Which server hears about a track ────────────────────────────────────
@@ -112,6 +116,15 @@ class PlaybackReporter(private val app: SendpinApp) {
             // whatever the next one is, even a track no server hears about.
             progressJob?.cancel()
             closeReportedSession()
+            // ListenBrainz / Last.fm hear about every track with a title and an artist,
+            // library server or not — a file on the phone is a listen too. The server's
+            // own play count goes the same way, so both share one threshold and queue.
+            val play = playOf(track, System.currentTimeMillis())
+            if (play != null) {
+                scrobbler.nowPlaying(play)
+                submissionJob?.cancel()
+                submissionJob = scope.launch { submitWhenPlayed(track, play) }
+            }
             val songId = track.scrobbleId ?: return@collect
             val sink = sinkFor(track.scrobbleProvider) ?: return@collect
             val startedAtMs = System.currentTimeMillis()
@@ -123,8 +136,6 @@ class PlaybackReporter(private val app: SendpinApp) {
             reportedSession = sink to songId
             reportedPositionMs = 0L
             reportedDurationMs = player.durationMs.value
-            submissionJob?.cancel()
-            submissionJob = scope.launch { submitWhenPlayed(sink, songId, startedAtMs) }
             progressJob = scope.launch { reportProgressWhile(sink, songId) }
         }
     }
@@ -247,17 +258,30 @@ class PlaybackReporter(private val app: SendpinApp) {
     }
 
     /**
-     * Wait until [id] has been listened to — half the track or four minutes, the
-     * threshold Last.fm and Navidrome both use — then report the completed play.
-     * Bails if the listener moved on: a skip is not a play.
+     * Wait until [track] has been listened to — half the track or four minutes, the
+     * threshold Last.fm and ListenBrainz both use — then hand the listen to the
+     * [scrobbler]: the library server's completed-play report, and ListenBrainz and
+     * Last.fm when they are on, each queued if it cannot be delivered now. A skip is not
+     * a listen.
      */
-    private suspend fun submitWhenPlayed(sink: MusicSource, id: String, startedAtMs: Long) {
-        val played = playedThreshold { it?.scrobbleId == id || it?.id == id }
-        if (played) {
-            runCatching {
-                sink.scrobble(id, completed = true, startedAtMs = startedAtMs, positionMs = player.positionMs.value)
-            }
-        }
+    private suspend fun submitWhenPlayed(track: LocalTrack, play: com.engabd.sendpin.scrobble.Play) {
+        val played = playedThreshold { it?.id == track.id }
+        if (played) scrobbler.listened(play, provider = track.scrobbleProvider, trackId = track.scrobbleId)
+    }
+
+    /**
+     * The listen [track] would make. The artist may be blank — the library server
+     * counts a play by id and does not care — but the services need one and skip it.
+     */
+    private fun playOf(track: LocalTrack, startedAtMs: Long): com.engabd.sendpin.scrobble.Play? {
+        if (track.title.isBlank() && track.scrobbleId == null) return null
+        return com.engabd.sendpin.scrobble.Play(
+            title = track.title,
+            artist = track.artist?.takeIf { it != "<unknown>" }.orEmpty().trim(),
+            album = track.album?.takeIf { it.isNotBlank() && it != "<unknown>" },
+            durationMs = track.durationMs,
+            startedAtMs = startedAtMs,
+        )
     }
 
     /** True once the current track has passed the "counts as a play" point; false if it changes first. */

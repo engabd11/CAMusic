@@ -436,6 +436,7 @@ private fun LazyListScope.sectionItems(
                 card("audio_continuous") { ContinuousPlayCard(settings, accent, scope) }
                 card("audio_djradio") { DjRadioSettingsCard(settings, scope) }
             }
+            AUDIO_SCROBBLE_ROUTE -> card("audio_scrobble") { ScrobblingCard(settings, accent, scope, advanced) }
             AUDIO_BEHAVIOUR_ROUTE -> {
                 card("behaviour_player") { BehaviorPlayerCard(settings, accent, scope) }
                 card("behaviour_hands") { BehaviorHandsCard(settings, accent, scope) }
