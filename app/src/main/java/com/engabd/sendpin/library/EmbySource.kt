@@ -94,11 +94,19 @@ class EmbySource(private val client: EmbyClient) : MusicSource {
 
     /** Position over wall-clock, same reasoning as `JellyfinSource.scrobble`. */
     override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?, positionMs: Long?) {
-        client.reportPlayback(id, completed, JellyfinSource.resolvePosition(positionMs, startedAtMs))
+        // The same split as Jellyfin's (see JellyfinClient.markCounted): "completed" is
+        // the halfway "listened to" mark, and sending it as the session's stop ended
+        // Emby's "Now Playing" halfway through every song. The stop goes out when the
+        // track really ends, through reportStopped.
+        if (completed) client.markCounted(id)
+        else client.reportPlayback(id, completed = false, positionMs = JellyfinSource.resolvePosition(positionMs, startedAtMs))
     }
 
-    override suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) =
-        client.reportProgress(id, positionMs, paused)
+    override suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean, repeatMode: String, shuffle: Boolean) =
+        client.reportProgress(id, positionMs, paused, repeatMode, shuffle)
+
+    override suspend fun reportStopped(id: String, positionMs: Long, durationMs: Long) =
+        client.reportStopped(id, positionMs, durationMs)
 
     override suspend fun createPlaylist(name: String, songIds: List<String>): String? =
         client.createPlaylist(name, songIds)

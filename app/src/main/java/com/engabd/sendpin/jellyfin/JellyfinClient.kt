@@ -57,10 +57,24 @@ class JellyfinClient(
     /** Which library to browse. Blank means the whole server. */
     @Volatile var libraryId: String = "",
     private val deviceId: String = "camusic",
+    /**
+     * What Jellyfin's dashboard calls this device. Every install used to appear as
+     * "Android" — including the Linux build, which shares this client — so two
+     * phones on one account were indistinguishable there. The Android app passes
+     * the phone's model; the default stays for anything that does not.
+     */
+    private val deviceName: String = DEVICE,
     private val http: OkHttpClient = shared,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     companion object {
+        /** This app's repeat mode as Jellyfin's `RepeatMode` enum. */
+        fun jellyfinRepeatMode(mode: String): String = when (mode) {
+            "one" -> "RepeatOne"
+            "all" -> "RepeatAll"
+            else -> "RepeatNone"
+        }
+
         /** Page size for [fetchAllPages]: one comfortable request\'s worth. */
         private const val PAGE = 200
 
@@ -153,7 +167,7 @@ class JellyfinClient(
      * `Bearer` is the most common way to get a 401 from a server that is working.
      */
     private fun authHeader(): String = buildString {
-        append("MediaBrowser Client=\"$CLIENT\", Device=\"$DEVICE\", DeviceId=\"$deviceId\", Version=\"$VERSION\"")
+        append("MediaBrowser Client=\"$CLIENT\", Device=\"${deviceName.replace("\"", "")}\", DeviceId=\"$deviceId\", Version=\"$VERSION\"")
         if (token.isNotBlank()) append(", Token=\"$token\"")
     }
 
@@ -751,13 +765,29 @@ class JellyfinClient(
      * Without it the server times the session out after about a minute and "Now
      * Playing" goes stale while audio is still running.
      */
-    suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) {
+    suspend fun reportProgress(
+        id: String,
+        positionMs: Long,
+        paused: Boolean,
+        repeatMode: String = "off",
+        shuffle: Boolean = false,
+    ) {
         if (playSessionId.isBlank()) return  // nothing started this session; nothing to keep alive
-        post("/Sessions/Playing/Progress", sessionBody(id, positionMs, paused))
+        post("/Sessions/Playing/Progress", sessionBody(id, positionMs, paused, repeatMode, shuffle))
     }
 
-    private fun sessionBody(id: String, positionMs: Long, paused: Boolean): JsonObject =
+    private fun sessionBody(
+        id: String,
+        positionMs: Long,
+        paused: Boolean,
+        repeatMode: String? = null,
+        shuffle: Boolean? = null,
+    ): JsonObject =
         buildJsonObject {
+            // The two queue settings Jellyfin's PlaybackProgressInfo carries, so the
+            // dashboard (and anything following the session) shows the real ones.
+            repeatMode?.let { put("RepeatMode", jellyfinRepeatMode(it)) }
+            shuffle?.let { put("PlaybackOrder", if (it) "Shuffle" else "Default") }
             put("ItemId", id)
             put("MediaSourceId", id)
             put("PositionTicks", positionMs * 10_000)

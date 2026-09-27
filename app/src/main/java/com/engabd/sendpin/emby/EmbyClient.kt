@@ -40,6 +40,8 @@ class EmbyClient(
     /** Which library to browse. Blank means the whole server. */
     @Volatile var libraryId: String = "",
     private val deviceId: String = "camusic",
+    /** What Emby's dashboard calls this device; see JellyfinClient's. */
+    private val deviceName: String = DEVICE,
     private val http: OkHttpClient = shared,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
@@ -51,6 +53,8 @@ class EmbyClient(
 
         private const val CLIENT = "CAMusic"
         private const val DEVICE = "Android"
+        /** Emby's own "played" threshold; see JellyfinClient.PLAYED_MARK. */
+        private const val PLAYED_MARK = 0.9
         private const val VERSION = "1.0"
 
         /** The app-wide client: one pool, one cache, one User-Agent. See [Http]. */
@@ -103,7 +107,7 @@ class EmbyClient(
      * id it never received.
      */
     private fun authHeader(): String = buildString {
-        append("Emby Client=\"$CLIENT\", Device=\"$DEVICE\", DeviceId=\"$deviceId\", Version=\"$VERSION\"")
+        append("Emby Client=\"$CLIENT\", Device=\"${deviceName.replace("\"", "")}\", DeviceId=\"$deviceId\", Version=\"$VERSION\"")
         if (token.isNotBlank()) append(", Token=\"$token\"")
     }
 
@@ -516,19 +520,72 @@ class EmbyClient(
 
     suspend fun deleteItem(id: String) { delete("/Items/$id") }
 
-    /** Playback reporting, Emby's equivalent of a Subsonic scrobble. */
+    /** The session opened by the last start report, so progress and stop carry the same one. */
+    @Volatile private var playSessionId: String = ""
+
+    /** The track [markCounted] counted as played, until its session stops. */
+    @Volatile private var countedId: String? = null
+
+    /**
+     * Playback reporting, Emby's equivalent of a Subsonic scrobble. [completed] is a
+     * real stop — the end of the track — exactly as JellyfinClient's.
+     */
     suspend fun reportPlayback(id: String, completed: Boolean, positionMs: Long = 0) {
+        if (!completed) {
+            playSessionId = java.util.UUID.randomUUID().toString()
+            countedId = null
+        }
         val body = sessionBody(id, positionMs)
-        if (completed) post("/Sessions/Playing/Stopped", body)
-        else post("/Sessions/Playing", body)
+        if (completed) {
+            post("/Sessions/Playing/Stopped", body)
+            playSessionId = ""
+        } else {
+            post("/Sessions/Playing", body)
+        }
     }
 
-    suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) {
-        post("/Sessions/Playing/Progress", sessionBody(id, positionMs, paused))
+    /**
+     * [id] has been listened to (half the track, or four minutes) and is still
+     * playing. Only noted: sending it as the stop — which this used to do — closed
+     * Emby's session halfway through every song, as it did Jellyfin's before PR #195.
+     */
+    fun markCounted(id: String) {
+        countedId = id
     }
 
-    private fun sessionBody(id: String, positionMs: Long, paused: Boolean = false): JsonObject =
+    /** The track really ended; see JellyfinClient.reportStopped. */
+    suspend fun reportStopped(id: String, positionMs: Long, durationMs: Long) {
+        if (playSessionId.isBlank()) return
+        val counted = countedId == id
+        reportPlayback(id, completed = true, positionMs = positionMs)
+        countedId = null
+        if (counted && (durationMs <= 0 || positionMs < durationMs * PLAYED_MARK)) {
+            runCatching { post("/Users/$userId/PlayedItems/$id") }
+        }
+    }
+
+    suspend fun reportProgress(
+        id: String,
+        positionMs: Long,
+        paused: Boolean,
+        repeatMode: String = "off",
+        shuffle: Boolean = false,
+    ) {
+        if (playSessionId.isBlank()) return
+        post("/Sessions/Playing/Progress", sessionBody(id, positionMs, paused, repeatMode, shuffle))
+    }
+
+    private fun sessionBody(
+        id: String,
+        positionMs: Long,
+        paused: Boolean = false,
+        repeatMode: String? = null,
+        shuffle: Boolean? = null,
+    ): JsonObject =
         buildJsonObject {
+            repeatMode?.let { put("RepeatMode", com.engabd.sendpin.jellyfin.JellyfinClient.jellyfinRepeatMode(it)) }
+            shuffle?.let { put("PlaybackOrder", if (it) "Shuffle" else "Default") }
+            if (playSessionId.isNotBlank()) put("PlaySessionId", playSessionId)
             put("ItemId", id)
             put("MediaSourceId", id)
             put("PositionTicks", positionMs * 10_000)

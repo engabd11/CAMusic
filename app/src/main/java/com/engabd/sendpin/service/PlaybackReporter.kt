@@ -115,7 +115,11 @@ class PlaybackReporter(private val app: SendpinApp) {
             val songId = track.scrobbleId ?: return@collect
             val sink = sinkFor(track.scrobbleProvider) ?: return@collect
             val startedAtMs = System.currentTimeMillis()
-            runCatching { sink.scrobble(songId, completed = false) }
+            // The live playhead, not an implied zero: the start report is the first
+            // anchor a follower of the session gets, and by the time it is sent a
+            // gapless transition is already a few hundred milliseconds in.
+            val startPosition = compensated(player.livePositionMs(), playing = player.playing.value)
+            timed { runCatching { sink.scrobble(songId, completed = false, positionMs = startPosition) } }
             reportedSession = sink to songId
             reportedPositionMs = 0L
             reportedDurationMs = player.durationMs.value
@@ -136,10 +140,25 @@ class PlaybackReporter(private val app: SendpinApp) {
     /**
      * Keep the server's session alive, and its playhead honest, while [id] plays.
      *
-     * A no-op for every provider except the Jellyfin family, whose session — its
-     * "Now Playing" panel and its resume positions — times out after about a minute
-     * of silence. A pause, resume or seek is reported the moment it happens, with the
-     * position read at send time.
+     * A no-op for every provider except the Jellyfin family, whose session — its "Now
+     * Playing" panel, its resume positions, and everything that follows it (Hue Ghost
+     * drives the lights from it) — lives on these reports. Jellyfin has no timestamp in
+     * a progress report and no playback-rate field: it stamps the report on arrival and
+     * extrapolates at 1x until the next one. So three things decide how well a follower
+     * can track the phone, and each is handled here:
+     *
+     *  - **What the position means on arrival.** The position is read at send time and
+     *    then spends a network round trip's first half in flight, so it lands that much
+     *    behind the playhead. Measured against a live server this was the dominant
+     *    error: reports landed 30–560 ms behind. [compensated] adds the measured
+     *    one-way delay (half of a smoothed round trip of these same requests).
+     *  - **How often.** Every [PROGRESS_REPORT_MS] normally — on a fixed period
+     *    measured from the start of the last send, so the interval no longer creeps by
+     *    each request's own duration — but every [FAST_REPORT_MS] for [FAST_WINDOW_MS]
+     *    after a start, a resume or a seek, when a follower has no lock yet, and every
+     *    [RATE_REPORT_MS] while playback runs at anything but 1x (Lo-fi's slowdown, a
+     *    speed change), because Jellyfin extrapolates at 1x regardless.
+     *  - **When things change.** A pause, a resume or a seek is reported at once.
      */
     private suspend fun reportProgressWhile(sink: MusicSource, id: String) = coroutineScope {
         val changed = Channel<Unit>(Channel.CONFLATED)
@@ -147,22 +166,78 @@ class PlaybackReporter(private val app: SendpinApp) {
             merge(player.playing.drop(1).map { }, player.seeks.map { })
                 .collect { changed.trySend(Unit) }
         }
+        // The stop report carries where the track actually stopped. It used to carry
+        // the last *progress* report's position — up to a report interval stale, so a
+        // skip 4 s after a report told Jellyfin to resume 4 s early. Followed here
+        // for as long as this is the track playing; the transition that ends it
+        // changes `current` before it resets the position, so 0 never lands here.
+        val follow = launch {
+            player.positionMs.collect { pos ->
+                if (player.current.value?.scrobbleId == id) reportedPositionMs = pos
+            }
+        }
+        var fastUntil = android.os.SystemClock.elapsedRealtime() + FAST_WINDOW_MS
+        var lastSendAt = android.os.SystemClock.elapsedRealtime()
         try {
             while (true) {
-                withTimeoutOrNull(PROGRESS_REPORT_MS) { changed.receive() }
+                val now = android.os.SystemClock.elapsedRealtime()
+                val period = when {
+                    player.effectiveSpeed() != 1f -> RATE_REPORT_MS
+                    now < fastUntil -> FAST_REPORT_MS
+                    else -> PROGRESS_REPORT_MS
+                }
+                val wait = (lastSendAt + period - now).coerceAtLeast(0L)
+                val event = withTimeoutOrNull(wait) { changed.receive() }
+                if (event != null) fastUntil = android.os.SystemClock.elapsedRealtime() + FAST_WINDOW_MS
                 if (player.current.value?.scrobbleId != id) {
                     if (player.current.value == null) closeReportedSession(id)
                     return@coroutineScope
                 }
-                val position = player.livePositionMs()
-                reportedPositionMs = position
+                val playing = player.playing.value
+                val live = player.livePositionMs()
+                reportedPositionMs = live
                 reportedDurationMs = player.durationMs.value
-                runCatching { sink.reportProgress(id = id, positionMs = position, paused = !player.playing.value) }
+                lastSendAt = android.os.SystemClock.elapsedRealtime()
+                timed {
+                    runCatching {
+                        sink.reportProgress(
+                            id = id,
+                            positionMs = compensated(live, playing),
+                            paused = !playing,
+                            repeatMode = player.repeatMode.value,
+                            shuffle = player.shuffle.value,
+                        )
+                    }
+                }
             }
         } finally {
             watch.cancel()
+            follow.cancel()
         }
     }
+
+    /** Smoothed one-way delay of a report, in ms: half a round trip, as an EWMA. */
+    @Volatile private var oneWayMs = 0.0
+
+    /** Run a report, folding how long it took into [oneWayMs]. */
+    private suspend fun <T> timed(block: suspend () -> T): T {
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val result = block()
+        val rtt = (android.os.SystemClock.elapsedRealtime() - t0).toDouble()
+        // A slow outlier (a cold connection, a server busy scanning) must not drag
+        // every later report ahead, so each sample is capped before it is averaged.
+        val sample = (rtt / 2).coerceIn(0.0, MAX_ONE_WAY_MS)
+        oneWayMs = if (oneWayMs == 0.0) sample else oneWayMs * (1 - ONE_WAY_ALPHA) + sample * ONE_WAY_ALPHA
+        return result
+    }
+
+    /**
+     * Where the playhead will be when a report sent now arrives: [positionMs] plus the
+     * one-way delay, at the current rate. A paused position does not move in flight.
+     */
+    private fun compensated(positionMs: Long, playing: Boolean): Long =
+        if (!playing) positionMs
+        else positionMs + (oneWayMs * player.effectiveSpeed()).toLong()
 
     private suspend fun closeReportedSession(onlyId: String? = null) {
         val (sink, id) = reportedSession ?: return
@@ -272,6 +347,15 @@ class PlaybackReporter(private val app: SendpinApp) {
     private companion object {
         /** Well inside Jellyfin's roughly one-minute session timeout. */
         const val PROGRESS_REPORT_MS = 5_000L
+        /** Just after a start, resume or seek — while a follower has no lock yet. */
+        const val FAST_REPORT_MS = 2_000L
+        const val FAST_WINDOW_MS = 10_000L
+        /** While playing at anything but 1x, which Jellyfin cannot be told about. */
+        const val RATE_REPORT_MS = 1_000L
+        /** Weight of each new round-trip sample in [oneWayMs]. */
+        const val ONE_WAY_ALPHA = 0.3
+        /** Ceiling on one sample: past this a report is an outlier, not the network. */
+        const val MAX_ONE_WAY_MS = 250.0
         /** A play counts at half the track or this, whichever comes first. */
         const val PLAYED_MAX_MS = 4 * 60 * 1000L
     }

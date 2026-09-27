@@ -89,6 +89,6 @@ class PlexSource(private val client: PlexClient) : MusicSource {
         client.reportPlayback(id, completed, JellyfinSource.resolvePosition(positionMs, startedAtMs))
     }
 
-    override suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) =
+    override suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean, repeatMode: String, shuffle: Boolean) =
         client.reportProgress(id, positionMs, paused)
 }

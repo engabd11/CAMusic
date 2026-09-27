@@ -21,12 +21,18 @@ class LocalMediaSchemaV7Test {
         candidates.first { it.exists() }.readText()
     }
 
+    /**
+     * Parsed as JSON rather than cut out of the text: git checks the schema out with
+     * CRLF on Windows, and a scan for `",\n` found nothing there.
+     */
     private fun createSql(table: String): String {
-        val at = schema.indexOf("\"tableName\": \"$table\"")
-        require(at >= 0) { "7.json has no table $table" }
-        val key = "\"createSql\": \""
-        val start = schema.indexOf(key, at) + key.length
-        return schema.substring(start, schema.indexOf("\",\n", start)).replace("\\\"", "\"")
+        val entities = kotlinx.serialization.json.Json.parseToJsonElement(schema)
+            .let { it as kotlinx.serialization.json.JsonObject }["database"]!!
+            .let { it as kotlinx.serialization.json.JsonObject }["entities"] as kotlinx.serialization.json.JsonArray
+        val entity = entities.map { it as kotlinx.serialization.json.JsonObject }
+            .firstOrNull { (it["tableName"] as kotlinx.serialization.json.JsonPrimitive).content == table }
+            ?: error("7.json has no table $table")
+        return (entity["createSql"] as kotlinx.serialization.json.JsonPrimitive).content
     }
 
     private fun normalise(sql: String) = sql.replace(Regex("\\s+"), " ").trim()
