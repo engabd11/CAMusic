@@ -6,12 +6,10 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * The renderer that existed only as an enum value.
+ * Extreme: Intense's beat-driven show, darker between hits and harder on them.
  *
- * `graphReactive` was declared on Extreme's params and never read, so it fell
- * through to the ordinary music path — where it sets `beatThreshold = 99` and
- * zeroes its beat and bass gains, leaving the most aggressive rung the *least*
- * reactive one after Subtle.
+ * It used to be a separate spectrum renderer (`graphReactive`) that came out as
+ * the dimmest, least reactive rung; these pin that it no longer is.
  */
 class ExtremeTest {
 
@@ -38,6 +36,39 @@ class ExtremeTest {
     )
 
     private fun brightness(c: Rgb) = max(c.first, max(c.second, c.third))
+
+    /** A 125 BPM groove: a strong kick every beat, busy mids between. */
+    private fun groove(i: Int): AnalysisFrame {
+        val onBeat = i % 29 == 0
+        return AnalysisFrame(
+            bands = mapOf(
+                "sub_bass" to if (onBeat) 1f else 0.3f, "bass" to if (onBeat) 0.9f else 0.3f,
+                "low_mid" to 0.35f, "mid" to 0.35f, "high" to 0.3f,
+            ),
+            energy = if (onBeat) 0.9f else 0.5f,
+            beat = onBeat, bassBeat = onBeat,
+            beatStrength = if (onBeat) 2.5f else 0f, bassStrength = if (onBeat) 2.5f else 0f,
+            melbank = FloatArray(16) { if (onBeat && it < 3) 1f else 0.3f },
+            salience = if (onBeat) 1f else 0.6f,
+            onsetWidth = 1f,
+        )
+    }
+
+    @Test
+    fun `extreme rests darker than intense and hits at least as hard`() {
+        fun run(mode: SyncMode): Pair<Float, Float> {
+            val eng = SyncoEngine(channels(6)).apply { this.mode = mode }
+            val levels = (0 until 29 * 20).map { i -> eng.render(groove(i), dt).values.maxOf(::brightness) }.drop(29 * 10)
+            return levels.sorted()[levels.size / 10] to levels.max()
+        }
+        val (intenseRest, intensePeak) = run(SyncMode.INTENSE)
+        val (extremeRest, extremePeak) = run(SyncMode.EXTREME)
+        assertTrue(extremeRest < intenseRest, "Extreme rests at $extremeRest, Intense at $intenseRest")
+        assertTrue(extremePeak >= intensePeak * 0.95f, "Extreme peaks at $extremePeak, Intense at $intensePeak")
+        val extremeSwing = extremePeak - extremeRest
+        val intenseSwing = intensePeak - intenseRest
+        assertTrue(extremeSwing > intenseSwing, "Extreme swung $extremeSwing per beat, Intense $intenseSwing")
+    }
 
     @Test
     fun `extreme reacts to a hit at all`() {

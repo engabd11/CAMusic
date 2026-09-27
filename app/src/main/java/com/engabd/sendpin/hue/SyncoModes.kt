@@ -331,20 +331,30 @@ val MODE_PARAMS = mapOf(
         // tighter front reads as a sweep rather than as the room breathing.
         gestureGain = 0.25f, gestureWidth = 0.24f, gestureArcWidth = 0.15f,
     ),
+    // Intense's show, darker and harder. Extreme used to be a separate renderer
+    // (`graphReactive`, a rotating per-band spectrum): with no resting level, a
+    // loudness floor on every flash and a rise slew that caught its fast-fading
+    // peaks only part-way, it came out as the dimmest, least reactive rung — the
+    // opposite of its name. It now runs the same beat-driven music path as
+    // Intense, with the room pushed nearer black between hits so every kick lands
+    // from darkness, bigger pops, and a faster fade so the gaps stay dark.
+    // No FieldSafety at all (see DirectLightSync.selectLimiter).
     SyncMode.EXTREME to ModeParams(
-        graphReactive = true,
-        base = 0f, floor = 0f, bassGain = 0f, beatGain = 0f, beatThreshold = 99f,
-        melbankGain = 0.60f, melbankFloor = 0.02f, spectralPop = 1.6f,
-        flashGamma = 1.5f, flashLoudFloor = 0.30f,
-        melFluxGain = 1.25f, melFluxFloor = 0.12f,
-        rotateRate = 0.36f, rotateSwing = 0.85f, bandLoudStrength = 0.8f,
-        roomPunch = 1.5f, energyGain = 0.06f, flashDecay = 0.70f,
-        briAttack = 0.5f, briDecay = 0.4f,
-        briRiseRate = 26f, briFallRate = 6f,
-        colourSpeed = 0.05f, colourFlow = 0.05f, colourSpread = 0.4f, colourLerp = 0.4f,
-        colourSat = 0.97f, panGain = 0.6f, colourTilt = 0.30f,
-        // No gestureGain, and it would do nothing if there were one: `renderExtreme`
-        // is a separate renderer that returns before the flash overlay the gesture
-        // layer joins. Extreme is a different show, not a louder one.
+        base = 0f, floor = 0.02f, bassGain = 0.10f, beatGain = 2.1f, beatThreshold = 0.95f,
+        colourSpeed = 0.05f, shimmer = 0f, colourSat = 0.97f,
+        colourLerp = 0.55f, briAttack = 1f, briDecay = 0.48f, flashDecay = 0.80f,
+        briRiseRate = 30f, briFallRate = 6f,
+        colourJump = 0.18f, colourSpread = 0.22f, highlightQuantile = 0.15f,
+        weakPulse = 0.50f, downbeatPulse = 0.70f, fullRoomAccent = 0f,
+        hardSnap = true,
+        melbankGain = 0.44f, melbankFloor = 0.015f, colourFlow = 0.05f, spectralPop = 0.55f,
+        energyGain = 0.16f, salienceGamma = 0.8f, widthMin = 0.08f, nobeatFlash = 0.35f,
+        fluxGate = 0.5f, predropDepth = 0.75f, phraseBars = 4, phraseColourShift = 0.06f,
+        panGain = 0.5f,
+        melPeakiness = 0.45f, bandLoudStrength = 0.40f,
+        tonalGain = 0.12f, tonalDamp = 1.6f, colourTilt = 0.25f, spatialCoupling = 0.40f,
+        waveGain = 0.55f, waveSpeed = 2.6f, waveWidth = 0.28f, anticipationMs = 90f,
+        dropBoost = 1.0f, buildDesat = 0.55f,
+        gestureGain = 0.25f, gestureWidth = 0.24f, gestureArcWidth = 0.15f,
     ),
 )
