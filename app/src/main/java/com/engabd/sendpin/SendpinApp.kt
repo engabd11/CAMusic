@@ -384,6 +384,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
             .stateIn(appScope, SharingStarted.Eagerly, false)
     }
 
+    private val lightSyncHealer by lazy {
+        com.engabd.sendpin.hue.LightSyncHealer(this, directLightSync, AppLifecycleObserver.get()?.foreground)
+    }
+
     val directLightSync: com.engabd.sendpin.hue.DirectLightSync by lazy {
         com.engabd.sendpin.hue.DirectLightSync(
             this,
@@ -756,12 +760,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         if (started) directLightSync.stop()
                         started = true
                         directLightSync.start()
+                        // Brings the show back after an outage longer than the
+                        // session's own reconnect rides out. Idle while healthy.
+                        lightSyncHealer.start(appScope)
                         // Follows the same switch, for the same reason: what it costs
                         // while nothing is playing remotely is one idle collector.
                         scanFrameSource.start()
                         mpdScanFrameSource.start()
                     } else if (started) {
                         started = false
+                        lightSyncHealer.stop()
                         directLightSync.stop()
                         scanFrameSource.stop()
                         mpdScanFrameSource.stop()
