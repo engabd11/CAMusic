@@ -33,6 +33,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.debounce
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -142,7 +144,7 @@ data class LocalTrack(
  * media notification all drive the same instance. Every method here must be called
  * on the main thread, which is where ExoPlayer is built.
  */
-@OptIn(UnstableApi::class)
+@OptIn(UnstableApi::class, kotlinx.coroutines.FlowPreview::class)
 class LocalPlayer(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -179,6 +181,23 @@ class LocalPlayer(private val context: Context) {
     private var livePlayer: ExoPlayer? = null
     private val player: ExoPlayer
         get() = livePlayer ?: buildPlayer().also { livePlayer = it }
+
+    /**
+     * Told, synchronously, when [applyOutputMode] has replaced the ExoPlayer — before
+     * anything is loaded into the new one or played.
+     *
+     * Synchronous on purpose. [com.engabd.sendpin.service.LocalPlaybackService] has to
+     * wrap the new player in its media session, and a session built around a player
+     * that is *already* playing never sees the transition into playing — which is
+     * the signal Android uses to make it the media-button session. Re-pointed from a
+     * coroutine a moment later, the session came up with media keys going nowhere.
+     */
+    private val playerRebuiltListeners = java.util.concurrent.CopyOnWriteArraySet<() -> Unit>()
+    fun addPlayerRebuiltListener(listener: () -> Unit) { playerRebuiltListeners += listener }
+    fun removePlayerRebuiltListener(listener: () -> Unit) { playerRebuiltListeners -= listener }
+
+    /** The output mode the live player was built for; see [applyOutputMode]. */
+    private var builtMode: OutputMode? = null
 
     /**
      * Called just before this player takes the audio output, so the Sendspin path
@@ -513,6 +532,58 @@ class LocalPlayer(private val context: Context) {
         scope.launch {
             settings.oldRadioConfig.collect { cfg -> oldRadio.setConfig(cfg) }
         }
+        // The output mode, applied when it is chosen rather than at the next app start.
+        //
+        // Debounced because one tap on the output-mode chips writes three keys in three
+        // DataStore edits, and the intermediate combinations (Standard → Pure passes
+        // through High resolution) are not rungs anyone asked for — rebuilding for each
+        // would restart the track twice.
+        scope.launch {
+            combine(
+                settings.bitPerfect24Bit, settings.exclusiveOutput, settings.bitPerfectAaudio,
+            ) { f, e, a -> OutputMode.of(f, e, a) }
+                .distinctUntilChanged()
+                .debounce(OUTPUT_MODE_SETTLE_MS.milliseconds)
+                .collect { applyOutputMode(it) }
+        }
+    }
+
+    /**
+     * Rebuild the player for [mode] if the live one was built for another, keeping
+     * the queue, the track, the position and whether it was playing.
+     *
+     * The output mode decides things that are fixed when ExoPlayer is built — whether
+     * the float path is on, whether this app's processors are in the renderer at all,
+     * whether the AAudio sink replaces media3's — so a live player cannot switch in
+     * place. It used to be left to the next app start, which meant choosing Pure or
+     * High resolution changed nothing that could be heard or seen: the Signal path
+     * panel kept describing the old chain, because the old chain was still playing.
+     */
+    private fun applyOutputMode(mode: OutputMode) {
+        val live = livePlayer ?: return          // nothing built yet: the next build reads it
+        if (mode == builtMode) return
+        android.util.Log.i("LocalPlayer", "Output mode ${builtMode?.name} -> ${mode.name}: rebuilding the player")
+        if (remote != null) {
+            // A remote player (MPD, foobar2000) decodes elsewhere; the local chain is
+            // idle and the next build will simply pick the new mode up.
+            release()
+            return
+        }
+        val queue = _queue.value
+        val index = live.currentMediaItemIndex
+        val position = live.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = live.playWhenReady && live.playbackState != Player.STATE_ENDED
+        release()
+        // `player` builds the replacement from the settings just written; the session
+        // is re-pointed at it before anything plays — see [playerRebuiltListeners].
+        player
+        playerRebuiltListeners.forEach { it() }
+        if (queue.isEmpty()) return
+        player.setMediaItems(queue.map(::mediaItem), index.coerceIn(0, queue.lastIndex), position)
+        player.repeatMode = live.repeatMode
+        player.shuffleModeEnabled = live.shuffleModeEnabled
+        player.prepare()
+        if (wasPlaying) startOutput()
     }
 
     /**
@@ -754,6 +825,7 @@ class LocalPlayer(private val context: Context) {
         val aaudioBitperfect = settings.bootBitPerfectAaudio
         val exclusive = settings.bootExclusiveOutput
         exclusiveOutput = exclusive
+        builtMode = OutputMode.of(bitPerfect, exclusive, aaudioBitperfect)
 
         // The Light Sync audio analysis tap is injected via TapRenderersFactory,
         // which overrides buildAudioSink to install the tap in the audio sink's
@@ -2330,6 +2402,9 @@ class LocalPlayer(private val context: Context) {
     private fun stopTicker() { ticker?.cancel(); ticker = null }
 
     private companion object {
+        /** How long the output-mode keys must hold still before the player is rebuilt. */
+        private const val OUTPUT_MODE_SETTLE_MS = 400L
+
         /** Network-wait retries: about ten minutes in all before it is left to Play. */
         private const val MAX_NETWORK_RETRIES = 14
         private const val NETWORK_RETRY_BASE_MS = 2_000L
