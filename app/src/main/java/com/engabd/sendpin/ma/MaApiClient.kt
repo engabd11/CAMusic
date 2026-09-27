@@ -47,6 +47,15 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
 
     enum class State { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
 
+    /**
+     * True when the server itself answered the login with a refusal, as opposed to
+     * [State.ERROR] from a server that could not be reached or did not answer in time.
+     * The two need opposite responses: a wrong password is not fixed by trying again,
+     * and an unreachable server is fixed by nothing else. Reset on every [connect].
+     */
+    @Volatile var loginRejected: Boolean = false
+        private set
+
     private val http = Http.socket(pingSeconds = 30)
     private var ws: WebSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -91,6 +100,7 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         serverUrl = url
         this.token = token
         this.login = nextLogin
+        loginRejected = false
         _state.value = State.CONNECTING
         userClosed = false; attempt = 0; reconnectJob?.cancel()
         wsUrl = nextWsUrl
@@ -244,7 +254,13 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
                 val tok = res?.get("access_token")?.jsonPrimitive?.contentOrNull
                 val ok = res?.get("success")?.jsonPrimitive?.booleanOrNull ?: false
                 if (!ok || tok.isNullOrBlank()) {
-                    throw MaApiException(res?.get("error")?.jsonPrimitive?.contentOrNull ?: "Login failed", -1)
+                    // Only an *answer* that says no is a rejection. A null `res` means
+                    // the server never judged these credentials, and calling that a
+                    // wrong password is what stopped a phone ever retrying a server that
+                    // was restarting.
+                    if (res == null) throw MaApiException("No answer to the login", -1, isTransport = true)
+                    loginRejected = true
+                    throw MaApiException(res["error"]?.jsonPrimitive?.contentOrNull ?: "Login failed", -1)
                 }
                 authToken = tok
                 sendRaw("auth", buildJsonObject { put("token", tok); put("device_name", "CAMusic") })
@@ -258,6 +274,11 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
             _state.value = State.CONNECTED
         } catch (e: Exception) {
             Log.e("MaApi", "auth: ${e.message}")
+            // An error *reply* to the login (MA answers a bad password with an
+            // error_code) is the server saying no, the same as success=false above.
+            // A timeout or a dropped socket is transport, and says nothing about the
+            // credentials.
+            if (login != null && e is MaApiException && !e.isTransport) loginRejected = true
             _state.value = State.ERROR
         }
     }
