@@ -64,13 +64,17 @@ class OfflineSpeedLimitProvider(
         if (!database.open()) database.prepare()
     }
 
-    override suspend fun getSpeedLimit(lat: Double, lon: Double, accuracyMeters: Float): Int? {
+    override suspend fun getSpeedLimit(lat: Double, lon: Double, accuracyMeters: Float, headingDeg: Float?): Int? {
         // If the database isn't open, don't even check the cache — just return null.
         // The cache might have stale entries from a previous session, and without
         // the database we can't verify or refresh them.
         if (!ready.value) return null
 
-        val geohashKey = Geohash.encode(lat, lon, precision = GEOHASH_PRECISION)
+        // The axis of travel is part of the key: at a junction the answer depends on
+        // which of the two roads the car is on, and a cell cached by a car going one
+        // way must not answer for a car crossing it. Four axes over 180 degrees.
+        val axis = headingDeg?.let { (((it % 180f) + 180f) % 180f / 45f).toInt() % 4 } ?: -1
+        val geohashKey = Geohash.encode(lat, lon, precision = GEOHASH_PRECISION) + "/" + axis
 
         // Check cache first. Only hits are ever in here — see the class doc.
         when (val cached = cache.get(geohashKey)) {
@@ -84,7 +88,7 @@ class OfflineSpeedLimitProvider(
         val radius = (BASE_MATCH_METERS + accuracyMeters.coerceAtLeast(0f))
             .toDouble()
             .coerceAtMost(MAX_MATCH_METERS)
-        val result = database.querySpeedLimit(lat, lon, maxDistanceMeters = radius)
+        val result = database.querySpeedLimit(lat, lon, maxDistanceMeters = radius, headingDeg = headingDeg)
 
         // Hits only. A miss is not evidence about the next fix from this cell.
         if (result != null) cache.put(geohashKey, result)

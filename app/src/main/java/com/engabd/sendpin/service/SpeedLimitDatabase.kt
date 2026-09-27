@@ -2,6 +2,7 @@ package com.engabd.sendpin.service
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.util.Log
 import kotlin.math.cos
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +78,9 @@ class SpeedLimitDatabase(context: Context) {
 
     private var db: SQLiteDatabase? = null
 
+    /** The zone index, walked by hand — see [RTreeReader] for why not the virtual table. */
+    private var rtree: RTreeReader? = null
+
     /** Guards [prepare] so overlapping calls expand the asset once, not twice. */
     private val expanding = AtomicBoolean(false)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -95,11 +99,16 @@ class SpeedLimitDatabase(context: Context) {
             return false
         }
         return try {
-            db = SQLiteDatabase.openDatabase(
+            val opened = SQLiteDatabase.openDatabase(
                 dbFile.absolutePath,
                 null,
                 SQLiteDatabase.OPEN_READONLY,
             )
+            db = opened
+            rtree = RTreeReader { nodeNo ->
+                opened.rawQuery("SELECT data FROM speed_zones_rtree_node WHERE nodeno = $nodeNo", null)
+                    .use { if (it.moveToFirst()) it.getBlob(0) else null }
+            }
             _ready.value = true
             true
         } catch (e: Exception) {
@@ -203,6 +212,7 @@ class SpeedLimitDatabase(context: Context) {
     fun close() {
         db?.close()
         db = null
+        rtree = null
         _ready.value = false
     }
 
@@ -222,7 +232,7 @@ class SpeedLimitDatabase(context: Context) {
      * Query the speed limit at a geographic point.
      *
      * Strategy:
-     * 1. R-tree bounding-box query to find candidate zones within ~50m
+     * 1. R-tree bounding-box search (walked by [RTreeReader]) for candidate zones
      * 2. For each candidate, load its segment coordinates and compute
      *    point-to-segment distance
      * 3. Return the speed_limit of the nearest segment within the threshold
@@ -232,12 +242,18 @@ class SpeedLimitDatabase(context: Context) {
      * @param maxDistanceMeters  Maximum distance to accept a zone (default 30m —
      *        a GPS reading is typically 3-10m off, and 30m covers the width of
      *        most roads plus GPS error without matching a parallel road)
+     * @param headingDeg  the car's direction of travel, when the fix has a reliable
+     *        one. Near a junction the cross street is often the *nearer* line, and
+     *        nearest-only matching answers with its limit; a segment running across
+     *        the direction of travel is marked down by up to [HEADING_PENALTY_M], so
+     *        the road being driven wins. Null matches on distance alone.
      * @return speed limit in km/h, or null if no zone found within range
      */
     suspend fun querySpeedLimit(
         lat: Double,
         lon: Double,
         maxDistanceMeters: Double = 30.0,
+        headingDeg: Float? = null,
     ): Int? = withContext(Dispatchers.IO) {
         val database = db ?: return@withContext null
         if (!database.isOpen) return@withContext null
@@ -249,37 +265,25 @@ class SpeedLimitDatabase(context: Context) {
         val lonDeg = if (cosLat < 1e-6) 0.0
             else maxDistanceMeters / (111_320.0 * cosLat)
 
-        // R-tree query: find all zones whose bounding box intersects our search box.
-        //
-        // The bounds are formatted into the SQL rather than bound as parameters.
-        // Android's rawQuery only takes Array<String>, and an R-tree's columns are
-        // REAL - so every bound was arriving as text against a virtual table whose
-        // whole job is numeric range comparison. These four values are our own
-        // arithmetic on a GPS fix, never user input, so there is nothing here to
-        // inject.
-        val minLon = lon - lonDeg
-        val maxLon = lon + lonDeg
-        val minLat = lat - latDeg
-        val maxLat = lat + latDeg
-        val candidates = try {
+        // Candidate zones: every one whose bounding box meets the search box. Read
+        // from the R-tree's own node table rather than through the `rtree` module,
+        // which Android's SQLite does not have — see [RTreeReader].
+        val index = rtree ?: return@withContext null
+        val candidates: List<Pair<Int, Int>> = try {
+            val ids = index.search(lon - lonDeg, lon + lonDeg, lat - latDeg, lat + latDeg)
+            if (ids.isEmpty()) return@withContext null
             database.rawQuery(
-                """
-                SELECT sz.id, sz.speed_limit
-                FROM speed_zones_rtree r
-                JOIN speed_zones sz ON sz.id = r.id
-                WHERE r.min_lon <= $maxLon AND r.max_lon >= $minLon
-                  AND r.min_lat <= $maxLat AND r.max_lat >= $minLat
-                """,
+                "SELECT id, speed_limit FROM speed_zones WHERE id IN (${ids.joinToString(",")})",
                 null,
             ).use { cursor ->
-                val results = mutableListOf<Pair<Int, Int>>()
-                while (cursor.moveToNext()) {
-                    results.add(cursor.getInt(0) to cursor.getInt(1))
-                    // (id, speed_limit) — we'll need the id to fetch segments
-                }
+                val results = ArrayList<Pair<Int, Int>>(ids.size)
+                while (cursor.moveToNext()) results.add(cursor.getInt(0) to cursor.getInt(1))
                 results
             }
         } catch (e: Exception) {
+            // Loud, once per failure kind: a lookup that fails quietly is how this
+            // feature spent its whole life returning nothing.
+            logOnce("Speed-zone lookup failed: ${e.message}")
             null
         } ?: return@withContext null
 
@@ -301,13 +305,14 @@ class SpeedLimitDatabase(context: Context) {
                 segsByZone
             }
         } catch (e: Exception) {
+            logOnce("Speed-zone geometry could not be read: ${e.message}")
             return@withContext null
         }
 
         // For each candidate zone, find the minimum distance from the GPS point
         // to any of its segments, then pick the zone with the overall minimum.
         var bestSpeedLimit: Int? = null
-        var bestDistance = Double.MAX_VALUE
+        var bestScore = Double.MAX_VALUE
 
         for (candidate in candidates) {
             val zoneId = candidate.first
@@ -322,20 +327,60 @@ class SpeedLimitDatabase(context: Context) {
                         segment[i].second, segment[i].first,       // lat1, lon1
                         segment[i + 1].second, segment[i + 1].first, // lat2, lon2
                     )
-                    if (dist < bestDistance) {
-                        bestDistance = dist
+                    if (dist > maxDistanceMeters) continue
+                    val score = dist + headingPenaltyMeters(
+                        headingDeg,
+                        segment[i].second, segment[i].first,
+                        segment[i + 1].second, segment[i + 1].first,
+                    )
+                    if (score < bestScore) {
+                        bestScore = score
                         bestSpeedLimit = speedLimit
                     }
                 }
             }
         }
 
-        // Only return if the nearest zone is within the distance threshold
-        if (bestDistance <= maxDistanceMeters) bestSpeedLimit else null
+        // Every segment scored was already within the distance threshold.
+        bestSpeedLimit
+    }
+
+    private val logged = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    private fun logOnce(message: String) {
+        if (logged.add(message)) Log.w("SpeedLimitDatabase", message)
     }
 
     companion object {
         private const val DB_FILENAME = "speed_zones.sqlite3"
+
+        /** Within this of the direction of travel, a segment is the road being driven. */
+        private const val HEADING_TOLERANCE_DEG = 20.0
+
+        /** Past tolerance, the penalty ramps up over this many degrees... */
+        private const val HEADING_RAMP_DEG = 25.0
+
+        /** ...to this: more than a GPS error, so a crossing street loses to the road. */
+        internal const val HEADING_PENALTY_M = 30.0
+
+        /**
+         * Metres added to a segment's distance for pointing away from [headingDeg].
+         * Roads are two-way lines, so the comparison is modulo 180 degrees.
+         */
+        internal fun headingPenaltyMeters(
+            headingDeg: Float?,
+            lat1: Double, lon1: Double, lat2: Double, lon2: Double,
+        ): Double {
+            if (headingDeg == null) return 0.0
+            val cosLat = cos(Math.toRadians(lat1))
+            val east = (lon2 - lon1) * cosLat
+            val north = lat2 - lat1
+            if (east == 0.0 && north == 0.0) return 0.0
+            val segBearing = Math.toDegrees(kotlin.math.atan2(east, north))
+            val diff = kotlin.math.abs(((headingDeg - segBearing + 90.0) % 180.0 + 180.0) % 180.0 - 90.0)
+            if (diff <= HEADING_TOLERANCE_DEG) return 0.0
+            return ((diff - HEADING_TOLERANCE_DEG) / HEADING_RAMP_DEG).coerceAtMost(1.0) * HEADING_PENALTY_M
+        }
 
         /**
          * Unpack one zone's polylines.
