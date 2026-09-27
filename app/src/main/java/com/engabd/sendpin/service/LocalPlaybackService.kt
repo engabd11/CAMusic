@@ -175,9 +175,14 @@ class LocalPlaybackService : Service() {
             // MediaSessionCompat; with media3 the session handles its own button
             // events, so nothing to do here for ACTION_MEDIA_BUTTON.
         }
-        startForegroundNow()
+        if (!startForegroundNow()) return START_NOT_STICKY
         observe()
-        return START_STICKY
+        // Not sticky. A sticky restart after the process died brought this back with
+        // no queue behind it, from the background, where Android refuses the
+        // foreground start it makes — which crashed the process. The queue comes back
+        // through playback resumption instead (a media button, the car, the system's
+        // media controls), and that path starts this service from somewhere allowed to.
+        return START_NOT_STICKY
     }
 
     private fun observe() {
@@ -222,13 +227,27 @@ class LocalPlaybackService : Service() {
         }
     }
 
-    private fun startForegroundNow() {
+    /**
+     * Enter the foreground, or say that Android refused.
+     *
+     * Android 12+ refuses `startForeground` to a service started while the app is in
+     * the background — a sticky restart after the process was killed is exactly that
+     * — and the refusal is an exception thrown into `onStartCommand`, which crashed
+     * the whole process on the main thread. Refused now means the service stops
+     * itself instead; the next start from the foreground brings it back.
+     */
+    private fun startForegroundNow(): Boolean = try {
         val n = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else {
             startForeground(NOTIFICATION_ID, n)
         }
+        true
+    } catch (e: Exception) {
+        android.util.Log.w("LocalPlaybackService", "Not allowed into the foreground; stopping: ${e.message}")
+        stopSelf()
+        false
     }
 
     private fun updateNotification() {

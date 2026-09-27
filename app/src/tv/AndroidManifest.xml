@@ -46,6 +46,11 @@
              declared would let it compete with TvMainActivity for the launcher slot. -->
         <activity android:name=".MainActivity" tools:node="remove" />
 
+        <!-- media3's MediaButtonReceiver resumes through CarMediaLibraryService, which
+             the TV build removes; left in, it would find no service to start and
+             throw on every media button that arrives with no session alive. -->
+        <receiver android:name="androidx.media3.session.MediaButtonReceiver" tools:node="remove" />
+
         <!--
           The TV entry point. LEANBACK_LAUNCHER, not the ordinary LAUNCHER category
           MainActivity used - Android TV launchers query specifically for the former,

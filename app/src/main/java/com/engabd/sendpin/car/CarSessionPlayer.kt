@@ -151,11 +151,22 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
             // the commands above are what decide whether the buttons exist at all.
             .setSeekBackIncrementMs(seekIncrementMs.takeIf { it > 0 } ?: DEFAULT_SEEK_MS)
             .setSeekForwardIncrementMs(seekIncrementMs.takeIf { it > 0 } ?: DEFAULT_SEEK_MS)
-            .setPlaylist(
-                listOf(mediaItemData(snapshot, uid = "placeholder-prev"), current, mediaItemData(snapshot, uid = "placeholder-next")),
-            )
-            .setCurrentMediaItemIndex(1)
-            .setContentPositionMs(snapshot.positionMs)
+            .apply {
+                if (snapshot.title.isBlank()) {
+                    // Nothing loaded anywhere: an empty playlist, which is the truth, and
+                    // which is what makes media3 ask onPlaybackResumption when a play
+                    // arrives. The placeholder timeline below told media3 there was
+                    // always something to play, so a Bluetooth play after a reboot went
+                    // to play() on nothing instead of to the saved queue.
+                    setPlaylist(emptyList())
+                } else {
+                    setPlaylist(
+                        listOf(mediaItemData(snapshot, uid = "placeholder-prev"), current, mediaItemData(snapshot, uid = "placeholder-next")),
+                    )
+                    setCurrentMediaItemIndex(1)
+                    setContentPositionMs(snapshot.positionMs)
+                }
+            }
             .build()
     }
 
@@ -194,11 +205,22 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
      * `SimpleBasePlayer.setPlayWhenReady` does not filter a redundant value: a
      * blind toggle paused every track the moment it was tapped.
      */
+    /** A resumption just loaded the saved queue; see [handleSetPlayWhenReady]. */
+    private var justRestored = false
+
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
         when {
             // Explicit, never a toggle — a race must not turn a pause into a resume.
             // Same reasoning as PlaybackOwner.pause()'s own doc.
             !playWhenReady -> playbackOwner.pause()
+            // The play() media3 sends straight after a resumption. Addressed to the
+            // local player directly: PlaybackOwner learns about the queue just loaded
+            // through a flow that has not caught up yet, and routed this to the
+            // Sendspin player instead — the queue came back, paused.
+            justRestored -> { justRestored = false; localPlayer.resume() }
+            // Nothing loaded anywhere — a fresh process, started by the button itself.
+            // Play means the last queue, where it was left.
+            unifiedNowPlaying.state.value.title.isBlank() && localPlayer.restoreSaved() -> localPlayer.resume()
             !unifiedNowPlaying.state.value.isPlaying -> playbackOwner.playPause()
         }
         return Futures.immediateVoidFuture()
@@ -215,7 +237,15 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
         mediaItems: MutableList<MediaItem>,
         startIndex: Int,
         startPositionMs: Long,
-    ): ListenableFuture<*> = Futures.immediateVoidFuture()
+    ): ListenableFuture<*> {
+        // Except for resumption: `onPlaybackResumption` hands media3 the resume item
+        // and media3 sets it here, with no onSetMediaItems in between. Loading the
+        // saved queue now means the play() media3 sends next has something to play.
+        if (mediaItems.getOrNull(startIndex)?.mediaId == CarResume.RESUME_ID) {
+            justRestored = localPlayer.restoreSaved() || localPlayer.queue.value.isNotEmpty()
+        }
+        return Futures.immediateVoidFuture()
+    }
 
     /** Likewise: there is no decoder here to prepare. */
     override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()

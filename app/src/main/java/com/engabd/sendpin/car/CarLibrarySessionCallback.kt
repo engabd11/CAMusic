@@ -83,11 +83,20 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         // that [CarMediaId.Item] needs to address a track again, so a resume target
         // cannot be rebuilt from it. That is the work, and it is not a one-line
         // change; see the PR notes.
+        //
+        // It can now: LocalPlayer keeps a saved copy of its last queue, and the recent
+        // root's one child is that queue's current track. With nothing saved the
+        // answer is still an explicit "nothing to resume", for the reason above.
         if (params?.isRecent == true) {
+            if (bridge.resumeItem() == null) {
+                return Futures.immediateFuture(
+                    LibraryResult.ofError(
+                        SessionError(SessionError.ERROR_NOT_SUPPORTED, "Nothing to resume"),
+                    ),
+                )
+            }
             return Futures.immediateFuture(
-                LibraryResult.ofError(
-                    SessionError(SessionError.ERROR_NOT_SUPPORTED, "Nothing to resume"),
-                ),
+                LibraryResult.ofItem(bridge.recentRoot(), LibraryParams.Builder().setRecent(true).build()),
             )
         }
         // The one call that carries it. A legacy browser - which is what Android Auto
@@ -133,6 +142,9 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         // server out of Wi-Fi range is the ordinary case, on a phone that has just been
         // driven away from the house — used to reach the car as an unexplained failure
         // and, on some head units, as a dead tab for the rest of the trip.
+        if (parentId == CarResume.RECENT_ROOT_ID) {
+            return@future LibraryResult.ofItemList(listOfNotNull(bridge.resumeItem()), null)
+        }
         runCatching {
             val children = bridge.children(parentId, rootChildrenLimit).page(page, pageSize)
             bridge.grantArtwork(browser.packageName, children)
@@ -217,6 +229,21 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
      * the whole list is the page. Returning everything regardless meant a paginated
      * browser was handed page 0 again for every page it asked for.
      */
+    /**
+     * Android's own resumption: a Bluetooth play with no session alive (after a
+     * reboot, or once the process has gone), or the system media controls' "resume"
+     * card. media3 plays whatever this returns; [CarSessionPlayer] recognises the
+     * resume item and loads the saved queue under it.
+     */
+    override fun onPlaybackResumption(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+    ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+        val item = bridge.resumeItem()
+            ?: return Futures.immediateFailedFuture(UnsupportedOperationException("Nothing to resume"))
+        return Futures.immediateFuture(MediaSession.MediaItemsWithStartPosition(listOf(item), 0, androidx.media3.common.C.TIME_UNSET))
+    }
+
     private fun <T> List<T>.page(page: Int, pageSize: Int): List<T> {
         if (page <= 0 && pageSize >= size) return this
         val from = page.toLong() * pageSize

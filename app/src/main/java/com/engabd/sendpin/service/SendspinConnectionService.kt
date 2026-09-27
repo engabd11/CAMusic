@@ -172,7 +172,7 @@ class SendspinConnectionService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForegroundNow()
+        if (!startForegroundNow()) return START_NOT_STICKY
         observeConnection()
         // Start in idle mode if nothing is playing — the service is being started
         // for reachability (TTS), not because audio is flowing, so there is no
@@ -244,13 +244,27 @@ class SendspinConnectionService : Service() {
         }
     }
 
-    private fun startForegroundNow() {
+    /**
+     * Enter the foreground, or say that Android refused.
+     *
+     * Android 12+ refuses `startForeground` to a service started while the app is in
+     * the background — a sticky restart after the process was killed is exactly that
+     * — and the refusal is an exception thrown into `onStartCommand`, which crashed
+     * the whole process on the main thread. Refused now means the service stops
+     * itself instead; the next start from the foreground brings it back.
+     */
+    private fun startForegroundNow(): Boolean = try {
         val n = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else {
             startForeground(NOTIFICATION_ID, n)
         }
+        true
+    } catch (e: Exception) {
+        android.util.Log.w("SendspinConnectionService", "Not allowed into the foreground; stopping: ${e.message}")
+        stopSelf()
+        false
     }
 
     private fun updateNotification() {
