@@ -26,6 +26,7 @@ import com.engabd.sendpin.download.DownloadedTrack
 import com.engabd.sendpin.library.AuthStyle
 import com.engabd.sendpin.library.Capability
 import com.engabd.sendpin.library.JellyfinSource
+import com.engabd.sendpin.library.LibrarySearch
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.library.ServerConfig
@@ -841,6 +842,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         startLiveSearch()
+        // The saved choice is the default for each new search; the chip above the
+        // results changes it for the search on screen only.
+        viewModelScope.launch {
+            settings.searchAllLibraries.collect { all ->
+                if (_search.value == null) _searchAll.value = all
+            }
+        }
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
         // This client outlives any one screen, so a format change made in Settings
         // has to reach it rather than waiting for a reconnect.
@@ -1520,6 +1528,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * server going away mid-album.
      */
     fun play(item: MaItem, option: String = "replace") {
+        if (isForeign(item)) { playForeign(item, option); return }
         if (option == "replace") leaveDjRadio()
         viewModelScope.launch {
             try {
@@ -2336,7 +2345,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun runSearch(query: String) {
         // A repeat of something already answered is not worth a round trip, and going
         // back a character should feel like undo rather than a fresh search.
-        searchCache[query]?.let {
+        val scopedKey = if (_searchAll.value) "all|$query" else query
+        searchCache[scopedKey]?.let {
             _search.value = it
             lastSearched = query
             _error.value = null
@@ -2345,13 +2355,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _searching.value = true; _error.value = null
         try {
             val r = when {
-                _backend.value == Backend.MA -> maRepo.search(query)
                 _offline.value -> searchDownloads(query)
+                _searchAll.value -> searchEveryLibrary(query)
+                _backend.value == Backend.MA -> maRepo.search(query)
                 else -> source?.search(query)
             }
             r?.let {
                 rememberFavorites(it.artists + it.albums + it.tracks + it.playlists)
-                searchCache[query] = it
+                searchCache[scopedKey] = it
             }
             _search.value = r
             lastSearched = query
@@ -3237,7 +3248,111 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             .map { downloadItem(it) },
     )
 
+    // --- search across libraries -------------------------------------------------
+
+    /** Whether there is more than one library to search — the chips only show then. */
+    val canSearchAll: StateFlow<Boolean> = settings.servers
+        .map { list -> list.count { it.kind != ServerKind.DOWNLOADS } > 1 }
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, false)
+
+    private val _searchAll = MutableStateFlow(false)
+    /** Whether the search on screen asks every library, or only the active one. */
+    val searchAll: StateFlow<Boolean> = _searchAll
+
+    /** Change the scope of the search on screen, and run it again if there is one. */
+    fun setSearchScope(all: Boolean) {
+        if (_searchAll.value == all) return
+        _searchAll.value = all
+        val q = lastSearched ?: _query.value.trim()
+        if (q.isNotBlank()) {
+            lastSearched = null
+            viewModelScope.launch { runSearch(q) }
+        }
+    }
+
+    /** Sources for libraries other than the active one, built once per server. */
+    private val foreignSources = java.util.concurrent.ConcurrentHashMap<String, MusicSource>()
+
+    private suspend fun foreignSource(serverId: String): MusicSource? {
+        foreignSources[serverId]?.let { return it }
+        val config = settings.servers.first().firstOrNull { it.id == serverId } ?: return null
+        return MusicSources.create(getApplication(), config)?.also { foreignSources[serverId] = it }
+    }
+
+    /**
+     * Every library at once. The active one answers through the same path a normal
+     * search takes (its live source, or the Music Assistant socket); the others
+     * through a source built for them. Music Assistant servers other than the active
+     * one are left out: they would each need a second socket and a sign-in, per
+     * keystroke. Downloads is not a server — "Search all" means the servers.
+     */
+    private suspend fun searchEveryLibrary(query: String): MaSearchResults {
+        val activeId = activeConfig?.id
+        val servers = settings.servers.first().filter { it.kind != ServerKind.DOWNLOADS }
+        val hits = LibrarySearch.fanOut(servers, SEARCH_ALL_TIMEOUT_MS) { config ->
+            when {
+                config.id == activeId && _backend.value == Backend.MA -> maRepo.search(query)
+                config.id == activeId -> source?.search(query)
+                config.kind == ServerKind.MUSIC_ASSISTANT -> null
+                else -> foreignSource(config.id)?.takeIf { it.has(Capability.SEARCH) }?.search(query)
+            }
+        }
+        return LibrarySearch.merge(activeId, hits)
+    }
+
+    /** An item that belongs to a library other than the one being browsed. */
+    fun isForeign(item: MaItem): Boolean = item.serverId != null && item.serverId != activeConfig?.id
+
+    /**
+     * A track from another library plays straight from that library, without leaving
+     * the one on screen. A queue add uses the same source, so a mixed queue works.
+     */
+    private fun playForeign(item: MaItem, option: String) {
+        val serverId = item.serverId ?: return
+        viewModelScope.launch {
+            try {
+                val src = foreignSource(serverId) ?: run { _toast.tryEmit("That library is no longer set up"); return@launch }
+                val tracks = if (item.mediaType == "track") listOf(item) else src.tracksUnder(item)
+                if (tracks.isEmpty()) { _toast.tryEmit("Nothing to play"); return@launch }
+                val local = tracks.map { downloadManager.toLocalTrack(it, streamUrl = src.streamUrl(it.itemId)) }
+                when (option) {
+                    "replace" -> {
+                        leaveDjRadio()
+                        stopMaPlayback()
+                        localPlayer.setQueue(local, 0)
+                    }
+                    "next" -> localPlayer.playNext(local)
+                    else -> localPlayer.addToQueue(local, startIfEmpty = true)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _toast.tryEmit(e.message ?: "Couldn't play")
+            }
+        }
+    }
+
+    /**
+     * An album, artist or playlist from another library opens *in* that library: the
+     * detail screens browse the active one, so the switch happens first and [open]
+     * runs once the new library has connected. Given up after [SWITCH_WAIT_MS].
+     */
+    fun openForeign(item: MaItem, open: () -> Unit) {
+        val serverId = item.serverId ?: return open()
+        viewModelScope.launch {
+            val config = settings.servers.first().firstOrNull { it.id == serverId }
+                ?: run { _toast.tryEmit("That library is no longer set up"); return@launch }
+            _toast.tryEmit("Opening ${config.displayName}")
+            settings.setActiveServer(config.id)
+            val ready = withTimeoutOrNull(SWITCH_WAIT_MS) {
+                (getApplication<Application>() as SendpinApp).musicSource
+                    .first { it != null && it.providerId == item.provider && activeConfig?.id == serverId }
+            }
+            if (ready != null) open() else _toast.tryEmit("${config.displayName} didn't answer")
+        }
+    }
+
     fun clearSearch() {
+        viewModelScope.launch { _searchAll.value = settings.searchAllLibraries.first() }
         _search.value = null
         _searchOpen.value = false
         _query.value = ""
@@ -4076,6 +4191,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
          * long enough that a whole word is one request instead of six.
          */
         const val SEARCH_DEBOUNCE_MS = 220L
+        /** Per library, for "Search all libraries"; one slow server costs only its answer. */
+        const val SEARCH_ALL_TIMEOUT_MS = 6_000L
+        /** How long opening another library's album may wait for that library to connect. */
+        const val SWITCH_WAIT_MS = 10_000L
 
         /**
          * Below this, don't ask. One or two letters match most of a library, so the

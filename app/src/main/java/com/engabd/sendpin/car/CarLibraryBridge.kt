@@ -12,6 +12,7 @@ import androidx.media3.session.MediaLibraryService.LibraryParams
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.library.LibrarySearch
 import com.engabd.sendpin.library.Capability
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
@@ -418,34 +419,26 @@ class CarLibraryBridge(private val app: SendpinApp) {
         return results
     }
 
-    private suspend fun searchAll(query: String): List<MediaItem> = coroutineScope {
+    private suspend fun searchAll(query: String): List<MediaItem> {
         val options = options()
-        val servers = visibleLibraries(options)
-        servers.map { config ->
-            async {
-                runCatching {
-                    withTimeoutOrNull(SEARCH_TIMEOUT_MS) { searchOne(config, query, options) } ?: emptyList()
-                }.getOrDefault(emptyList())
+        // The phone's "Search all libraries" and this share one fan-out — see
+        // LibrarySearch: every visible library at once, each bounded by its own timeout.
+        return LibrarySearch.fanOut(visibleLibraries(options), SEARCH_TIMEOUT_MS) { config -> searchResults(config, query) }
+            .flatMap { hit ->
+                (hit.results.tracks + hit.results.albums + hit.results.artists + hit.results.playlists)
+                    .map { it.toMediaItem(hit.config.id, options, mixedList = true) }
             }
-        }.map { it.await() }.flatten().take(SEARCH_RESULT_CAP)
+            .take(SEARCH_RESULT_CAP)
     }
 
-    private suspend fun searchOne(
-        config: ServerConfig,
-        query: String,
-        options: CarBrowseOptions,
-    ): List<MediaItem> {
-        val results: MaSearchResults = if (config.kind == ServerKind.MUSIC_ASSISTANT) {
-            if (!maReady(config)) return emptyList()
-            maRepo.search(query, SEARCH_PER_SOURCE_LIMIT)
+    private suspend fun searchResults(config: ServerConfig, query: String): MaSearchResults? =
+        if (config.kind == ServerKind.MUSIC_ASSISTANT) {
+            if (!maReady(config)) null else maRepo.search(query, SEARCH_PER_SOURCE_LIMIT)
         } else {
-            val source = sourceFor(config.id) ?: return emptyList()
-            if (!source.has(Capability.SEARCH)) return emptyList()
-            source.search(query, SEARCH_PER_SOURCE_LIMIT)
+            sourceFor(config.id)
+                ?.takeIf { it.has(Capability.SEARCH) }
+                ?.search(query, SEARCH_PER_SOURCE_LIMIT)
         }
-        return (results.tracks + results.albums + results.artists + results.playlists)
-            .map { it.toMediaItem(config.id, options, mixedList = true) }
-    }
 
     // ── Playback — always this phone, never a remote MA speaker ────────────
     //

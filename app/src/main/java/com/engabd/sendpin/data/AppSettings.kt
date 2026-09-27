@@ -153,6 +153,7 @@ class AppSettings(private val context: Context) {
         private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // keep the music going past the queue
+        private val SEARCH_ALL_LIBRARIES = booleanPreferencesKey("search_all_libraries") // library search asks every server
         private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
         private val BEAT_MATCHED_CROSSFADE = booleanPreferencesKey("beat_matched_crossfade") // time the fade to land on a beat
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
@@ -1214,6 +1215,13 @@ class AppSettings(private val context: Context) {
     val radioMode: Flow<Boolean> = pref { it[RADIO_MODE] ?: false }
 
     /**
+     * Whether the Library tab's search asks every configured library at once rather
+     * than only the active one. Off by default: the active library alone is what the
+     * search always did, and the one a listener expects until they ask for more.
+     */
+    val searchAllLibraries: Flow<Boolean> = pref { it[SEARCH_ALL_LIBRARIES] ?: false }
+
+    /**
      * Seconds of fade between tracks on the local player. 0 — the default — is
      * gapless, which is what an album wants.
      *
@@ -1712,6 +1720,10 @@ class AppSettings(private val context: Context) {
     }
 
     /** Applies to the next thing played, not the queue already running. */
+    suspend fun setSearchAllLibraries(value: Boolean) {
+        context.dataStore.edit { it[SEARCH_ALL_LIBRARIES] = value }
+    }
+
     suspend fun setRadioMode(value: Boolean) {
         context.dataStore.edit { it[RADIO_MODE] = value }
     }

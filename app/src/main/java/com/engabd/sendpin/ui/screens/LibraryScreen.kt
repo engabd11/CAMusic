@@ -521,6 +521,8 @@ private fun Browse(
     val djMood by viewModel.djRadioMood.collectAsStateWithLifecycle()
 
     val s = if (searchOpen) search else null
+    val searchAll by viewModel.searchAll.collectAsStateWithLifecycle()
+    val canSearchAll by viewModel.canSearchAll.collectAsStateWithLifecycle()
 
     // Everything derived from the node's item list is computed once here, keyed on the
     // list itself. It cannot live inside the LazyVerticalGrid content lambda below:
@@ -625,6 +627,19 @@ private fun Browse(
         if (loading) {
             items(6, span = { full(gridCols) }, contentType = { "skeleton" }) { SkeletonRow() }
             return@LazyVerticalGrid
+        }
+
+        // Which libraries this search asks — only when there is more than one to ask.
+        if (searchOpen && canSearchAll) {
+            item(key = "search_scope", span = { full(gridCols) }, contentType = { "scope" }) {
+                androidx.compose.foundation.layout.Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                ) {
+                    ToggleChip("This library", !searchAll) { viewModel.setSearchScope(false) }
+                    ToggleChip("All libraries", searchAll) { viewModel.setSearchScope(true) }
+                }
+            }
         }
 
         // The first query of a session has no previous results to hold on to, and
@@ -1011,10 +1026,14 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
         contentType = { _, _ -> "row" },
         span = { _, _ -> full(gridCols) },
     ) { _, entry ->
+        // A result from another library opens in that library — see openForeign.
+        val foreign = viewModel.isForeign(entry)
+        fun go(open: (MaItem) -> Unit): () -> Unit =
+            if (foreign) ({ viewModel.openForeign(entry) { open(entry.copy(serverId = null)) } }) else ({ open(entry) })
         val click: (() -> Unit)? = when (entry.mediaType) {
-            "album" -> { { onAlbumClick(entry) } }
-            "artist" -> { { onArtistClick(entry) } }
-            "playlist" -> { { onPlaylistClick(entry) } }
+            "album" -> go(onAlbumClick)
+            "artist" -> go(onArtistClick)
+            "playlist" -> go(onPlaylistClick)
             else -> null
         }
         ItemRow(entry, viewModel, rows.of(entry), click, onLongPress, swipeToQueue = true)

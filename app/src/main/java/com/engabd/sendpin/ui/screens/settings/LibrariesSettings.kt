@@ -205,6 +205,27 @@ private fun ServerList(
 
         OledButton("Add a server", accent = accent, outline = servers.isNotEmpty()) { onDetail(PICK_ROUTE) }
 
+        if (servers.count { it.kind != ServerKind.DOWNLOADS } > 1) {
+            val searchAll by settings.searchAllLibraries.collectAsStateWithLifecycle(initialValue = false)
+            ToggleRow(
+                title = "Search all libraries",
+                subtitle = if (searchAll) "The Library search asks every server at once"
+                else "The Library search asks only the library you are browsing",
+                checked = searchAll,
+                accent = accent,
+                info = "When this is on, a search in the Library tab goes to every library " +
+                    "you have set up, in parallel, and the results from the others are " +
+                    "labelled with the library they came from. A song from another library " +
+                    "plays straight from it; opening an album, artist or playlist from " +
+                    "another library switches to that library first.\n\nThe chips above the " +
+                    "results change it for one search without changing this setting.\n\n" +
+                    "Music Assistant servers other than the active library are not included: " +
+                    "each would need its own connection and sign-in for every search. Android " +
+                    "Auto's voice search always searches every library, whatever this says.",
+                onChange = { on -> scope.launch { settings.setSearchAllLibraries(on) } },
+            )
+        }
+
         servers.firstOrNull { it.id == activeId }?.let { active ->
             PageIntro(
                 title = "What ${active.displayName} means for the rest of the app",

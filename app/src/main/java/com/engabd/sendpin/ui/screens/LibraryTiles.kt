@@ -520,7 +520,9 @@ internal fun ItemRow(
                 item.name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
                 fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            item.subtitle?.let {
+            // A search result from another library says which one, after its own subtitle.
+            listOfNotNull(item.subtitle?.takeIf { it.isNotBlank() }, item.serverLabel)
+                .joinToString(" · ").takeIf { it.isNotEmpty() }?.let {
                 Text(
                     it, color = inkOn(0.38f), fontFamily = AppFont, fontSize = 12.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
