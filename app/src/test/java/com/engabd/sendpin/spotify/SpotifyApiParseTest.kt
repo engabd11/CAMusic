@@ -50,7 +50,7 @@ class SpotifyApiParseTest {
         assertEquals(215, track.duration)
         assertEquals(3, track.trackNumber)
         assertEquals("https://i.scdn.co/image/ab67616d0000b273", track.image)
-        assertEquals("spotify", track.provider)
+        assertEquals(SpotifyWebApi.PROVIDER, track.provider)
     }
 
     @Test

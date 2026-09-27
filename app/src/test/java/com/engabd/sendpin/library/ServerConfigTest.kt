@@ -356,6 +356,27 @@ class LocalProviderTest {
         assertTrue(MusicSources.isLocalProvider(MusicSources.DOWNLOAD_PROVIDER))
     }
 
+    /**
+     * The direct streaming accounts play on this phone. Their tags used to be the bare
+     * service names, which this check could not tell from Music Assistant's — so a
+     * single track tapped in a Qobuz, Tidal or Spotify library went to MA's
+     * `playOn` instead of the local engine, while "Play all" (routed by backend)
+     * played here.
+     */
+    @Test
+    fun `direct streaming accounts count as local and do not collide with MA domains`() {
+        for (tag in listOf(
+            com.engabd.sendpin.qobuz.QobuzClient.PROVIDER,
+            com.engabd.sendpin.tidal.TidalClient.PROVIDER,
+            com.engabd.sendpin.spotify.SpotifyWebApi.PROVIDER,
+        )) {
+            assertTrue(MusicSources.isLocalProvider(tag), "$tag should play on this phone")
+        }
+        for (maDomain in listOf("qobuz", "tidal", "spotify", "spotify--AbC123")) {
+            assertFalse(MusicSources.isLocalProvider(maDomain), "$maDomain is Music Assistant's")
+        }
+    }
+
     @Test
     fun `Music Assistant's own tags do not`() {
         // MA files everything under "library"; the provider domains are what it

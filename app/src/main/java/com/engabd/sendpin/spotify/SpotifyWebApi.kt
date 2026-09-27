@@ -41,7 +41,14 @@ class SpotifyWebApi(
 ) {
     companion object {
         const val BASE = "https://api.spotify.com/v1"
-        const val PROVIDER = "spotify"
+        /**
+         * The provider tag this client stamps on its items: deliberately *not* the
+         * bare service name. Music Assistant tags items from its own Spotify provider
+         * with the bare domain (`"spotify"`), and [com.engabd.sendpin.library.MusicSources.isLocalProvider]
+         * routes on the tag alone — so while the two matched, every direct-account
+         * track tapped in the library was sent to Music Assistant instead of played here.
+         */
+        const val PROVIDER = "spotify-direct"
     }
 
     // ── Library ───────────────────────────────────────────────────────────
