@@ -386,3 +386,34 @@ class LocalProviderTest {
         assertFalse(MusicSources.isLocalProvider(""))
     }
 }
+
+/** Which options are stored encrypted — see ServerConfig.SECRET_OPTIONS. */
+class SecretOptionsTest {
+
+    @Test
+    fun `tidal tokens and app secrets are transformed, everything else is not`() {
+        val options = mapOf(
+            ServerConfig.OPT_TIDAL_ACCESS_TOKEN to "access",
+            ServerConfig.OPT_TIDAL_REFRESH_TOKEN to "refresh",
+            ServerConfig.OPT_TIDAL_CLIENT_SECRET to "csecret",
+            ServerConfig.OPT_QOBUZ_APP_SECRET to "qsecret",
+            ServerConfig.OPT_TIDAL_CLIENT_ID to "cid",
+            ServerConfig.OPT_TIDAL_USER_ID to "42",
+            ServerConfig.OPT_STREAM_FORMAT to "raw",
+        )
+        val out = ServerConfig.mapSecretOptions(options) { "enc($it)" }
+        assertEquals("enc(access)", out[ServerConfig.OPT_TIDAL_ACCESS_TOKEN])
+        assertEquals("enc(refresh)", out[ServerConfig.OPT_TIDAL_REFRESH_TOKEN])
+        assertEquals("enc(csecret)", out[ServerConfig.OPT_TIDAL_CLIENT_SECRET])
+        assertEquals("enc(qsecret)", out[ServerConfig.OPT_QOBUZ_APP_SECRET])
+        assertEquals("cid", out[ServerConfig.OPT_TIDAL_CLIENT_ID])
+        assertEquals("42", out[ServerConfig.OPT_TIDAL_USER_ID])
+        assertEquals("raw", out[ServerConfig.OPT_STREAM_FORMAT])
+    }
+
+    @Test
+    fun `options with no secrets are returned as the same map`() {
+        val options = mapOf(ServerConfig.OPT_STREAM_FORMAT to "raw")
+        kotlin.test.assertSame(options, ServerConfig.mapSecretOptions(options) { error("must not be called") })
+    }
+}
