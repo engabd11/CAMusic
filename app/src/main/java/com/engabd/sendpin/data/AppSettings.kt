@@ -784,7 +784,13 @@ class AppSettings(private val context: Context) {
     private fun encodeServers(list: List<ServerConfig>): String =
         serverJson.encodeToString(
             ListSerializer(ServerConfig.serializer()),
-            list.map { it.copy(password = Crypto.encrypt(it.password), token = Crypto.encrypt(it.token)) },
+            list.map {
+                it.copy(
+                    password = Crypto.encrypt(it.password),
+                    token = Crypto.encrypt(it.token),
+                    options = ServerConfig.mapSecretOptions(it.options, Crypto::encrypt),
+                )
+            },
         )
 
     /**
@@ -799,7 +805,16 @@ class AppSettings(private val context: Context) {
      */
     private fun decodeServers(raw: String): List<ServerConfig>? = runCatching {
         serverJson.decodeFromString(ListSerializer(ServerConfig.serializer()), raw)
-            .map { it.copy(password = Crypto.decrypt(it.password), token = Crypto.decrypt(it.token)) }
+            .map {
+                // Secret options stored before they were encrypted have no `enc1:` tag,
+                // and Crypto.decrypt hands those back unchanged, so they still read.
+                // The next write stores them encrypted.
+                it.copy(
+                    password = Crypto.decrypt(it.password),
+                    token = Crypto.decrypt(it.token),
+                    options = ServerConfig.mapSecretOptions(it.options, Crypto::decrypt),
+                )
+            }
     }.getOrNull()
 
     // ── Settings export / import ────────────────────────────────────────────

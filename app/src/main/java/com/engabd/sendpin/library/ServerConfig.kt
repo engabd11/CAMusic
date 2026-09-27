@@ -377,5 +377,25 @@ data class ServerConfig(
         const val OPT_TIDAL_USER_ID = "tidalUserId"
         const val OPT_TIDAL_COUNTRY_CODE = "tidalCountryCode"
 
+        /**
+         * Options whose values are credentials, and so are stored Keystore-encrypted
+         * like [password] and [token] rather than in the clear. Only those two fields
+         * used to be encrypted, which left a Tidal session's access and refresh tokens
+         * and the Qobuz/Tidal app secrets in plaintext in the settings file.
+         *
+         * Any new option carrying a secret belongs in this set.
+         */
+        val SECRET_OPTIONS: Set<String> = setOf(
+            OPT_QOBUZ_APP_SECRET,
+            OPT_TIDAL_CLIENT_SECRET,
+            OPT_TIDAL_ACCESS_TOKEN,
+            OPT_TIDAL_REFRESH_TOKEN,
+        )
+
+        /** [options] with every [SECRET_OPTIONS] value passed through [transform]. */
+        fun mapSecretOptions(options: Map<String, String>, transform: (String) -> String): Map<String, String> =
+            if (options.keys.none { it in SECRET_OPTIONS }) options
+            else options.mapValues { (k, v) -> if (k in SECRET_OPTIONS) transform(v) else v }
+
     }
 }
