@@ -170,6 +170,15 @@ data class MaItem(
      * tracks where the composer is the credit the listener actually cares about.
      */
     val composer: String? = null,
+    /**
+     * The library this item came from, when that is *not* the library being browsed —
+     * set only on "Search all libraries" results from another server (see
+     * [com.engabd.sendpin.library.LibrarySearch.merge]). Null means the active one,
+     * which is every item everywhere else.
+     */
+    val serverId: String? = null,
+    /** That library's name, for the row to show beside the subtitle. Display only. */
+    val serverLabel: String? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
