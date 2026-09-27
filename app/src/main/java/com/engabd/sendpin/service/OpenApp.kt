@@ -28,13 +28,30 @@ fun openAppIntent(context: Context, requestCode: Int): PendingIntent =
     PendingIntent.getActivity(
         context,
         requestCode,
-        Intent(context, MainActivity::class.java).apply {
-            action = Intent.ACTION_MAIN
-            addCategory(Intent.CATEGORY_LAUNCHER)
+        launchIntent(context).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         },
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
+
+/**
+ * This install's own front door, whichever flavour it is.
+ *
+ * Asked of the package manager rather than naming [MainActivity], because the TV
+ * flavour's manifest removes MainActivity and launches `TvMainActivity` from the
+ * leanback launcher instead. An explicit MainActivity intent resolved to nothing
+ * there, so every notification tap on a TV did nothing at all. The phone falls back
+ * to MainActivity if the package manager ever answers null.
+ */
+fun launchIntent(context: Context): Intent {
+    val pm = context.packageManager
+    return pm.getLaunchIntentForPackage(context.packageName)
+        ?: pm.getLeanbackLaunchIntentForPackage(context.packageName)
+        ?: Intent(context, MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+}
 
 /** Request codes for [openAppIntent] — one per service, never reused. */
 object OpenAppRequest {
@@ -42,4 +59,5 @@ object OpenAppRequest {
     const val MEDIA = 101
     const val LOCAL = 102
     const val TILE = 103
+    const val EFFECTS = 104
 }

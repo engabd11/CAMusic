@@ -11,7 +11,6 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.engabd.sendpin.MainActivity
 
 /**
  * Keeps an ambience show alive while the app is not on screen.
@@ -36,7 +35,13 @@ class EffectsService : Service() {
 
     companion object {
         const val CHANNEL_ID = "effects_ambience"
-        const val NOTIFICATION_ID = 1002       // above the media notification (1001)
+        /**
+         * Its own id. This was 1002, the same as LocalPlaybackService's — and an
+         * ambience show can run over music, so starting one replaced the media
+         * notification with "Ambience show running", and stopping it could take the
+         * music's notification away with it.
+         */
+        const val NOTIFICATION_ID = 1003
         const val ACTION_START = "com.engabd.sendpin.START_EFFECT"
         const val ACTION_STOP = "com.engabd.sendpin.STOP_EFFECT"
         const val EXTRA_TITLE = "title"
@@ -110,11 +115,7 @@ class EffectsService : Service() {
     }
 
     private fun buildNotification(title: String): Notification {
-        val open = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val open = openAppIntent(this, OpenAppRequest.EFFECTS)
         val stop = PendingIntent.getService(
             this, 1,
             Intent(this, EffectsService::class.java).apply { action = ACTION_STOP },
