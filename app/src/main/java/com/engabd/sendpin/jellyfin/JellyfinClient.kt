@@ -1,5 +1,6 @@
 package com.engabd.sendpin.jellyfin
 
+import com.engabd.sendpin.library.fetchAllPages
 import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
@@ -60,6 +61,9 @@ class JellyfinClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     companion object {
+        /** Page size for [fetchAllPages]: one comfortable request\'s worth. */
+        private const val PAGE = 200
+
         const val PROVIDER = "jellyfin"
 
         /** Jellyfin's default "played" mark (MaxResumePct): a stop past it counts itself. */
@@ -424,8 +428,10 @@ class JellyfinClient(
             .mapNotNull { (it as? JsonObject)?.let(::item) }
     }
 
-    suspend fun artists(limit: Int = 500): List<MaItem> =
-        items(types = "MusicArtist", sortBy = "SortName", limit = limit)
+    /** Every artist, paged — this was one request capped at 500, cut off silently. */
+    suspend fun artists(): List<MaItem> = fetchAllPages(PAGE) { offset, limit ->
+        items(types = "MusicArtist", sortBy = "SortName", limit = limit, offset = offset)
+    }
 
     suspend fun albums(offset: Int = 0, limit: Int = 200): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "SortName", limit = limit, offset = offset)
@@ -516,11 +522,13 @@ class JellyfinClient(
     suspend fun randomAlbums(limit: Int = 12): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "Random", limit = limit)
 
-    suspend fun albumTracks(albumId: String): List<MaItem> =
-        items(types = "Audio", parentId = albumId, sortBy = "ParentIndexNumber,IndexNumber", recursive = false)
+    suspend fun albumTracks(albumId: String): List<MaItem> = fetchAllPages(PAGE) { offset, limit ->
+        items(types = "Audio", parentId = albumId, sortBy = "ParentIndexNumber,IndexNumber", recursive = false, limit = limit, offset = offset)
+    }
 
-    suspend fun artistAlbums(artistId: String): List<MaItem> =
-        items(types = "MusicAlbum", artistIds = artistId, sortBy = "ProductionYear,SortName")
+    suspend fun artistAlbums(artistId: String): List<MaItem> = fetchAllPages(PAGE) { offset, limit ->
+        items(types = "MusicAlbum", artistIds = artistId, sortBy = "ProductionYear,SortName", limit = limit, offset = offset)
+    }
 
     suspend fun item(id: String): MaItem? =
         (get("/Users/$userId/Items/$id") as JsonObject?)?.takeIf { it.isNotEmpty() }?.let(::item)
@@ -534,11 +542,17 @@ class JellyfinClient(
      * that must *not* inherit [libraryId] — scoping it to the music folder returns
      * nothing at all.
      */
-    suspend fun playlists(): List<MaItem> =
-        items(types = "Playlist", sortBy = "SortName", ignoreLibrary = true)
+    suspend fun playlists(): List<MaItem> = fetchAllPages(PAGE) { offset, limit ->
+        items(types = "Playlist", sortBy = "SortName", ignoreLibrary = true, limit = limit, offset = offset)
+    }
 
-    suspend fun playlistTracks(id: String): List<MaItem> =
-        items(types = "Audio", parentId = id, recursive = false)
+    /**
+     * Every track in the playlist. Paged: a single request stopped at the query's
+     * default of 200, so a longer playlist played — and downloaded — as its first 200.
+     */
+    suspend fun playlistTracks(id: String): List<MaItem> = fetchAllPages(PAGE) { offset, limit ->
+        items(types = "Audio", parentId = id, recursive = false, limit = limit, offset = offset)
+    }
 
     suspend fun genres(): List<MaItem> =
         get(
@@ -575,7 +589,7 @@ class JellyfinClient(
     }
 
     suspend fun favorites(): MaSearchResults {
-        val all = items(filters = "IsFavorite", limit = 500)
+        val all = fetchAllPages(PAGE) { offset, limit -> items(filters = "IsFavorite", limit = limit, offset = offset) }
         // Playlists are a second request because they are not one of [MUSIC_TYPES] and
         // do not live under the music library — the same reason [playlists] asks
         // separately and with `ignoreLibrary`. Best-effort: a server that refuses the
