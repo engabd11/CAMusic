@@ -45,8 +45,12 @@ object DebugBundle {
     /** The most recent lines of the app's log that are kept. Enough to cover a session. */
     private const val LOG_LINES = 6_000
 
-    /** Preference names carrying secrets are dropped from the settings section outright. */
-    private val SECRET_KEY_HINTS = listOf("password", "token", "secret", "key", "servers", "credential")
+    /**
+     * Preference names carrying secrets are dropped from the settings section outright.
+     * Usernames go too: half of a login is still half of a login, and nothing in a bug
+     * report is ever diagnosed by one.
+     */
+    private val SECRET_KEY_HINTS = listOf("password", "token", "secret", "key", "servers", "credential", "username")
 
     /** The name the file is written and shared under. */
     fun fileName(): String {
@@ -170,8 +174,10 @@ object DebugBundle {
             if (reports.isEmpty()) appendLine("none")
             reports.asReversed().forEach { r ->
                 appendLine("--- ${r.time} · ${r.versionName} (${r.versionCode}) · API ${r.apiLevel} · ${r.device}")
-                appendLine("${r.exceptionClass}: ${r.message ?: ""} [thread ${r.thread}]")
-                appendLine(r.stackTrace.trimEnd())
+                // Scrubbed like the log: an exception message from OkHttp or media3
+                // can quote the request URL, credentials and all.
+                appendLine(LogRedactor.scrub("${r.exceptionClass}: ${r.message ?: ""} [thread ${r.thread}]"))
+                appendLine(LogRedactor.scrub(r.stackTrace.trimEnd()))
                 appendLine()
             }
         }
@@ -180,7 +186,7 @@ object DebugBundle {
                 settings.diagnosticSnapshot()
                     .filterKeys { key -> SECRET_KEY_HINTS.none { hint -> key.contains(hint, ignoreCase = true) } }
                     .toSortedMap()
-                    .forEach { (k, v) -> line(k, v) }
+                    .forEach { (k, v) -> line(k, LogRedactor.scrub(v)) }
             }
         }
         section("Log (this process, last $LOG_LINES lines)") {
@@ -192,12 +198,19 @@ object DebugBundle {
      * The app's own log, as `logcat` will give it to an app without READ_LOGS: every
      * line this process wrote. This is where the MA, player, Hue and scanner tags
      * land, and it is the single most useful thing in the file.
+     *
+     * Every line goes through [LogRedactor]. The file is made to be attached to a
+     * public issue, and this section used to be copied verbatim — including cover and
+     * stream URLs that carry a Subsonic token, a Jellyfin `api_key` or a Plex token,
+     * whether this app logged them or a library quoted one in an exception.
      */
     private fun readLogcat(): String = try {
         val proc = ProcessBuilder(
             "logcat", "-d", "-v", "threadtime", "-t", LOG_LINES.toString(), "--pid=${Process.myPid()}",
         ).redirectErrorStream(true).start()
-        val text = proc.inputStream.bufferedReader().use { it.readText() }
+        val text = proc.inputStream.bufferedReader().useLines { lines ->
+            lines.joinToString("\n") { LogRedactor.scrub(it) }
+        }
         proc.waitFor()
         text.ifBlank { "(logcat returned nothing — the process may have just restarted)" }
     } catch (e: Exception) {

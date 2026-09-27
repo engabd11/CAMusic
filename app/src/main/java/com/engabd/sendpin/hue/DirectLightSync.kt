@@ -3,6 +3,7 @@ package com.engabd.sendpin.hue
 import android.animation.ValueAnimator
 import android.content.Context
 import android.util.Log
+import com.engabd.sendpin.crash.LogRedactor
 import com.engabd.sendpin.audio.ANALYSIS_HOP
 import com.engabd.sendpin.audio.ANALYSIS_SAMPLE_RATE
 import com.engabd.sendpin.audio.AnalysisFrame
@@ -1747,7 +1748,9 @@ class DirectLightSync(
                     // Loudly, and with the URL: MA covers go through /imageproxy and the
                     // loader probes three URL shapes to find one the server answers, so a
                     // miss here is a real and diagnosable thing rather than a curiosity.
-                    Log.w(TAG, "Album art did not load, keeping previous palette: $url")
+                    // Redacted: a Subsonic, Jellyfin or Plex cover URL carries the
+                    // account's credentials in its query string.
+                    Log.w(TAG, "Album art did not load, keeping previous palette: ${LogRedactor.url(url)}")
                     return@withContext
                 }
                 val fresh = when (scheme) {
@@ -1755,7 +1758,7 @@ class DirectLightSync(
                     ColorScheme.ALBUM_ART_V2 -> extractAlbumColours(bitmap)
                     else -> extractAlbumColours(bitmap)  // SONG and statics don't use album colours
                 } ?: run {
-                    Log.w(TAG, "Album art yielded no colours, keeping previous palette: $url")
+                    Log.w(TAG, "Album art yielded no colours, keeping previous palette: ${LogRedactor.url(url)}")
                     return@withContext
                 }
                 synchronized(paletteCache) { paletteCache[key] = fresh }
@@ -1785,7 +1788,7 @@ class DirectLightSync(
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
-            Log.w(TAG, "Album art palette failed for $url: ${e.message}")
+            Log.w(TAG, "Album art palette failed for ${LogRedactor.url(url)}: ${e.message?.let(LogRedactor::scrub)}")
         }
     }
 
