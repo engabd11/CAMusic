@@ -228,7 +228,14 @@ interface MusicSource {
      * and not. Subsonic has no equivalent — its `scrobble` is the whole protocol — so
      * the default is a no-op and costs those providers nothing.
      */
-    suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) = Unit
+    suspend fun reportProgress(
+        id: String,
+        positionMs: Long,
+        paused: Boolean,
+        /** "off" | "one" | "all", as the player holds it — for a server that shows it. */
+        repeatMode: String = "off",
+        shuffle: Boolean = false,
+    ) = Unit
 
     /**
      * The track [id] really ended - moved on, ran out, or was cleared - at

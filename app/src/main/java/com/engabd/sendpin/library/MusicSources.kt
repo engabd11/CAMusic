@@ -90,6 +90,7 @@ object MusicSources {
                 // a constant shared by every copy of the app meant two phones on one
                 // account fought over a single session in the server's dashboard.
                 deviceId = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
+                deviceName = android.os.Build.MODEL.ifBlank { "Android" },
             ).apply {
                 streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             },
@@ -102,6 +103,7 @@ object MusicSources {
                 userId = config.option(ServerConfig.OPT_USER_ID).orEmpty(),
                 libraryId = config.option(ServerConfig.OPT_LIBRARY_ID).orEmpty(),
                 deviceId = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
+                deviceName = android.os.Build.MODEL.ifBlank { "Android" },
             ).apply {
                 streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             },

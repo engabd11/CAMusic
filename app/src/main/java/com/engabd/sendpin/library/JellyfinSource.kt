@@ -138,8 +138,8 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
             ?: 0L
     }
 
-    override suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) =
-        client.reportProgress(id, positionMs, paused)
+    override suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean, repeatMode: String, shuffle: Boolean) =
+        client.reportProgress(id, positionMs, paused, repeatMode, shuffle)
 
     override suspend fun reportStopped(id: String, positionMs: Long, durationMs: Long) =
         client.reportStopped(id, positionMs, durationMs)

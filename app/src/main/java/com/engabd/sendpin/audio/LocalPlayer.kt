@@ -1720,6 +1720,12 @@ class LocalPlayer(private val context: Context) {
      * the playhead is. A remote player has nothing fresher than its last poll,
      * extrapolated, so that one is used as is.
      */
+    /**
+     * The rate the playhead actually advances at: the chosen speed times any Lo-fi
+     * slowdown. What a follower of the session has to extrapolate with.
+     */
+    fun effectiveSpeed(): Float = livePlayer?.playbackParameters?.speed ?: 1f
+
     suspend fun livePositionMs(): Long = withContext(Dispatchers.Main.immediate) {
         if (remote != null) _positionMs.value else player.currentPosition.coerceAtLeast(0)
     }
