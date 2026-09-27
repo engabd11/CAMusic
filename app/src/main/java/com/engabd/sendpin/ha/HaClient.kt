@@ -6,6 +6,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import com.engabd.sendpin.data.Http
@@ -29,7 +30,8 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     enum class State { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
 
     private val http = Http.socket(pingSeconds = 30)
-    private var ws: WebSocket? = null
+    // Written by connect/disconnect on the caller's thread, read on OkHttp's.
+    @Volatile private var ws: WebSocket? = null
     private val nextId = AtomicInteger(1)
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<JsonElement?>>()
 
@@ -55,7 +57,18 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     fun disconnect() {
         ws?.close(1000, "bye"); ws = null
         _state.value = State.DISCONNECTED
-        pending.values.forEach { it.complete(null) }; pending.clear()
+        failPending("Disconnected")
+    }
+
+    /**
+     * Fail every request still waiting for an answer. With an exception, not a null:
+     * a null reads as "Home Assistant has no lights", which is exactly the lie a
+     * dropped connection must not tell.
+     */
+    private fun failPending(why: String) {
+        val waiting = pending.values.toList()
+        pending.clear()
+        waiting.forEach { it.completeExceptionally(HaException(why)) }
     }
 
     private val listener = object : WebSocketListener() {
@@ -68,11 +81,23 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             if (webSocket !== ws) return
             _state.value = State.ERROR
-            pending.values.forEach { it.complete(null) }; pending.clear()
+            failPending("Connection to Home Assistant lost: ${t.message}")
+        }
+        // HA restarting sends a close frame; OkHttp then waits for this side to answer
+        // before it will call onClosed. Nothing answered, so the socket sat half-closed
+        // and every request on it waited out its timeout.
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            webSocket.close(1000, null)
+            if (webSocket !== ws) return
+            if (_state.value != State.ERROR) _state.value = State.DISCONNECTED
+            failPending("Home Assistant closed the connection")
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (webSocket !== ws) return
             if (_state.value != State.ERROR) _state.value = State.DISCONNECTED
+            // Until this, a request in flight when HA closed the socket waited out its
+            // whole fifteen-second timeout for an answer that could no longer come.
+            failPending("Home Assistant closed the connection")
         }
     }
 
@@ -83,7 +108,7 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
                 put("type", "auth"); put("access_token", token)
             }.toString())
             "auth_ok" -> _state.value = State.CONNECTED
-            "auth_invalid" -> _state.value = State.ERROR
+            "auth_invalid" -> { _state.value = State.ERROR; failPending("Home Assistant rejected the token") }
             "result" -> {
                 val id = obj["id"]?.jsonPrimitive?.intOrNull ?: return
                 val d = pending.remove(id) ?: return
@@ -98,6 +123,16 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     }
 
     suspend fun sendCommand(type: String, extra: JsonObject = JsonObject(emptyMap()), timeoutMs: Long = 15_000): JsonElement? {
+        // HA ignores anything sent before `auth_ok` and then drops the socket, so a
+        // command issued straight after connect() — which is how the one-shot "switch
+        // every area off" path used it — never reached HA at all. Wait for the
+        // handshake to settle; fail fast if it did not succeed.
+        val settled = try {
+            withTimeout(timeoutMs) { state.first { it != State.CONNECTING } }
+        } catch (e: TimeoutCancellationException) {
+            throw HaException("Home Assistant did not answer")
+        }
+        if (settled != State.CONNECTED) throw HaException("Not connected")
         val socket = ws ?: throw HaException("Not connected")
         val id = nextId.getAndIncrement()
         val d = CompletableDeferred<JsonElement?>().also { pending[id] = it }

@@ -1982,6 +1982,11 @@ class AppSettings(private val context: Context) {
         }
     }
 
+    /** The paired bridge answered from a new address (DHCP); everything else stays. */
+    suspend fun setHueBridgeIp(ip: String) {
+        context.dataStore.edit { it[HUE_BRIDGE_IP] = ip }
+    }
+
     suspend fun setHueConfigId(id: String) {
         context.dataStore.edit { it[HUE_CONFIG_ID] = id }
     }

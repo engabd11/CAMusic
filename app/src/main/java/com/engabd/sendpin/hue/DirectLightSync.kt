@@ -786,6 +786,19 @@ class DirectLightSync(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /**
+     * True while the show is down for a reason that can pass by itself: the bridge
+     * unreachable, the Wi-Fi gone, the bridge moved to a new address. [LightSyncHealer]
+     * retries only while this holds.
+     *
+     * Deliberately false for the failures that must not be retried behind the user's
+     * back: nothing configured, another app streaming to the area ([HueStreamBusyException]),
+     * and the bridge revoking the stream — taking an area back from the Hue app is
+     * what makes its stop button look broken.
+     */
+    private val _outage = MutableStateFlow(false)
+    val outage: StateFlow<Boolean> = _outage.asStateFlow()
+
     // ── Entertainment areas ───────────────────────────────────────────────
     //
     // The bridge's list of entertainment areas, held here rather than fetched by
@@ -1017,6 +1030,7 @@ class DirectLightSync(
             running.set(true)
             _active.value = true
             _error.value = null
+            _outage.value = false
 
             // The setting may already have been on when this session started —
             // its own collector only fires on a *change*, and running was false
@@ -1034,12 +1048,17 @@ class DirectLightSync(
             // because an error-level stack trace for "the Hue app is running" is
             // noise — and the message is the actionable part, not the trace.
             _error.value = e.message
+            _outage.value = false
             Log.i(TAG, "Entertainment area is in use by another app")
             cleanup()
         } catch (e: Exception) {
             _error.value = e.message ?: "Failed to start Light Sync"
             Log.e(TAG, "start failed", e)
             cleanup()
+            // Unreachable, timed out, refused: all worth another go once something
+            // changes. Until this, a bridge that was off when the switch went on (or
+            // when the phone booted) stayed dark until the user toggled a setting.
+            _outage.value = true
         } finally {
             starting.set(false)
         }
@@ -1063,6 +1082,7 @@ class DirectLightSync(
         // turn round and call this again — the session is already being closed here.
         ambienceOwnsSession = false
         stopAmbience()
+        _outage.value = false
         if (!running.getAndSet(false)) return@withContext
         cleanup()
     }
@@ -1660,6 +1680,7 @@ class DirectLightSync(
                 Log.w(TAG, "Bridge revoked the stream: ${e.message}")
                 revoked = true
                 running.set(false)
+                _outage.value = false
                 _error.value = "The bridge revoked the stream (another app may have taken over)"
                 scope.launch { cleanup() }
                 return EmitResult.ABORT
@@ -1991,7 +2012,14 @@ class DirectLightSync(
         Log.w(TAG, "Giving up on the bridge after $RECONNECT_ATTEMPTS attempts")
         _error.value = "Lost the connection to the bridge"
         running.set(false)
-        scope.launch { cleanup() }
+        scope.launch {
+            cleanup()
+            // After the teardown, so the healer's first attempt cannot race it. The
+            // two-minute backoff above rides out a roam; what it cannot ride out — a
+            // router rebooting for five minutes, a bridge given a new address — is
+            // [LightSyncHealer]'s job.
+            if (!revoked) _outage.value = true
+        }
         return false
     }
 

@@ -408,6 +408,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.room.testing)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 
     // Instrumented tests: ./gradlew :app:connectedDebugAndroidTest (needs a device).
     // Deliberately thin — these exist to pin two specific regressions that cost a
