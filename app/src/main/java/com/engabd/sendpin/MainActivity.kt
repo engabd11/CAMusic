@@ -7,7 +7,12 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
+import com.engabd.sendpin.ui.screens.DrivingPipCard
 import androidx.compose.ui.graphics.toArgb
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.theme.pageColorFor
@@ -91,8 +96,21 @@ class MainActivity : ComponentActivity() {
         watchDrivingForPip()
         setContent {
             val windowSizeClass = calculateWindowSizeClass(this)
-            App(windowSizeClass = windowSizeClass)
+            // The app stays composed underneath, so leaving PiP returns to exactly the
+            // screen that was open; the card only covers it while the window is small.
+            Box {
+                App(windowSizeClass = windowSizeClass)
+                if (inPip.value) DrivingPipCard(Modifier.fillMaxSize())
+            }
         }
+    }
+
+    /** Whether the activity is currently the driving Picture-in-Picture window. */
+    private val inPip = mutableStateOf(false)
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPip.value = isInPictureInPictureMode
     }
 
     /** Routes a Picture-in-Picture button to whichever player owns the session. */
