@@ -2070,11 +2070,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // already unified there, which a per-backend hook (mirroring how the
         // scrobble path in LibraryViewModel is local-only) would not be.
         viewModelScope.launch {
-            state.map { TrackIdentity(it.title, it.artist, it.album) to it.hasTrack }
+            // Music Assistant sessions only. Local plays are recorded by
+            // PlaybackReporter, which keeps doing it with this screen gone — in the
+            // car, or with the app swiped away — and recording them here as well would
+            // count every local play twice.
+            state.map { Triple(TrackIdentity(it.title, it.artist, it.album), it.hasTrack, it.isLocalSession) }
                 .distinctUntilChanged()
-                .collect { (identity, hasTrack) ->
+                .collect { (identity, hasTrack, local) ->
                     historyJob?.cancel()
-                    historyJob = if (hasTrack && identity.title.isNotBlank()) {
+                    historyJob = if (hasTrack && !local && identity.title.isNotBlank()) {
                         viewModelScope.launch { recordHistoryWhenPlayed(identity) }
                     } else null
                 }
