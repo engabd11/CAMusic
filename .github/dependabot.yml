@@ -1,0 +1,31 @@
+# Weekly dependency update PRs.
+#
+# Grouped so a week's updates arrive as a handful of PRs rather than one per
+# artifact. Dependabot reads gradle/libs.versions.toml directly.
+#
+# Some pins are deliberate and explained in app/build.gradle.kts. media3 must
+# never be 1.11.0, and material3 is an alpha on purpose. Read the comment beside a
+# dependency before merging its bump.
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 8
+    groups:
+      androidx:
+        patterns: ["androidx.*"]
+      kotlin:
+        patterns: ["org.jetbrains.kotlin*", "com.google.devtools.ksp*"]
+      build-tools:
+        patterns: ["com.android.tools.build*", "com.android.*"]
+    ignore:
+      # androidx/media#3393: 1.11.0 deadlocks the legacy-browser connect path.
+      - dependency-name: "androidx.media3:*"
+        versions: ["1.11.0"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

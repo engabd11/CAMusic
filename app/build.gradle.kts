@@ -1,12 +1,12 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.plugin.serialization")
-    id("org.jetbrains.kotlin.plugin.compose")
-    id("androidx.baselineprofile")
-    id("com.google.devtools.ksp")
-    id("androidx.room")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.baselineprofile)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.room)
 }
 
 android {
@@ -225,46 +225,46 @@ dependencies {
     // against this via CMake's find_package(oboe) - see CMakeLists.txt. Ships
     // as a prefab package (buildFeatures.prefab above), not source, since NDK
     // stopped bundling Oboe's sources.
-    implementation("com.google.oboe:oboe:1.10.0")
+    implementation(libs.oboe)
 
     // Carries Material3 1.4 — the Expressive release. The motion scheme, the wavy
     // progress indicators and the shape morphing the UI now leans on are all in it.
-    val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
+    val composeBom = platform(libs.compose.bom)
     implementation(composeBom)
 
-    // With AGP 9.2, these can move to latest. Previously pinned because
-    // core 1.17+ and lifecycle 2.10+ are built against compileSdk 37
-    // and demanded AGP 9.1+.
-    implementation("androidx.core:core-ktx:1.17.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-process:2.9.4")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
-    implementation("androidx.activity:activity-compose:1.13.0")
-    implementation("androidx.navigation:navigation-compose:2.9.8")
+    // One lifecycle version for every artifact. process and viewmodel-compose sat at
+    // 2.9.4 beside runtime 2.10.0; lifecycle's own constraints resolved them all to
+    // 2.10.0 anyway, so the 2.9.4 lines only misstated what shipped.
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.lifecycle.runtime.ktx)
+    implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.lifecycle.process)
+    implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.activity.compose)
+    implementation(libs.navigation.compose)
 
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.ui.tooling.preview)
     // M3 Expressive — override BOM to pull material3 1.5.0-alpha26.
     // The BOM 2026.06.01 resolves material3 to 1.4.0 stable where the Expressive
     // APIs are internal. 1.5.0-alpha26 makes them public (MaterialExpressiveTheme,
     // MotionScheme, 8-level Shapes, 30-param Typography). It requires AGP 9.1+
     // (satisfied by AGP 9.2). When 1.5.0 goes stable, remove this override.
-    implementation("androidx.compose.material3:material3:1.5.0-alpha26")
-    implementation("androidx.compose.material3:material3-window-size-class:1.5.0-alpha26")
-    implementation("androidx.compose.material:material-icons-extended")
+    implementation(libs.compose.material3)
+    implementation(libs.compose.material3.windowsizeclass)
+    implementation(libs.compose.material.icons.extended)
 
     // Material Components library — provides Theme.Material3.NoActionBar (the XML
     // theme parent) used by themes.xml. The Compose material3 artifact handles the
     // Compose layer; this handles the pre-Compose window so the XML theme's parent
     // matches the Compose MaterialTheme.
-    implementation("com.google.android.material:material:1.12.0")
+    implementation(libs.material.components)
 
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.coil.compose)
     // androidx.palette was removed here: zero imports anywhere in the source tree. It
     // was superseded by ui/design/AlbumPalette.kt, a from-scratch CIELAB k-means
     // extractor that does what Palette could not — population-weighted multi-swatch
@@ -272,7 +272,7 @@ dependencies {
     // Installs the baseline profile at first run. Without it the generated profile is
     // packaged and then ignored, so this is not optional dressing — it is the half that
     // does the work on device.
-    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    implementation(libs.profileinstaller)
     // Names :baselineprofile as the producer of this module's profile. Without it the
     // plugin applies cleanly, `generateBaselineProfile` runs, and nothing is generated
     // — it has no dependency telling it where profiles come from.
@@ -292,7 +292,7 @@ dependencies {
     //   grep -c LightSyncScreen app/src/release/generated/baselineProfiles/baseline-prof.txt
     //
     baselineProfile(project(":baselineprofile"))
-    implementation("androidx.datastore:datastore-preferences:1.2.1")
+    implementation(libs.datastore.preferences)
 
     // The home-screen widget. Glance is Compose for RemoteViews — the alternative is
     // hand-built RemoteViews, which cannot express this layout without a lot of XML
@@ -301,7 +301,7 @@ dependencies {
     // glance-material3 is deliberately *not* here: the widget paints from the app's
     // own Ink/accent tokens like every other surface, and pulling in a second theme
     // system to restate them would be the only thing it was used for.
-    implementation("androidx.glance:glance-appwidget:1.1.1")
+    implementation(libs.glance.appwidget)
     // The Navidrome/offline player. MediaPlayer could not do gapless reliably
     // (setNextMediaPlayer is OEM-dependent), reported nothing about the format it
     // was decoding, and had no stage to apply ReplayGain in.
@@ -322,8 +322,8 @@ dependencies {
     // later (androidx/media#3393). CarLibrarySessionCallback no longer does that —
     // the root is immediate now, for this among other reasons — but the shape is one
     // step away from any future edit, and 1.11.1 is the release that fixes it.
-    implementation("androidx.media3:media3-exoplayer:1.11.1")
-    implementation("androidx.media3:media3-session:1.11.1")
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.session)
 
     // The embedded Spotify client (experimental direct Spotify source). The
     // coordinates are the ones librespot-android proves work on Android: the
@@ -336,20 +336,34 @@ dependencies {
     // artifact SHADES the whole kotlin-stdlib into itself (1.6.5 is built against
     // stdlib 2.4), and those shaded classes win over the real ones on the compile
     // classpath — flagging every enum `entries` use in this codebase as needing an
-    // opt-in that never existed. Thin is the shade-free artifact, plus the
-    // resolutionStrategy force below, which the shaded jar would defeat.
-    implementation("xyz.gianlu.librespot:librespot-player:1.6.5:thin") {
+    // opt-in that never existed. Thin is the shade-free artifact. (The stdlib used
+    // to be forced down to 2.2.21 as well, while the compiler was 2.2; the compiler
+    // is 2.4.10 now, matching what librespot was built against, so the force went.)
+    implementation(variantOf(libs.librespot.player) { classifier("thin") }) {
         exclude(group = "xyz.gianlu.librespot", module = "librespot-sink")
         exclude(group = "com.lmax", module = "disruptor")
         exclude(group = "org.apache.logging.log4j")
     }
-    implementation("uk.uuid.slf4j:slf4j-android:1.7.30-0")
+    // The binding has to match slf4j-api's major version. librespot brings slf4j-api
+    // 2.0.16, which finds bindings through ServiceLoader and ignores the 1.7-style
+    // StaticLoggerBinder the old 1.7.30 artifact provides, so librespot logged to
+    // slf4j's no-op logger and nothing reached logcat.
+    implementation(libs.slf4j.android)
+    constraints {
+        // librespot-lib 1.6.5 pins protobuf-java 3.25.2, which is affected by
+        // CVE-2024-7254 (unbounded recursion parsing nested groups → stack overflow).
+        // Fixed from 3.25.5; raised to the newest 3.25.x, same API.
+        implementation(libs.protobuf.java) {
+            because("CVE-2024-7254 in the 3.25.2 librespot pins")
+        }
+    }
 
-    // Room: offline download index and local media cache.
-    val roomVersion = "2.7.1"
-    implementation("androidx.room:room-runtime:$roomVersion")
-    implementation("androidx.room:room-ktx:$roomVersion")
-    ksp("androidx.room:room-compiler:$roomVersion")
+    // Room: offline download index and local media cache. One catalog version for
+    // the artifacts and the androidx.room Gradle plugin — the plugin was 2.8.4 while
+    // every Room artifact was 2.7.1.
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
 
     // D-pad focus affordance (scale/glow on the focused item) for the "tv" flavor's
     // screens. Stock Compose Foundation's LazyRow/LazyColumn/LazyVerticalGrid (used
@@ -359,10 +373,10 @@ dependencies {
     // which is what this library's Card/Button ship tuned out of the box. Only the
     // *components* are used from it - theming stays SendspinTheme's, via
     // tv/design/TvDesign.kt's wrappers, so TV screens still read as this app.
-    "tvImplementation"("androidx.tv:tv-material:1.1.0")
+    "tvImplementation"(libs.tv.material)
 
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    debugImplementation(libs.compose.ui.tooling)
+    debugImplementation(libs.compose.ui.test.manifest)
 
     // JVM unit tests (pure protocol/clock logic): ./gradlew :app:testDebugUnitTest
     // kotlin-test-junit, not the multiplatform "kotlin-test" facade: that facade
@@ -375,30 +389,19 @@ dependencies {
     // "Unresolved reference 'Test'". kotlin-test-junit is a plain single-target JVM
     // artifact (no variant ambiguity) and is the artifact Kotlin recommends for
     // non-multiplatform JUnit 4 projects anyway.
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.2.21")
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("androidx.room:room-testing:$roomVersion")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation(libs.kotlin.test.junit)
+    testImplementation(libs.junit)
+    testImplementation(libs.room.testing)
+    testImplementation(libs.kotlinx.coroutines.test)
 
     // Instrumented tests: ./gradlew :app:connectedDebugAndroidTest (needs a device).
     // Deliberately thin — these exist to pin two specific regressions that cost a
     // release each, not to become a second test suite. See app/src/androidTest.
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test:core-ktx:1.6.1")
-    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core.ktx)
+    androidTestImplementation(libs.androidx.test.runner)
     // Room's MigrationTestHelper, for LocalMediaDatabaseMigrationTest. It needs a
     // real SQLite, so it belongs here rather than beside the `room-testing` already
     // in testImplementation — there is no Robolectric in this project.
-    androidTestImplementation("androidx.room:room-testing:$roomVersion")
-}
-
-// librespot's transitives drag kotlin-stdlib to 2.4.x, newer than this project's
-// 2.2.21 compiler — and the newer stdlib flags previously-stable declarations
-// (enum `entries`) experimental again, breaking existing files with bogus opt-in
-// errors. Constraints cannot help (resolution picks the highest request), so the
-// version is forced back down. Remove when the project's compiler reaches 2.4.
-configurations.all {
-    resolutionStrategy {
-        force("org.jetbrains.kotlin:kotlin-stdlib:2.2.21")
-    }
+    androidTestImplementation(libs.room.testing)
 }
