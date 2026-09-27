@@ -73,7 +73,14 @@ private:
     static size_t nextPow2(size_t v) {
         v--;
         v |= v >> 1; v |= v >> 2; v |= v >> 4;
-        v |= v >> 8; v |= v >> 16; v |= v >> 32;
+        v |= v >> 8; v |= v >> 16;
+        // Only where size_t is wider than 32 bits. On a 32-bit build (armeabi-v7a)
+        // `v >> 32` shifts by the full width of the type, which is undefined
+        // behaviour: clang is free to produce anything, and did — the mask came out
+        // near 4 GB, `make_unique<T[]>` asked for 4,089,213,952 bytes, and the app
+        // aborted with std::bad_alloc at launch, because the AirPlay bridge is built
+        // at startup.
+        if constexpr (sizeof(size_t) > 4) v |= v >> 32;
         return ++v;
     }
 
