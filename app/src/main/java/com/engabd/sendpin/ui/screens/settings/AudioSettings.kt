@@ -309,9 +309,10 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                 "works on the library this phone decodes itself; Music Assistant " +
                 "playback stays 16-bit, because the native Sendspin engine is int16. " +
                 "Wants a USB DAC — this is not something to ask of the phone's own " +
-                "speaker.\n\nThe renderer and the float path are both fixed when the " +
-                "player is built, so a change here applies next time the app starts " +
-                "rather than to the track playing now.\n\nTip: if you hear distortion " +
+                "speaker.\n\nA change applies straight away: the player is rebuilt " +
+                "for the new rung and picks the track up where it was, so expect a " +
+                "brief gap rather than a restart. The Signal path panel above shows " +
+                "the new chain as soon as it is playing.\n\nTip: if you hear distortion " +
                 "on 44.1 kHz material on a phone whose mixer runs at 48, step back to " +
                 "Standard — that combination has been known to misbehave, and " +
                 "dropping down fixes it immediately.",

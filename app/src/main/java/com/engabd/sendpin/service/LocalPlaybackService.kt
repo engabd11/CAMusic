@@ -83,6 +83,21 @@ class LocalPlaybackService : Service() {
     private var mediaSession: MediaSession? = null
     private var remoteSessionPlayer: RemoteSessionPlayer? = null
     private var remoteActiveJob: Job? = null
+    /**
+     * The local ExoPlayer was replaced (the output mode changed). The same session is
+     * kept and handed the new player, rather than released and rebuilt: releasing
+     * the session that holds media buttons leaves Android with none, and it does not
+     * pick the replacement while this app's audio is already active — so a rebuilt
+     * session came back playing, but with headset and lock-screen buttons going
+     * nowhere. `setPlayer` keeps the session, its token and its media-button status.
+     */
+    private val onPlayerRebuilt: () -> Unit = {
+        val session = mediaSession
+        if (!player.remoteActive.value) {
+            if (session != null && remoteSessionPlayer == null) session.player = player.exoPlayer
+            else rebuildSession(false)
+        }
+    }
     private var artwork: Bitmap? = null
     private var loadedArtUrl: String? = null
 
@@ -102,6 +117,10 @@ class LocalPlaybackService : Service() {
             // the identical one for nothing.
             player.remoteActive.drop(1).collect { active -> rebuildSession(active) }
         }
+        // A new ExoPlayer — the output mode changed, which rebuilds it — must get the
+        // session too. The old session would otherwise keep wrapping a released
+        // player: a lock screen and headset buttons that do nothing.
+        player.addPlayerRebuiltListener(onPlayerRebuilt)
     }
 
     /**
@@ -275,6 +294,7 @@ class LocalPlaybackService : Service() {
     override fun onDestroy() {
         artworkJob?.cancel()
         remoteActiveJob?.cancel()
+        player.removePlayerRebuiltListener(onPlayerRebuilt)
         remoteSessionPlayer?.detach()
         remoteSessionPlayer = null
         mediaSession?.release()
