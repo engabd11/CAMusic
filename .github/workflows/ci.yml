@@ -44,27 +44,27 @@ jobs:
         run: ./gradlew assembleMobileDebug assembleTvDebug
 
       - name: Upload mobile APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mobile-debug-apk
           path: app/build/outputs/apk/mobile/debug/app-mobile-debug.apk
 
       - name: Upload TV APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tv-debug-apk
           path: app/build/outputs/apk/tv/debug/app-tv-debug.apk
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: app/build/reports/tests/
 
       - name: Upload lint results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lint-results
           # lintDebug writes lint-results-debug.{html,xml} as files, not a directory.
