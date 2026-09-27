@@ -76,7 +76,13 @@ object Http {
     val base: OkHttpClient
         get() = built ?: synchronized(this) {
             built ?: OkHttpClient.Builder()
+                // Twice, on purpose. As an application interceptor it refuses before a
+                // socket is even opened; as a network interceptor it sees every hop,
+                // and redirects are followed *below* the application layer — so a
+                // server answering https with a 302 to plain http out on the internet
+                // got the credentials in the clear, and the guard never saw it.
                 .addInterceptor(LanOnlyCleartext)
+                .addNetworkInterceptor(LanOnlyCleartext)
                 .addInterceptor(userAgent)
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
@@ -116,6 +122,22 @@ object Http {
         // was written to disk twice, and a file bigger than the cache evicted it
         // wholesale — including every API response it was holding.
         .cache(null)
+        .build()
+
+    /**
+     * Audio the player streams: [transfer]'s shape — no call timeout, no JSON cache —
+     * with the player's own 30 s read timeout, so a dead stream fails into the error
+     * policy in the time it always has.
+     *
+     * The point is that it is *this* client at all. The player used media3's
+     * DefaultHttpDataSource, which has its own HTTP stack and none of the guards
+     * above, with cross-protocol redirects switched on — so a stream URL that
+     * redirected from https to plain http on a public host was followed, token and
+     * all. OkHttp follows http to https and back through [LanOnlyCleartext]'s network
+     * half, which allows every upgrade and refuses exactly that downgrade.
+     */
+    fun stream(): OkHttpClient = transfer().newBuilder()
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 }
 
