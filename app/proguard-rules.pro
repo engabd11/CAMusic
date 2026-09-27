@@ -52,3 +52,13 @@
     private void onPinRequired(java.lang.String);
     private void onCredentials(java.lang.String, java.lang.String);
 }
+
+# Verbose and debug logging is compiled out of release builds. Several hot paths
+# (the analysis tap, the render loop, the Sendspin timeline) log per event at these
+# levels, and a release build has no one reading them; `i`/`w`/`e` stay, because they
+# are what the debug file's log section is made of. Only the calls are removed — an
+# argument with a side effect would still run, which none of these have.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+}
