@@ -118,7 +118,7 @@ class AppSettings(private val context: Context) {
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
-        private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" (default) | "wave" | "pill" | "glow"
+        private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" | "wave" (default) | "pill" | "glow"
         // The library's category buttons: shape, size, corner, and which of them
         // appear and in what order. Every default is the row exactly as it shipped,
         // so an install that never opens the Library look page is unchanged.
@@ -913,7 +913,7 @@ class AppSettings(private val context: Context) {
     }
     val nowPlayingLayout: Flow<String> = pref { it[NOW_PLAYING_LAYOUT] ?: "tab" }
     /** How the Now Playing seek bar is drawn — a straight line, or a wobbling wave. */
-    val seekBarStyle: Flow<String> = pref { it[SEEK_BAR_STYLE] ?: "line" }
+    val seekBarStyle: Flow<String> = pref { it[SEEK_BAR_STYLE] ?: "wave" }
 
     /**
      * How the library's category buttons are drawn — see

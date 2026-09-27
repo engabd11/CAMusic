@@ -1387,8 +1387,9 @@ fun HSlider(
  * The Now Playing seek bar alternate skin: the played stretch is a sine wave
  * instead of a straight line, wobbling gently while the track plays — like a water
  * surface rather than a ruler. Selected from Appearance settings
- * ([com.engabd.sendpin.data.AppSettings.seekBarStyle]); [HSlider] stays the default
- * and remains what every other slider in the app (volume, DSP, lyrics offset) uses.
+ * ([com.engabd.sendpin.data.AppSettings.seekBarStyle]), and the Now Playing default
+ * since 0.14; [HSlider] remains what every other slider in the app (volume, DSP,
+ * lyrics offset) uses, and the "Line" choice.
  *
  * **The wave is only what has played.** The accent stretch behind the knob is the
  * sine; the remainder ahead of it is a straight muted rail, and the wave grows into

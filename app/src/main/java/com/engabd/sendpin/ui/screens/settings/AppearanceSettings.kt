@@ -149,7 +149,7 @@ internal fun NowPlayingLayoutCard(settings: AppSettings, scope: CoroutineScope) 
 
 @Composable
 internal fun SeekBarCard(settings: AppSettings, scope: CoroutineScope) {
-    val seekBarStyle by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
+    val seekBarStyle by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "wave")
     SettingsCard(
         title = "Seek bar",
         lead = "How the progress line in Now Playing is drawn.",

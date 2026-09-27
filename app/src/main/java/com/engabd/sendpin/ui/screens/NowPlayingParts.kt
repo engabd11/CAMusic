@@ -221,7 +221,7 @@ fun SeekRow(scrubber: Scrubber, durationMs: Long, playing: Boolean = false) {
     // through from Settings on its own.
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings = remember(context) { com.engabd.sendpin.data.AppSettings(context) }
-    val style by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
+    val style by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "wave")
     when (style) {
         "wave" -> WaveSeekBar(
             progress,
