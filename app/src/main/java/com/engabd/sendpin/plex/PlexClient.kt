@@ -1,5 +1,6 @@
 package com.engabd.sendpin.plex
 
+import com.engabd.sendpin.library.fetchAllPages
 import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
@@ -58,6 +59,9 @@ class PlexClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     companion object {
+        /** Page size for [fetchAllPages] over the artist list. */
+        private const val ARTIST_PAGE = 500
+
         const val PROVIDER = "plex"
 
         /** The app-wide client: one pool, one cache, one User-Agent. See [Http]. */
@@ -258,13 +262,18 @@ class PlexClient(
 
     // ── Browse ────────────────────────────────────────────────────────────
 
-    suspend fun artists(limit: Int = 500): List<MaItem> =
+    /** Every artist, paged — this was one request capped at 500, cut off silently. */
+    suspend fun artists(): List<MaItem> = fetchAllPages(ARTIST_PAGE) { offset, limit ->
         entries(
             container(
                 "/library/sections/$librarySectionKey/all",
-                mapOf("type" to TYPE_ARTIST, "sort" to "titleSort", "X-Plex-Container-Size" to limit.toString()),
+                mapOf(
+                    "type" to TYPE_ARTIST, "sort" to "titleSort",
+                    "X-Plex-Container-Start" to offset.toString(), "X-Plex-Container-Size" to limit.toString(),
+                ),
             ),
         ).mapNotNull(::item)
+    }
 
     suspend fun albums(offset: Int = 0, limit: Int = 200): List<MaItem> =
         entries(

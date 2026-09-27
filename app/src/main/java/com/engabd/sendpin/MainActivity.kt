@@ -92,6 +92,9 @@ class MainActivity : ComponentActivity() {
         ) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        // A voice request that cold-started the app. Not on a recreation: the intent
+        // is redelivered with the saved state and would play the same search again.
+        if (savedInstanceState == null) handleVoiceSearch(intent)
         com.engabd.sendpin.service.DrivingPip.registerControls(this, pipControls)
         watchDrivingForPip()
         setContent {
@@ -111,6 +114,26 @@ class MainActivity : ComponentActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         inPip.value = isInPictureInPictureMode
+    }
+
+    /**
+     * The activity is singleTask, so a voice request while it is already running
+     * arrives here rather than in onCreate.
+     */
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleVoiceSearch(intent)
+    }
+
+    /**
+     * `MEDIA_PLAY_FROM_SEARCH` — "Hey Google, play X in CAMusic". The manifest has
+     * declared this filter for a long time, but nothing read it, so the request
+     * opened the app and stopped there.
+     */
+    private fun handleVoiceSearch(intent: android.content.Intent?) {
+        if (intent?.action != android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
+        (application as SendpinApp).playFromVoice(intent.getStringExtra(android.app.SearchManager.QUERY))
     }
 
     /** Routes a Picture-in-Picture button to whichever player owns the session. */
