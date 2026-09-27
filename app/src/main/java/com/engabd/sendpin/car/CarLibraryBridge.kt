@@ -30,6 +30,14 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
+/** Media ids for playback resumption, shared by the bridge, its callback and the session player. */
+object CarResume {
+    /** The one playable item standing for "the last queue, where it was left". */
+    const val RESUME_ID = "__resume__"
+    /** The root a "recent" request is answered with. */
+    const val RECENT_ROOT_ID = "__recent__"
+}
+
 /**
  * Turns configured library servers into Android Auto's browse tree, and turns a tap
  * back into playback — the one place that does both, so a mediaId means the same
@@ -55,14 +63,6 @@ import kotlinx.coroutines.withTimeoutOrNull
  * opaque `content://` URIs that [CarArtworkProvider] resolves — see [CarArtwork].
  */
 @OptIn(UnstableApi::class)
-/** Media ids for playback resumption, shared by the bridge, its callback and the session player. */
-object CarResume {
-    /** The one playable item standing for "the last queue, where it was left". */
-    const val RESUME_ID = "__resume__"
-    /** The root a "recent" request is answered with. */
-    const val RECENT_ROOT_ID = "__recent__"
-}
-
 class CarLibraryBridge(private val app: SendpinApp) {
 
     private val settings = AppSettings(app)
