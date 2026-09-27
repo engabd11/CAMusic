@@ -16,6 +16,7 @@ import coil.request.SuccessResult
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.service.UnifiedNowPlaying
+import androidx.media3.common.SimpleBasePlayer.PositionSupplier
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -110,12 +111,26 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
     fun start() {
         if (collectJob != null) return
         collectJob = scope.launch {
+            var published: UnifiedNowPlaying.Snapshot? = null
             unifiedNowPlaying.state.collect { snapshot ->
                 if (snapshot.artworkUrl != loadedArtworkUrl) {
                     loadedArtworkUrl = snapshot.artworkUrl
                     fetchArtwork(snapshot.artworkUrl)
                 }
-                invalidateState()
+                // The snapshot re-emits four times a second for the position alone,
+                // and every invalidateState rebuilt three media items (media3 copies
+                // the artwork bytes into each), diffed the State and shipped it to
+                // the car over binder — for the whole drive. The same storm
+                // ShadePlayer was cured of, cured the same way: a tick that lands
+                // where the extrapolation already was is no news.
+                val shapeChanged = published?.copy(positionMs = 0) != snapshot.copy(positionMs = 0)
+                if (shapeChanged) {
+                    published = snapshot
+                    anchor(snapshot.positionMs)
+                    invalidateState()
+                } else {
+                    onPositionTick(snapshot.positionMs)
+                }
             }
         }
         settingsJob = scope.launch {
@@ -134,8 +149,27 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
         artworkJob?.cancel(); artworkJob = null
     }
 
+    /** The last position published, and when — see [onPositionTick]. */
+    @Volatile private var anchorPositionMs = 0L
+    @Volatile private var anchorAtMs = android.os.SystemClock.elapsedRealtime()
+    @Volatile private var publishedPlaying = false
+
+    private fun anchor(positionMs: Long) {
+        anchorPositionMs = positionMs
+        anchorAtMs = android.os.SystemClock.elapsedRealtime()
+    }
+
+    /** Re-publish only when the position left the extrapolation: a seek, a stall. */
+    private fun onPositionTick(positionMs: Long) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val expected = if (publishedPlaying) anchorPositionMs + (now - anchorAtMs) else anchorPositionMs
+        anchor(positionMs)
+        if (kotlin.math.abs(positionMs - expected) > POSITION_REANCHOR_MS) invalidateState()
+    }
+
     override fun getState(): State {
         val snapshot = unifiedNowPlaying.state.value
+        publishedPlaying = snapshot.isPlaying
         val current = mediaItemData(snapshot, uid = "current")
         return State.Builder()
             .setAvailableCommands(availableCommands())
@@ -164,7 +198,10 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
                         listOf(mediaItemData(snapshot, uid = "placeholder-prev"), current, mediaItemData(snapshot, uid = "placeholder-next")),
                     )
                     setCurrentMediaItemIndex(1)
-                    setContentPositionMs(snapshot.positionMs)
+                    // The car runs the bar forward itself between anchors.
+                    setContentPositionMs(
+                        PositionSupplier.getExtrapolating(anchorPositionMs, if (snapshot.isPlaying) 1f else 0f),
+                    )
                 }
             }
             .build()
@@ -254,10 +291,14 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
         when (seekCommand) {
             Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> playbackOwner.next()
             Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> playbackOwner.previous()
-            else -> when (unifiedNowPlaying.state.value.owner) {
-                UnifiedNowPlaying.Owner.LOCAL -> localPlayer.seekTo(positionMs)
-                UnifiedNowPlaying.Owner.REMOTE -> maNowPlaying.seekTo(positionMs)
-                else -> playback.onMediaSeek((positionMs / 1000).toInt())
+            else -> {
+                when (unifiedNowPlaying.state.value.owner) {
+                    UnifiedNowPlaying.Owner.LOCAL -> localPlayer.seekTo(positionMs)
+                    UnifiedNowPlaying.Owner.REMOTE -> maNowPlaying.seekTo(positionMs)
+                    else -> playback.onMediaSeek((positionMs / 1000).toInt())
+                }
+                // The bar lands where it was dragged, not where the last tick said.
+                anchor(positionMs)
             }
         }
         invalidateState()
@@ -303,5 +344,8 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
 
         /** Only ever reported, never used: see the call site. */
         const val DEFAULT_SEEK_MS = 15_000L
+
+        /** Past this from where the car's bar already is, the position is news. Same as ShadePlayer. */
+        const val POSITION_REANCHOR_MS = 600L
     }
 }

@@ -57,8 +57,19 @@ class AppLifecycleObserver(
     /** Called by [Playback] on foreground — reconnects if we were warm-disconnected. */
     var onForeground: (() -> Unit)? = null
 
-    /** Whether the app is currently in the foreground. */
-    private val _foreground = MutableStateFlow(true)
+    /**
+     * Whether the app is currently in the foreground.
+     *
+     * Starts false, and that matters. It started true, on the theory that the app is
+     * usually opened by the user — but a process started by Android Auto binding its
+     * library, a Bluetooth play, the widget or a tile never shows anything and so
+     * never gets [onStart] to correct it. That process believed it was on screen
+     * for as long as it lived, and everything that eases off in the background
+     * (MA's live reads, driving mode's window) ran flat out for nobody. When the
+     * app *is* visible nothing is lost: [ProcessLifecycleOwner] replays `onStart`
+     * to an observer the moment it is added.
+     */
+    private val _foreground = MutableStateFlow(false)
     val foreground: StateFlow<Boolean> = _foreground.asStateFlow()
 
     override fun onStart(owner: LifecycleOwner) {
