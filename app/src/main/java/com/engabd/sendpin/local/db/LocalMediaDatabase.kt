@@ -26,7 +26,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DownloadedPlaylistEntity::class,
         DownloadedPlaylistTrackEntity::class,
     ],
-    version = 6,
+    version = 7,
 )
 abstract class LocalMediaDatabase : RoomDatabase() {
     abstract fun downloadDao(): DownloadDao
@@ -151,6 +151,44 @@ abstract class LocalMediaDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v7: a download is keyed by (id, sourceProvider), not id alone.
+         *
+         * Ids are only unique within one server. Plex, Emby, gonic and Music Assistant
+         * all use small numeric ids, so with two libraries configured a "1234" from one
+         * could be taken for the other's: the second copy was never downloaded (it
+         * looked done already), or REPLACE overwrote the first's row and orphaned its
+         * file, and offline playback could pick the wrong server's song. SQLite cannot
+         * change a primary key in place, so the table is rebuilt; legacy null
+         * providers become "", which lookups treat as matching any provider, exactly
+         * as they behaved before.
+         *
+         * Also indexes play_history on timestamp, which every stats query filters on.
+         */
+        internal val MIGRATION_6_7_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `downloads_v7` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, " +
+                "`artist` TEXT, `filePath` TEXT NOT NULL, `image` TEXT, `album` TEXT, `coverPath` TEXT, " +
+                "`durationMs` INTEGER NOT NULL, `trackNumber` INTEGER, `discNumber` INTEGER, `albumId` TEXT, " +
+                "`codec` TEXT, `sampleRate` INTEGER NOT NULL, `bitDepth` INTEGER NOT NULL, " +
+                "`bitRate` INTEGER NOT NULL, `channels` INTEGER NOT NULL, `sizeBytes` INTEGER NOT NULL, " +
+                "`sourceProvider` TEXT NOT NULL, PRIMARY KEY(`id`, `sourceProvider`))",
+            "INSERT OR REPLACE INTO `downloads_v7` (`id`, `title`, `artist`, `filePath`, `image`, `album`, " +
+                "`coverPath`, `durationMs`, `trackNumber`, `discNumber`, `albumId`, `codec`, `sampleRate`, " +
+                "`bitDepth`, `bitRate`, `channels`, `sizeBytes`, `sourceProvider`) " +
+                "SELECT `id`, `title`, `artist`, `filePath`, `image`, `album`, `coverPath`, `durationMs`, " +
+                "`trackNumber`, `discNumber`, `albumId`, `codec`, `sampleRate`, `bitDepth`, `bitRate`, " +
+                "`channels`, `sizeBytes`, COALESCE(`sourceProvider`, '') FROM `downloads`",
+            "DROP TABLE `downloads`",
+            "ALTER TABLE `downloads_v7` RENAME TO `downloads`",
+            "CREATE INDEX IF NOT EXISTS `index_play_history_timestamp` ON `play_history` (`timestamp`)",
+        )
+
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_6_7_SQL.forEach { db.execSQL(it) }
+            }
+        }
+
         fun get(context: Context): LocalMediaDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -158,7 +196,7 @@ abstract class LocalMediaDatabase : RoomDatabase() {
                     LocalMediaDatabase::class.java,
                     "local_media.db",
                 ).addMigrations(
-                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
                 ).build().also { instance = it }
             }
     }

@@ -60,4 +60,5 @@ object OpenAppRequest {
     const val LOCAL = 102
     const val TILE = 103
     const val EFFECTS = 104
+    const val DOWNLOADS = 105
 }

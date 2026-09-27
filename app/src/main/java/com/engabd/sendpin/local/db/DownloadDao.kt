@@ -23,8 +23,8 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads ORDER BY id")
     suspend fun getAll(): List<DownloadedTrackEntity>
 
-    @Query("SELECT * FROM downloads WHERE id = :id LIMIT 1")
-    suspend fun get(id: String): DownloadedTrackEntity?
+    @Query("SELECT * FROM downloads WHERE id = :id AND sourceProvider = :provider LIMIT 1")
+    suspend fun get(id: String, provider: String): DownloadedTrackEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entity: DownloadedTrackEntity)
@@ -35,14 +35,14 @@ interface DownloadDao {
     @Update
     suspend fun update(entity: DownloadedTrackEntity)
 
-    @Query("DELETE FROM downloads WHERE id = :id")
-    suspend fun delete(id: String)
+    @Query("DELETE FROM downloads WHERE id = :id AND sourceProvider = :provider")
+    suspend fun delete(id: String, provider: String)
 
     @Query("DELETE FROM downloads")
     suspend fun deleteAll()
 
-    @Query("SELECT EXISTS(SELECT 1 FROM downloads WHERE id = :id)")
-    suspend fun exists(id: String): Boolean
+    @Query("SELECT EXISTS(SELECT 1 FROM downloads WHERE id = :id AND sourceProvider = :provider)")
+    suspend fun exists(id: String, provider: String): Boolean
 
     /**
      * Resilient offline SQLite fast search index across title, artist, and album.

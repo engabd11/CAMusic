@@ -2036,7 +2036,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
          */
         container: MaItem? = null,
     ) {
-        val pending = tracks.filterNot { downloadManager.isDownloaded(it.itemId) }
+        val pending = tracks.filterNot { downloadManager.isDownloaded(it) }
         if (pending.isEmpty()) {
             // Not a no-op when there is a container. Every track being present is
             // exactly what happens when a playlist is re-downloaded after its songs
@@ -2093,24 +2093,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // tracks.
         if (container != null) recordPlaylist(container, tracks, sc, replyTo)
 
-        // Storage cap — evict oldest-first until back under the limit. The index is
-        // appended to on each download, so the head of the list is the oldest.
-        // Bounded by the snapshot rather than looping on live state: a file that has
-        // vanished from disk contributes nothing to the total, and re-reading the
-        // list each pass would spin on it.
+        // Storage cap. DownloadManager's own eviction, not a second copy of it: this
+        // used to run its own loop with a different order and no protection for
+        // downloaded playlists, re-measuring every file on every pass.
         val capMb = settings.downloadStorageCapMb.first()
+        downloadManager.enforceStorageCap(capMb)
         val capBytes = AppSettings.storageCapBytes(capMb)
-        if (capBytes != null) {
-            val nowPlayingId = localPlayer.current.value?.id
-            for (entry in downloadManager.downloads.value) {
-                if (downloadManager.bytesUsed() <= capBytes) break
-                // Never evict the track being listened to out from under the player.
-                if (entry.id == nowPlayingId) continue
-                downloadManager.delete(entry.id)
-            }
-            if (downloadManager.bytesUsed() > capBytes) {
-                replyTo.tryEmit("Downloads are over the ${capMb / 1000} GB limit")
-            }
+        if (capBytes != null && downloadManager.bytesUsed() > capBytes) {
+            replyTo.tryEmit("Downloads are over the ${capMb / 1000} GB limit")
         }
     }
 
@@ -2129,7 +2119,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         sc: MusicSource,
         replyTo: MutableSharedFlow<String>,
     ) {
-        val landed = tracks.map { it.itemId }.filter { downloadManager.isDownloaded(it) }
+        val landed = tracks.filter { downloadManager.isDownloaded(it) }.map { it.itemId }
         if (landed.isEmpty()) return
         runCatching {
             downloadedPlaylists.record(

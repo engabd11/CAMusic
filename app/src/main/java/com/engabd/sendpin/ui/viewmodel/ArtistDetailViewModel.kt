@@ -559,7 +559,7 @@ class ArtistDetailViewModel(
         viewModelScope.launch {
             try {
                 val tracks = sc.albumDetail(album.itemId).second
-                val pending = tracks.filterNot { downloads.isDownloaded(it.itemId) }
+                val pending = tracks.filterNot { downloads.isDownloaded(it) }
                 if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return@launch }
                 _toast.tryEmit("Downloading ${pending.size} tracks…")
                 val ok = downloads.downloadAll(
@@ -640,7 +640,7 @@ class ArtistDetailViewModel(
         viewModelScope.launch {
             val tracks = catalogue()
             if (tracks.isEmpty()) { _toast.tryEmit("No tracks for ${ref.name}"); return@launch }
-            val pending = tracks.filterNot { downloads.isDownloaded(it.itemId) }
+            val pending = tracks.filterNot { downloads.isDownloaded(it) }
             if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return@launch }
             _toast.tryEmit("Downloading ${pending.size} tracks…")
             val ok = downloads.downloadAll(

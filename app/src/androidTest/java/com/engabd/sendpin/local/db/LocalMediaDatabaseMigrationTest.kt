@@ -37,6 +37,44 @@ class LocalMediaDatabaseMigrationTest {
         LocalMediaDatabase::class.java,
     )
 
+    /**
+     * v7 rebuilds `downloads` with (id, sourceProvider) as its key. The rows must all
+     * survive, a legacy null provider must become "", and afterwards the same id from
+     * two libraries must be storable side by side — the collision the key exists to end.
+     */
+    @Test
+    fun migrate6To7_keysDownloadsByProvider() {
+        helper.createDatabase(TEST_DB, 6).use { db ->
+            fun row(id: String, provider: String?) = db.execSQL(
+                "INSERT INTO downloads (id, title, artist, filePath, image, album, coverPath, durationMs, " +
+                    "trackNumber, discNumber, albumId, codec, sampleRate, bitDepth, bitRate, channels, " +
+                    "sizeBytes, sourceProvider) VALUES ('$id', 'T$id', NULL, '/data/$id.audio', NULL, NULL, " +
+                    "NULL, 1000, NULL, NULL, NULL, NULL, 0, 0, 0, 0, 0, " +
+                    (provider?.let { "'$it'" } ?: "NULL") + ")",
+            )
+            row("1234", "plex")
+            row("legacy-1", null)
+        }
+
+        val db = helper.runMigrationsAndValidate(TEST_DB, 7, true, LocalMediaDatabase.MIGRATION_6_7)
+
+        db.query("SELECT sourceProvider FROM downloads WHERE id = 'legacy-1'").use {
+            assertTrue("the legacy row must survive", it.moveToFirst())
+            assertEquals("", it.getString(0))
+        }
+        // The same numeric id from a second server is now a second row, not a REPLACE
+        // over the first.
+        db.execSQL(
+            "INSERT INTO downloads (id, title, filePath, durationMs, sampleRate, bitDepth, bitRate, " +
+                "channels, sizeBytes, sourceProvider) VALUES ('1234', 'Emby song', '/data/e.audio', " +
+                "1000, 0, 0, 0, 0, 0, 'emby')",
+        )
+        db.query("SELECT COUNT(*) FROM downloads WHERE id = '1234'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(2, it.getInt(0))
+        }
+    }
+
     @Test
     fun migrate5To6_preservesDownloadsAndAddsPlaylistTables() {
         val trackId = "nav:track:991"

@@ -94,7 +94,7 @@ object ScanLibrarySource {
                                 // blank on a library that has no such endpoint, and the
                                 // stream stands in there.
                                 streamUrl = client.downloadUrl(item.itemId).ifBlank { client.streamUrl(item.itemId) },
-                                localPath = downloads.localPath(item.itemId),
+                                localPath = downloads.localPath(item.itemId, item.provider),
                                 scrobbleId = item.itemId,
                                 scrobbleProvider = client.providerId,
                             )

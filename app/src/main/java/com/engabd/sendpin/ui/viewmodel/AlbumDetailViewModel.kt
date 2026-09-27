@@ -363,7 +363,7 @@ class AlbumDetailViewModel(
     fun downloadAll() {
         val sc = source
         if (!isLocal || sc == null) { _toast.tryEmit("That library isn't connected"); return }
-        val pending = _tracks.value.filterNot { downloads.isDownloaded(it.itemId) }
+        val pending = _tracks.value.filterNot { downloads.isDownloaded(it) }
         if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return }
         viewModelScope.launch {
             _toast.tryEmit("Downloading ${pending.size} tracks…")

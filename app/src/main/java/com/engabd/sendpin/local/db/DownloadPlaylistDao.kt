@@ -87,6 +87,10 @@ interface DownloadPlaylistDao {
     suspend fun tracksOf(playlistId: String): List<DownloadedTrackEntity>
 
     /** The track ids already filed under this playlist, for an incremental update. */
+    /** Every track any downloaded playlist holds — protected from storage-cap eviction. */
+    @Query("SELECT DISTINCT trackId FROM downloaded_playlist_tracks")
+    suspend fun allTrackIds(): List<String>
+
     @Query("SELECT trackId FROM downloaded_playlist_tracks WHERE playlistId = :playlistId")
     suspend fun trackIdsOf(playlistId: String): List<String>
 
