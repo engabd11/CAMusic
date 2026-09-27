@@ -523,6 +523,7 @@ class LocalPlayer(private val context: Context) {
      */
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+            livePlayer?.setWakeMode(wakeModeFor(item))
             val at = player.currentMediaItemIndex
             _index.value = at
             val track = _queue.value.getOrNull(at)
@@ -568,6 +569,11 @@ class LocalPlayer(private val context: Context) {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _playing.value = isPlaying
+            // Sound is coming out, so whatever went wrong is over.
+            if (isPlaying) {
+                consecutiveSkips = 0
+                if (networkRetries > 0 || networkCallback != null) cancelNetworkRetry()
+            }
             // A crossfade's fade-in is driven by the ticker, and a hand-over seeks
             // into a part of the next track that may not be buffered yet — so
             // ExoPlayer reports not-playing for a moment right in the middle of the
@@ -597,15 +603,117 @@ class LocalPlayer(private val context: Context) {
             stopTicker()
             _playing.value = false
             val name = _current.value?.title.orEmpty()
-            _error.tryEmit(
-                if (name.isBlank()) "Playback failed" else "Couldn't play \"$name\""
-            )
-            // One bad track should not end the album. Anything left goes on.
-            if (player.hasNextMediaItem()) {
-                player.seekToNextMediaItem()
-                player.prepare()
+            val status = (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
+            when (PlaybackErrorPolicy.classify(error.errorCode, status)) {
+                // Every error used to take this branch, so a Wi-Fi dropout longer than
+                // the buffer skipped through the rest of the queue one failed track at
+                // a time. Now only an error about *this item* does.
+                PlaybackErrorPolicy.Action.SKIP -> {
+                    _error.tryEmit(if (name.isBlank()) "Playback failed" else "Couldn't play \"$name\"")
+                    // One bad track should not end the album — but a queue in which
+                    // every track fails is not a run of bad files.
+                    if (player.hasNextMediaItem() && consecutiveSkips < PlaybackErrorPolicy.MAX_CONSECUTIVE_SKIPS) {
+                        consecutiveSkips++
+                        player.seekToNextMediaItem()
+                        player.prepare()
+                    } else if (consecutiveSkips >= PlaybackErrorPolicy.MAX_CONSECUTIVE_SKIPS) {
+                        _error.tryEmit("Stopped: the last ${consecutiveSkips + 1} tracks all failed to play")
+                        consecutiveSkips = 0
+                    }
+                }
+                PlaybackErrorPolicy.Action.WAIT_FOR_NETWORK -> {
+                    if (networkRetries == 0) {
+                        _error.tryEmit("Lost the connection to the server. Playback resumes when it's back.")
+                    }
+                    scheduleNetworkRetry()
+                }
+                PlaybackErrorPolicy.Action.STOP -> {
+                    _error.tryEmit(
+                        if (status == 401 || status == 403) "The server refused \"$name\". Sign in again in Settings."
+                        else "Couldn't play \"$name\"",
+                    )
+                }
             }
         }
+    }
+
+    /**
+     * A streamed item needs the Wi-Fi radio held awake as well as the CPU, or the
+     * platform may power it down mid-track with the screen off and the buffer runs
+     * dry. The Sendspin path already held a Wi-Fi lock; this path held none. A file on
+     * the phone needs only the CPU, and holding the radio for it would cost battery
+     * for nothing.
+     */
+    private fun wakeModeFor(item: MediaItem?): Int {
+        val scheme = item?.localConfiguration?.uri?.scheme?.lowercase()
+        return if (scheme == null || scheme == "file" || scheme == "content") C.WAKE_MODE_LOCAL else C.WAKE_MODE_NETWORK
+    }
+
+    /** Tracks skipped for errors in a row; reset when anything actually plays. */
+    private var consecutiveSkips = 0
+
+    /** Attempts made at the current network wait; 0 when not waiting. */
+    private var networkRetries = 0
+    private var networkRetryJob: kotlinx.coroutines.Job? = null
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Try the failed track again, at the same position, once the network can carry it.
+     *
+     * Two triggers. The platform's "a network is available" callback, for the common
+     * case: out of Wi-Fi range, then back. And a backoff timer, because a server that
+     * is restarting or a proxy with nothing behind it fails with the network perfectly
+     * up, and nothing about the network will change to say so.
+     *
+     * The retry only fires while playback is still wanted — `playWhenReady` survives
+     * an error, so a Pause pressed during the wait turns it off, and that pause is
+     * respected rather than overridden when the Wi-Fi comes back. Given up after
+     * [MAX_NETWORK_RETRIES]: past that the listener's Play button prepares again anyway.
+     */
+    private fun scheduleNetworkRetry() {
+        if (networkRetries >= MAX_NETWORK_RETRIES) {
+            _error.tryEmit("Still can't reach the server. Press play to try again.")
+            cancelNetworkRetry()
+            return
+        }
+        val delayMs = (NETWORK_RETRY_BASE_MS shl networkRetries.coerceAtMost(4)).coerceAtMost(NETWORK_RETRY_MAX_MS)
+        networkRetries++
+        networkRetryJob?.cancel()
+        networkRetryJob = scope.launch {
+            kotlinx.coroutines.delay(delayMs)
+            retryAfterNetworkError()
+        }
+        if (networkCallback == null) {
+            val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+            val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                    if (caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                        scope.launch { retryAfterNetworkError() }
+                    }
+                }
+            }
+            if (runCatching { cm?.registerDefaultNetworkCallback(cb) }.isSuccess) networkCallback = cb
+        }
+    }
+
+    private fun retryAfterNetworkError() {
+        val p = livePlayer ?: return
+        if (p.playerError == null || !p.playWhenReady) {
+            // Recovered some other way, or paused by the listener during the wait.
+            if (p.playerError == null) cancelNetworkRetry()
+            return
+        }
+        p.prepare()
+    }
+
+    private fun cancelNetworkRetry() {
+        networkRetries = 0
+        networkRetryJob?.cancel()
+        networkRetryJob = null
+        networkCallback?.let { cb ->
+            runCatching { context.getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) }
+        }
+        networkCallback = null
     }
 
     private fun buildPlayer(): ExoPlayer {
@@ -687,6 +795,13 @@ class LocalPlayer(private val context: Context) {
                 /* bufferForPlaybackMs = */ 1_000,
                 /* bufferForPlaybackAfterRebufferMs = */ 2_500,
             )
+            // The durations above never applied to hi-res. Left alone, the byte
+            // ceiling was ExoPlayer's default (about 13 MB), which a 24/96 FLAC at
+            // 3–7 Mb/s fills in 15–35 seconds — so the "two minutes of Wi-Fi dropout"
+            // this buffer was sized for was only ever true of CD-quality files.
+            // 64 MB is a minute or more of any stereo PCM-derived format this app
+            // plays, and bounded, which prioritising time over size would not be.
+            .setTargetBufferBytes(TARGET_BUFFER_BYTES)
             .build()
 
         // The media path had no DataSource.Factory at all, so it ran on
@@ -705,7 +820,12 @@ class LocalPlayer(private val context: Context) {
             // StreamSchemeResolver rewrites only uris whose scheme a streaming source
             // registered (see [StreamSchemes]); https/file/content pass through
             // untouched, so this changes nothing for the self-hosted sources.
-            StreamSchemeResolver.factory(DefaultDataSource.Factory(context, httpFactory)),
+            //
+            // MediaCache sits in front of the HTTP half only: a replayed track, a seek
+            // back, or the crossfade deck opening the same URL reads from the phone.
+            StreamSchemeResolver.factory(
+                DefaultDataSource.Factory(context, MediaCache.factory(context, httpFactory)),
+            ),
         )
 
         return ExoPlayer.Builder(context, renderers)
@@ -726,6 +846,9 @@ class LocalPlayer(private val context: Context) {
             // slider already drives that through DeviceVolume. Enabling it is what
             // makes the session agree with the slider instead of ignoring the subject.
             .setDeviceVolumeControlEnabled(true)
+            // Keep the Wi-Fi awake while streaming with the screen off; see
+            // [wakeModeFor], which drops back to CPU-only for files on the phone.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
             .also { p ->
                 // A scrub lands where the finger asked, not at the nearest sync
@@ -2207,6 +2330,14 @@ class LocalPlayer(private val context: Context) {
     private fun stopTicker() { ticker?.cancel(); ticker = null }
 
     private companion object {
+        /** Network-wait retries: about ten minutes in all before it is left to Play. */
+        private const val MAX_NETWORK_RETRIES = 14
+        private const val NETWORK_RETRY_BASE_MS = 2_000L
+        private const val NETWORK_RETRY_MAX_MS = 60_000L
+
+        /** See the load control in [buildPlayer]. */
+        private const val TARGET_BUFFER_BYTES = 64 * 1024 * 1024
+
         /** Past this into a track, Previous restarts it instead of going back one. */
         const val RESTART_THRESHOLD_MS = 4_000L
 

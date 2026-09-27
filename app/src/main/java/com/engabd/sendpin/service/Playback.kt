@@ -598,24 +598,92 @@ class Playback(private val app: Context) {
             settings.setMa(base, user, pass)
             settings.setPlayerName(playerName)
             val hasCreds = user.isNotBlank() && pass.isNotBlank()
-            val token = if (hasCreds) fetchMaToken(base, user, pass) else null
-            if (hasCreds && token == null) {
-                _connectionStatus.value = "Sign-in failed - check username / password"
-                return@launch
+            var token: String? = null
+            if (hasCreds) {
+                // Any failure used to end here with "check username / password" and
+                // nothing to try again — so a phone that booted before the Wi-Fi was
+                // up, or while Music Assistant was restarting, stayed off the network
+                // as a speaker (and deaf to announcements) until the app was opened.
+                // Only an actual refusal stops now; an unreachable server is retried
+                // until this job is replaced or cancelled by a disconnect.
+                var attempt = 0
+                while (true) {
+                    when (val r = fetchMaToken(base, user, pass)) {
+                        is TokenResult.Token -> { token = r.value; break }
+                        TokenResult.Rejected -> {
+                            android.util.Log.w("Playback", "Music Assistant sign-in refused by $base; not retrying")
+                            _connectionStatus.value = "Sign-in failed - check username / password"
+                            return@launch
+                        }
+                        TokenResult.Unreachable -> {
+                            val waitMs = (SIGNIN_RETRY_BASE_MS shl attempt.coerceAtMost(4)).coerceAtMost(SIGNIN_RETRY_MAX_MS)
+                            attempt++
+                            _connectionStatus.value = "Can't reach Music Assistant - trying again"
+                            android.util.Log.i("Playback", "Music Assistant sign-in: no answer from $base, retry ${attempt} in ${waitMs / 1000} s")
+                            awaitNetworkOrDelay(waitMs)
+                            _connectionStatus.value = "Signing in…"
+                        }
+                    }
+                }
             }
             startSendspin(url, token, playerName)
         }
     }
 
-    private suspend fun fetchMaToken(base: String, user: String, pass: String): String? {
+    private sealed interface TokenResult {
+        data class Token(val value: String) : TokenResult
+        /** The server answered, and the answer was no. */
+        data object Rejected : TokenResult
+        /** No answer: not reachable, not up yet, or too slow. Worth another go. */
+        data object Unreachable : TokenResult
+    }
+
+    private suspend fun fetchMaToken(base: String, user: String, pass: String): TokenResult {
         val api = MaApiClient()
         return try {
             api.connect(base, token = null, username = user, password = pass)
             val end = withTimeoutOrNull(12_000) {
                 api.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
             }
-            if (end == MaApiClient.State.CONNECTED) api.authToken else null
-        } catch (_: Exception) { null } finally { api.disconnect() }
+            val tok = api.authToken
+            when {
+                end == MaApiClient.State.CONNECTED && tok != null -> TokenResult.Token(tok)
+                api.loginRejected -> TokenResult.Rejected
+                else -> TokenResult.Unreachable
+            }
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            throw kotlinx.coroutines.CancellationException("sign-in cancelled")
+        } catch (_: Exception) {
+            TokenResult.Unreachable
+        } finally { api.disconnect() }
+    }
+
+    /**
+     * Wait [ms], or less if a validated network turns up first. The early wake is the
+     * common case that matters: the phone boots, or walks back into range, and Music
+     * Assistant is reachable the moment Wi-Fi validates rather than a minute later.
+     */
+    private suspend fun awaitNetworkOrDelay(ms: Long) {
+        val cm = app.getSystemService(android.net.ConnectivityManager::class.java) ?: run { delay(ms); return }
+        val woke = kotlinx.coroutines.CompletableDeferred<Unit>()
+        // Registering replays the network that is already there — the one the attempt
+        // just failed on — so that one is only news once it becomes validated. A
+        // different network, or any network at all after none, is news immediately.
+        val initial = cm.activeNetwork
+        val initialValidated = initial?.let { cm.getNetworkCapabilities(it) }
+            ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                if (!caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return
+                if (network != initial || !initialValidated) woke.complete(Unit)
+            }
+        }
+        val registered = runCatching { cm.registerDefaultNetworkCallback(cb) }.isSuccess
+        try {
+            withTimeoutOrNull(ms) { woke.await() }
+        } finally {
+            if (registered) runCatching { cm.unregisterNetworkCallback(cb) }
+        }
     }
 
     private suspend fun startSendspin(url: String, token: String?, name: String) {
@@ -1457,6 +1525,10 @@ class Playback(private val app: Context) {
 
         const val PAIRING_CHANNEL_ID = "sendspin_pairing"
         const val PAIRING_NOTIFICATION_ID = 0x5e9d
+
+        /** Sign-in retries for an unreachable server: 5 s, doubling, then every 2 min. */
+        private const val SIGNIN_RETRY_BASE_MS = 5_000L
+        private const val SIGNIN_RETRY_MAX_MS = 120_000L
 
         /**
          * How long between group-state polls when nothing has hinted otherwise.

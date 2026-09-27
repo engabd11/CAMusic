@@ -500,6 +500,37 @@ class SendpinApp : Application(), ImageLoaderFactory {
 
     private val appScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    /** Built on first use: only a spoken request ever needs it outside Android Auto. */
+    private val voiceBridge by lazy { com.engabd.sendpin.car.CarLibraryBridge(this) }
+
+    /**
+     * "Hey Google, play X in CAMusic", arriving as `MEDIA_PLAY_FROM_SEARCH` on the
+     * app's own Activity — the path the Assistant takes when no media session of ours
+     * is already bound.
+     *
+     * The search and the play are Android Auto's own ([com.engabd.sendpin.car.CarLibraryBridge.playSearch]):
+     * every library searched at once, the first playable hit played on this phone.
+     * App-scoped rather than Activity-scoped, so a request that takes a few seconds
+     * against a slow server is not cancelled by the Activity going away.
+     *
+     * An empty query is the platform's "just play something": resume what is loaded.
+     */
+    fun playFromVoice(query: String?) {
+        appScope.launch {
+            val q = query?.trim().orEmpty()
+            if (q.isEmpty()) {
+                if (!playbackOwner.state.value.anyPlaying) playbackOwner.playPause()
+                return@launch
+            }
+            val played = runCatching { voiceBridge.playSearch(q) }
+                .onFailure { android.util.Log.w("SendpinApp", "Voice search failed", it) }
+                .getOrDefault(false)
+            if (!played) {
+                android.widget.Toast.makeText(this@SendpinApp, "Nothing found for \"$q\"", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     /**
      * End the ambience show from anywhere, including from the notification after
      * the Effects screen's view model has been cleared.
