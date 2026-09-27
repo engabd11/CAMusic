@@ -398,8 +398,10 @@ class CrossfadeDeck(
                 // StreamSchemeResolver rewrites only uris whose scheme a streaming
                 // source registered (see [StreamSchemes]); everything else passes
                 // through unchanged.
+                // Through the shared MediaCache: this deck opens the track the main
+                // player is already on, so its bytes are usually on the phone already.
                 DefaultMediaSourceFactory(StreamSchemeResolver.factory(
-                    DefaultDataSource.Factory(context, httpFactory),
+                    DefaultDataSource.Factory(context, MediaCache.factory(context, httpFactory)),
                 )),
             )
             // handleAudioFocus = false, deliberately. The main player already holds
