@@ -27,7 +27,7 @@ jobs:
           distribution: 'temurin'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       # :app has a "platform" flavor dimension (mobile/tv) - run both explicitly
       # rather than the aggregate task names, so a failure in one flavor is
