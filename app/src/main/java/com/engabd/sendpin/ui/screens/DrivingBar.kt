@@ -222,3 +222,49 @@ private fun DrivingButton(
  */
 @Composable
 private fun LocalAccentOrDefault(): Color = DefaultAccent
+
+/**
+ * What the Picture-in-Picture window shows: the track, big enough to read at a glance.
+ *
+ * The window's own buttons are the three `RemoteAction`s from
+ * [com.engabd.sendpin.service.DrivingPip] — the system draws those over the window and
+ * no tap reaches the content — so this carries no controls at all. Before it existed,
+ * PiP would have shrunk whichever full screen was open (Library, Settings) into the
+ * window, unreadable at that size.
+ */
+@Composable
+fun DrivingPipCard(modifier: Modifier = Modifier) {
+    val app = SendpinApp.instance
+    val maNow by app.maNowPlaying.now.collectAsStateWithLifecycle()
+    val localTrack by app.localPlayer.current.collectAsStateWithLifecycle()
+    val ownerState by app.playbackOwner.state.collectAsStateWithLifecycle()
+
+    val isLocal = ownerState.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.LOCAL
+    val title = if (isLocal) localTrack?.title.orEmpty() else maNow?.title.orEmpty()
+    val artist = if (isLocal) localTrack?.artist.orEmpty() else maNow?.artist.orEmpty()
+
+    Column(
+        modifier.background(Ink).padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            title.ifBlank { "Nothing playing" },
+            color = if (title.isBlank()) TextMuted else TextPrimary,
+            fontFamily = AppFont,
+            fontWeight = FontWeight.Bold,
+            fontSize = 16.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (artist.isNotBlank()) {
+            Text(
+                artist,
+                color = TextSecondary,
+                fontFamily = AppFont,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}

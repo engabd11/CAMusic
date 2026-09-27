@@ -40,6 +40,7 @@ import com.engabd.sendpin.R
  */
 object DrivingPip {
 
+    private const val TAG = "DrivingPip"
     private const val ACTION_CONTROL = "com.engabd.sendpin.DRIVING_PIP_CONTROL"
     private const val EXTRA_CONTROL = "control"
     private const val CONTROL_PREV = "prev"
@@ -64,7 +65,12 @@ object DrivingPip {
                 android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE,
             )
         ) return
+        // Failures are logged rather than swallowed. This used to be a bare
+        // runCatching, and the ratio it was handed was one the platform rejects on
+        // every device — so the default driving mechanism threw on every attempt and
+        // nothing anywhere said so.
         runCatching { activity.enterPictureInPictureMode(params(activity)) }
+            .onFailure { android.util.Log.w(TAG, "Could not enter Picture-in-Picture", it) }
     }
 
     /**
@@ -77,13 +83,20 @@ object DrivingPip {
     private fun wantsPip(app: com.engabd.sendpin.SendpinApp): Boolean =
         app.drivingMode.mechanism == com.engabd.sendpin.data.AppSettings.DRIVING_PIP
 
+    /** The widest ratio [PictureInPictureParams] accepts (2.39:1). */
+    internal val MAX_ASPECT = Rational(239, 100)
+
     /** The window's shape and its three actions. */
     fun params(context: Context): PictureInPictureParams {
         val b = PictureInPictureParams.Builder()
             // Wide and short: this is a transport bar, not a video. A squarer ratio
             // would waste the window on empty space and shrink the targets further,
             // and they are already the constraint here.
-            .setAspectRatio(Rational(16, 5))
+            //
+            // As wide as the platform allows, and no wider. PictureInPictureParams
+            // accepts 1:2.39 to 2.39:1 and throws IllegalArgumentException outside
+            // it; this was 16:5 (3.2:1), so PiP never opened on any device.
+            .setAspectRatio(MAX_ASPECT)
             .setActions(
                 listOf(
                     action(context, CONTROL_PREV, R.drawable.ic_driving_prev, "Previous"),
