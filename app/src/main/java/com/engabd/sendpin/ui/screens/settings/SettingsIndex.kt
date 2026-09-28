@@ -4,6 +4,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BugReport
@@ -58,6 +59,7 @@ internal const val LOOK_THEME_ROUTE = "look_theme"
 internal const val LOOK_PLAYER_ROUTE = "look_player"
 internal const val LOOK_MOTION_ROUTE = "look_motion"
 internal const val LOOK_LIBRARY_ROUTE = "look_library"
+internal const val LOOK_PAGES_ROUTE = "look_pages"
 
 // ── Driving & Android Auto ────────────────────────────────────────────────
 internal const val DRIVE_MODE_ROUTE = "drive_mode"
@@ -139,8 +141,14 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
         SubPage(
             LOOK_LIBRARY_ROUTE,
             "Library look",
-            "The shape, size and order of the category buttons on the library page",
+            "The category buttons, how covers are drawn, a spotlight and an album-colour backdrop",
             Icons.Default.GridView,
+        ),
+        SubPage(
+            LOOK_PAGES_ROUTE,
+            "Album & artist pages",
+            "Classic or Gallery, and which sections each page shows",
+            Icons.Default.Album,
         ),
         SubPage(
             LOOK_MOTION_ROUTE,

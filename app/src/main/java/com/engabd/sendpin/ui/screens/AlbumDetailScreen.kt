@@ -135,6 +135,30 @@ fun AlbumDetailScreen(
     val related by viewModel.related.collectAsStateWithLifecycle()
     val relatedTitle by viewModel.relatedTitle.collectAsStateWithLifecycle()
 
+    // How the page is dressed — see PageLook. Defaults are the page as it shipped.
+    val looks = remember(context) { com.engabd.sendpin.data.AppSettings(context) }
+    val style by looks.detailStyle.collectAsStateWithLifecycle(initialValue = com.engabd.sendpin.data.DetailStyle.CLASSIC)
+    val shelves by looks.enabledShelves.collectAsStateWithLifecycle(
+        initialValue = com.engabd.sendpin.data.PageShelf.entries.filter { it.default }.toSet(),
+    )
+    val showListening = com.engabd.sendpin.data.PageShelf.ALBUM_LISTENING in shelves
+    val listening by produceState<ListeningStats?>(null, showListening, album?.name) {
+        val a = album ?: return@produceState
+        if (!showListening) return@produceState
+        value = albumListening(context, a.name, a.subtitle.orEmpty().substringBefore(",").trim())
+    }
+    // Whether this record is the one playing — the Gallery hero's record turns then.
+    val nowPlaying by com.engabd.sendpin.SendpinApp.instance.unifiedNowPlaying.state.collectAsStateWithLifecycle()
+    val playingTrack by com.engabd.sendpin.SendpinApp.instance.localPlayer.current.collectAsStateWithLifecycle()
+    // By the track first: is what is playing one of this album's tracks. Names alone
+    // disagree more often than they look — a server's album name and the track's own
+    // album tag can differ in spacing, width or punctuation — so the name comparison
+    // (normalised) is only the fallback, for a Music Assistant stream with no id here.
+    val spinning = nowPlaying.isPlaying && album != null && (
+        playingTrack?.id?.let { id -> tracks.any { it.itemId == id } } == true ||
+            sameTitle(nowPlaying.album, album?.name)
+        )
+
     // The facts worth stating about a record, gathered once rather than inside the
     // LazyListScope body (which is not composable and has no `remember`).
     val facts = remember(album, tracks, totalDuration, discs) {
@@ -181,7 +205,27 @@ fun AlbumDetailScreen(
                     ),
                 ) {
                     // Album hero: art + title + artist + metadata + actions
-                    item {
+                    if (style == com.engabd.sendpin.data.DetailStyle.GALLERY) item {
+                        GalleryAlbumHero(
+                            album = album,
+                            albumName = album?.name ?: name,
+                            artUrl = albumArt,
+                            sharedArtKey = "art-$itemId-$provider",
+                            trackCount = tracks.size,
+                            totalDuration = totalDuration,
+                            spinning = spinning,
+                            onArtistClick = onArtistClick,
+                        ) {
+                            AlbumActionRow(
+                                album = album,
+                                onPlayAll = viewModel::playAll,
+                                onShuffle = viewModel::shuffleAll,
+                                onAddToQueue = viewModel::addToQueue,
+                                onFavorite = viewModel::toggleAlbumFavorite,
+                                onAddToPlaylist = album?.let { a -> { libraryViewModel.openAddToPlaylist(a) } },
+                            )
+                        }
+                    } else item {
                         AlbumHero(
                             album = album,
                             albumName = album?.name ?: name,
@@ -244,7 +288,7 @@ fun AlbumDetailScreen(
                     // After the songs, not before them: nobody opens a record to
                     // read about it first. The notes were Navidrome-only until now
                     // for want of one assignment on the MA path.
-                    if (!notes.isNullOrBlank() || facts.isNotEmpty()) {
+                    if (com.engabd.sendpin.data.PageShelf.ALBUM_ABOUT in shelves && (!notes.isNullOrBlank() || facts.isNotEmpty())) {
                         item(key = "about", contentType = "about") {
                             AboutAlbum(
                                 notes = notes,
@@ -254,11 +298,19 @@ fun AlbumDetailScreen(
                         }
                     }
 
+                    // ── Optional shelves (off unless asked for) ───────────────
+                    if (com.engabd.sendpin.data.PageShelf.ALBUM_COLOURS in shelves && albumArt != null) {
+                        item(key = "colours", contentType = "palette") { PaletteShelf() }
+                    }
+                    if (showListening) {
+                        item(key = "listening", contentType = "listening") { ListeningShelf(listening, forArtist = false) }
+                    }
+
                     // ── Related ──────────────────────────────────────────────
                     // Hidden entirely when there is nothing to say, rather than a
                     // heading over an empty row.
                     (related as? NowPlayingViewModel.Load.Ready)?.value
-                        ?.takeIf { it.isNotEmpty() }
+                        ?.takeIf { com.engabd.sendpin.data.PageShelf.ALBUM_RELATED in shelves && it.isNotEmpty() }
                         ?.let { albums ->
                             item(key = "related", contentType = "shelf") {
                                 RelatedAlbums(
@@ -492,47 +544,60 @@ private fun AlbumHero(
         // other, and the disc shifted when the library changed. It now lives in the
         // header; see [DetailHeader].
         Spacer(Modifier.height(20.dp))
+        AlbumActionRow(album, onPlayAll, onShuffle, onAddToQueue, onFavorite, onAddToPlaylist)
+    }
+}
+
+/** The hero's actions — shared by the Classic and Gallery heroes. See [AlbumHero] for the layout's reasons. */
+@Composable
+internal fun AlbumActionRow(
+    album: MaItem?,
+    onPlayAll: () -> Unit,
+    onShuffle: () -> Unit,
+    onAddToQueue: () -> Unit,
+    onFavorite: () -> Unit,
+    onAddToPlaylist: (() -> Unit)?,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
-                // Lines and a plus: the lines are the queue, the plus is what this
-                // does to it. It was the music-note-and-lines glyph, which is the
-                // same picture the *playlist* chip beside it needs and says nothing
-                // about adding.
-                IconChip(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to queue", onClick = onAddToQueue)
-            }
+            IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
+            // Lines and a plus: the lines are the queue, the plus is what this
+            // does to it. It was the music-note-and-lines glyph, which is the
+            // same picture the *playlist* chip beside it needs and says nothing
+            // about adding.
+            IconChip(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to queue", onClick = onAddToQueue)
+        }
 
-            Spacer(Modifier.width(12.dp))
-            PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
-            Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(12.dp))
+        PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
+        Spacer(Modifier.width(12.dp))
 
-            Row(
-                Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.Start),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // The whole record into a playlist. The plumbing already resolved a
-                // container to its tracks (see `LibraryViewModel.addToPlaylist`), so
-                // this was reachable from a track's long-press menu and from nowhere
-                // on the album's own page. Same glyph the long-press menu uses.
-                onAddToPlaylist?.let {
-                    IconChip(Icons.Default.LibraryAdd, "Add to playlist", onClick = it)
-                }
-                // The album itself, not its tracks. MA's `favorites/add_item` takes any
-                // media item's uri and Subsonic's `star` has an `albumId`.
-                IconChip(
-                    if (album?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                    if (album?.favorite == true) "Remove from favourites" else "Add to favourites",
-                    onClick = onFavorite,
-                )
+        Row(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.Start),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // The whole record into a playlist. The plumbing already resolved a
+            // container to its tracks (see `LibraryViewModel.addToPlaylist`), so
+            // this was reachable from a track's long-press menu and from nowhere
+            // on the album's own page. Same glyph the long-press menu uses.
+            onAddToPlaylist?.let {
+                IconChip(Icons.Default.LibraryAdd, "Add to playlist", onClick = it)
             }
+            // The album itself, not its tracks. MA's `favorites/add_item` takes any
+            // media item's uri and Subsonic's `star` has an `albumId`.
+            IconChip(
+                if (album?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                if (album?.favorite == true) "Remove from favourites" else "Add to favourites",
+                onClick = onFavorite,
+            )
         }
     }
 }

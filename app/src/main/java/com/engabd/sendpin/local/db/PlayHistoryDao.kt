@@ -10,6 +10,12 @@ data class ArtistPlayCount(val artist: String, val plays: Int)
 /** One track's play count within a window — for "most played this week". */
 data class TrackPlayCount(val trackId: String, val title: String, val artist: String, val plays: Int)
 
+/** Plays of one album or artist here — the "Your listening" shelves. */
+data class ListeningSummary(val plays: Int, val firstPlayed: Long?, val lastPlayed: Long?, val totalMs: Long)
+
+/** A title and how often it was played. */
+data class TitlePlays(val title: String, val plays: Int)
+
 /** One codec/rate/depth combination's play count — the format-breakdown pie. */
 data class FormatPlayCount(val codec: String?, val sampleRate: Int, val bitDepth: Int, val plays: Int)
 
@@ -205,4 +211,48 @@ interface PlayHistoryDao {
     /** Storage cap: this table only ever grows otherwise. Called after every insert. */
     @Query("DELETE FROM play_history WHERE id NOT IN (SELECT id FROM play_history ORDER BY timestamp DESC LIMIT :keep)")
     suspend fun trimTo(keep: Int = 5_000)
+
+    // ── "Your listening" on the album and artist pages ──────────────────────
+    //
+    // Matched on names rather than ids: a row stores the track id of whichever
+    // library played it, while the pages are reached from any library, so the name
+    // is the one key both sides have. The artist match is a substring, so an album
+    // credited to "A feat. B" still counts for A.
+
+    @Query(
+        """
+        SELECT COUNT(*) AS plays, MIN(timestamp) AS firstPlayed, MAX(timestamp) AS lastPlayed,
+               COALESCE(SUM(durationPlayedMs), 0) AS totalMs
+        FROM play_history
+        WHERE album = :album COLLATE NOCASE AND (:artist = '' OR artist LIKE '%' || :artist || '%')
+        """,
+    )
+    suspend fun albumListening(album: String, artist: String): ListeningSummary
+
+    @Query(
+        """
+        SELECT title, COUNT(*) AS plays FROM play_history
+        WHERE album = :album COLLATE NOCASE AND (:artist = '' OR artist LIKE '%' || :artist || '%')
+        GROUP BY title COLLATE NOCASE ORDER BY plays DESC LIMIT 1
+        """,
+    )
+    suspend fun albumTopTrack(album: String, artist: String): TitlePlays?
+
+    @Query(
+        """
+        SELECT COUNT(*) AS plays, MIN(timestamp) AS firstPlayed, MAX(timestamp) AS lastPlayed,
+               COALESCE(SUM(durationPlayedMs), 0) AS totalMs
+        FROM play_history WHERE artist LIKE '%' || :artist || '%'
+        """,
+    )
+    suspend fun artistListening(artist: String): ListeningSummary
+
+    @Query(
+        """
+        SELECT title, COUNT(*) AS plays FROM play_history
+        WHERE artist LIKE '%' || :artist || '%'
+        GROUP BY title COLLATE NOCASE ORDER BY plays DESC LIMIT 1
+        """,
+    )
+    suspend fun artistTopTrack(artist: String): TitlePlays?
 }

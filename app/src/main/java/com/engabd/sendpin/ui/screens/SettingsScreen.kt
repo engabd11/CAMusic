@@ -456,7 +456,13 @@ private fun LazyListScope.sectionItems(
             }
             LOOK_LIBRARY_ROUTE -> {
                 card("look_library") { LibraryLookCard(settings, accent, scope) }
+                card("look_library_extras") { LibraryExtrasCard(settings, accent, scope) }
                 card("look_library_categories") { LibraryCategoriesCard(settings, accent, scope) }
+            }
+            LOOK_PAGES_ROUTE -> {
+                card("look_pages_style") { PageStyleCard(settings, scope) }
+                card("look_pages_album") { AlbumShelvesCard(settings, accent, scope) }
+                card("look_pages_artist") { ArtistShelvesCard(settings, accent, scope) }
             }
             LOOK_MOTION_ROUTE -> {
                 card("look_bloom") { ChameleonCard(settings, accent, scope) }

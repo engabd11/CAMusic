@@ -43,7 +43,9 @@ import com.engabd.sendpin.ui.viewmodel.ArtistDetailViewModelFactory
 /** A section label used between content blocks. */
 @Composable
 private fun Shelf(text: String) {
-    Box(Modifier.padding(top = 12.dp, bottom = 2.dp)) { SectionLabel(text) }
+    // The horizontal inset every other section label on the page has; without it
+    // "Top tracks" and "Albums" sat hard against the screen edge.
+    Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 2.dp)) { SectionLabel(text) }
 }
 
 /**
@@ -175,11 +177,34 @@ fun ArtistDetailScreen(
     BackHandler { onBack() }
 
     val artistArt = artist?.image ?: artUrl
-    val artistPalette = rememberAlbumPalette(artistArt)
+    // Many artists have no portrait at all — MPD never has one, and plenty of
+    // Navidrome and Jellyfin libraries don't either. Their own newest cover stands in:
+    // it colours the page and, in the Gallery style, becomes the banner. Better an
+    // artist's record than the app's default amber.
+    val standIn = remember(albums) { (latestOf(albums) ?: albums.firstOrNull { it.image != null })?.image }
+    val artistPalette = rememberAlbumPalette(artistArt ?: standIn)
+
+    // How the page is dressed — see PageLook. Defaults are the page as it shipped.
+    val looks = remember(context) { com.engabd.sendpin.data.AppSettings(context) }
+    val style by looks.detailStyle.collectAsStateWithLifecycle(initialValue = com.engabd.sendpin.data.DetailStyle.CLASSIC)
+    val shelves by looks.enabledShelves.collectAsStateWithLifecycle(
+        initialValue = com.engabd.sendpin.data.PageShelf.entries.filter { it.default }.toSet(),
+    )
+    val layout by looks.discographyLayout.collectAsStateWithLifecycle(initialValue = com.engabd.sendpin.data.DiscographyLayout.LIST)
+    val on = { shelf: com.engabd.sendpin.data.PageShelf -> shelf in shelves }
+    val latest = remember(albums) { latestOf(albums) }
+    val showListening = on(com.engabd.sendpin.data.PageShelf.ARTIST_LISTENING)
+    val artistName = artist?.name ?: name
+    val listening by produceState<ListeningStats?>(null, showListening, artistName) {
+        if (showListening && artistName.isNotBlank()) value = artistListening(context, artistName)
+    }
+
+    val tileStyle by looks.libraryTileStyle.collectAsStateWithLifecycle(initialValue = com.engabd.sendpin.data.TileStyle.CLASSIC)
 
     CompositionLocalProvider(
         LocalAccent provides artistPalette.accent,
         LocalPalette provides artistPalette,
+        LocalTileStyle provides tileStyle,
     ) {
         Box(Modifier.fillMaxSize().background(Ink)) {
             MeltBackdrop(artistArt, intensity = 0.5f)
@@ -200,7 +225,23 @@ fun ArtistDetailScreen(
                     contentPadding = PaddingValues(bottom = navBarInset() + 24.dp),
                 ) {
                     // Artist hero
-                    item {
+                    if (style == com.engabd.sendpin.data.DetailStyle.GALLERY) item {
+                        GalleryArtistHero(
+                            name = artistName,
+                            artUrl = artistArt ?: standIn,
+                            albums = albums,
+                            genres = artist?.genres.orEmpty(),
+                        ) {
+                            ArtistActionRow(
+                                artist = artist,
+                                onPlayAll = viewModel::playAll,
+                                onShuffle = viewModel::shuffleAll,
+                                onPlayNext = viewModel::playNext,
+                                onAddToQueue = viewModel::addToQueue,
+                                onFavorite = viewModel::toggleFavorite,
+                            )
+                        }
+                    } else item {
                         ArtistHero(
                             artist = artist, artUrl = artistArt, albumCount = albums.size,
                             onPlayAll = viewModel::playAll,
@@ -219,8 +260,15 @@ fun ArtistDetailScreen(
                         item { ErrorState(error!!) { viewModel.loadArtist() } }
                     }
 
+                    // The newest record, given the stage (optional).
+                    if (on(com.engabd.sendpin.data.PageShelf.ARTIST_LATEST)) latest?.let { newest ->
+                        item(key = "latest", contentType = "latest") {
+                            LatestReleaseShelf(newest) { onAlbumClick(newest) }
+                        }
+                    }
+
                     // Biography, when the server has one (Navidrome's getArtistInfo2).
-                    biography?.takeIf { it.isNotBlank() }?.let { bio ->
+                    biography?.takeIf { on(com.engabd.sendpin.data.PageShelf.ARTIST_ABOUT) && it.isNotBlank() }?.let { bio ->
                         item(key = "bio", contentType = "bio") { Biography(bio) }
                     }
 
@@ -232,14 +280,15 @@ fun ArtistDetailScreen(
                     // While it is still loading the shelf shows its own skeleton rows
                     // rather than nothing: the space is claimed either way, so the
                     // albums below never move when the tracks arrive.
-                    if (top is NowPlayingViewModel.Load.Loading || top is NowPlayingViewModel.Load.Idle) {
+                    val showTop = on(com.engabd.sendpin.data.PageShelf.ARTIST_TOP)
+                    if (showTop && (top is NowPlayingViewModel.Load.Loading || top is NowPlayingViewModel.Load.Idle)) {
                         item(key = "top_header") { Shelf("Top tracks") }
                         items(3, key = { "top_skeleton:$it" }, contentType = { "skeleton" }) {
                             SkeletonTrackRow()
                         }
                     }
                     (top as? NowPlayingViewModel.Load.Ready)?.value
-                        ?.takeIf { it.isNotEmpty() }
+                        ?.takeIf { showTop && it.isNotEmpty() }
                         ?.let { tracks ->
                             item(key = "top_header") { Shelf("Top tracks") }
                             itemsIndexed(
@@ -248,7 +297,9 @@ fun ArtistDetailScreen(
                                 contentType = { _, _ -> "track" },
                             ) { i, track ->
                                 TrackRow(
-                                    track = track,
+                                    // Numbered by rank. A top track's own number is its
+                                    // place on its album, so the list read "1, 1, 3, 2".
+                                    track = track.copy(trackNumber = null),
                                     index = i,
                                     accent = artistPalette.accent,
                                     onPlay = { viewModel.playTrack(track) },
@@ -263,7 +314,28 @@ fun ArtistDetailScreen(
                     // Albums. Keyed by index as well as id: MA numbers library items
                     // per media type and can answer the same album twice, and a
                     // duplicate key is a hard crash in a lazy list.
-                    if (albums.isNotEmpty()) {
+                    if (albums.isNotEmpty() && layout == com.engabd.sendpin.data.DiscographyLayout.GRID) {
+                        item { Shelf("Albums") }
+                        // Two covers a row. Chunked rather than a nested grid: a lazy
+                        // grid cannot live inside this lazy column.
+                        itemsIndexed(
+                            albums.chunked(2),
+                            key = { i, pair -> "albumRow:$i:${pair.first().itemId}" },
+                            contentType = { _, _ -> "albumRow" },
+                        ) { _, pair ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            ) {
+                                pair.forEach { album ->
+                                    Box(Modifier.weight(1f)) {
+                                        CoverTile(album, onLongPress = { actionsFor = album }) { onAlbumClick(album) }
+                                    }
+                                }
+                                if (pair.size == 1) Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    } else if (albums.isNotEmpty()) {
                         item { Shelf("Albums") }
                         itemsIndexed(
                             albums,
@@ -286,11 +358,21 @@ fun ArtistDetailScreen(
                         item { EmptyState("No albums", "This artist has no albums in your library.") }
                     }
 
+                    // ── Optional shelves ─────────────────────────────────────
+                    if (on(com.engabd.sendpin.data.PageShelf.ARTIST_TIMELINE) && albums.size > 1) {
+                        item(key = "timeline", contentType = "timeline") {
+                            TimelineShelf(albums) { onAlbumClick(it) }
+                        }
+                    }
+                    if (showListening) {
+                        item(key = "listening", contentType = "listening") { ListeningShelf(listening, forArtist = true) }
+                    }
+
                     // ── Similar artists ──────────────────────────────────────
                     // Navidrome has always been able to answer this; the app was
                     // asking `getArtistInfo2` for count=0 of them.
                     (similar as? NowPlayingViewModel.Load.Ready)?.value
-                        ?.takeIf { it.isNotEmpty() }
+                        ?.takeIf { on(com.engabd.sendpin.data.PageShelf.ARTIST_SIMILAR) && it.isNotEmpty() }
                         ?.let { artists ->
                             item(key = "similar", contentType = "shelf") {
                                 SimilarArtists(artists) { a ->
@@ -393,43 +475,57 @@ private fun ArtistHero(
         // (which streams rather than handing over the file) and four elsewhere, so the
         // disc was off-centre on one library and centred on the other.
         Spacer(Modifier.height(20.dp))
+        ArtistActionRow(artist, onPlayAll, onShuffle, onPlayNext, onAddToQueue, onFavorite)
+    }
+}
+
+/** The artist's actions — shared by the Classic and Gallery heroes. */
+@Composable
+private fun ArtistActionRow(
+    artist: MaItem?,
+    onPlayAll: () -> Unit,
+    onShuffle: () -> Unit,
+    onPlayNext: () -> Unit,
+    onAddToQueue: () -> Unit,
+    onFavorite: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
-                // Everything by this artist, straight after what is playing. The
-                // long-press sheet has offered this per album since it was written;
-                // the artist's whole catalogue had play, shuffle and queue-at-the-end
-                // and no way to say "next".
-                IconChip(Icons.Default.QueuePlayNext, "Play next", onClick = onPlayNext)
-            }
+            IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
+            // Everything by this artist, straight after what is playing. The
+            // long-press sheet has offered this per album since it was written;
+            // the artist's whole catalogue had play, shuffle and queue-at-the-end
+            // and no way to say "next".
+            IconChip(Icons.Default.QueuePlayNext, "Play next", onClick = onPlayNext)
+        }
 
-            Spacer(Modifier.width(12.dp))
-            PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
-            Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(12.dp))
+        PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
+        Spacer(Modifier.width(12.dp))
 
-            Row(
-                Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.Start),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
-                // Both backends can favourite an artist — MA takes the uri on
-                // `favorites/add_item`, Subsonic takes `artistId` on `star`.
-                IconChip(
-                    if (artist?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                    if (artist?.favorite == true) "Remove from favourites" else "Add to favourites",
-                    onClick = onFavorite,
-                )
-            }
+        Row(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.Start),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            // Both backends can favourite an artist — MA takes the uri on
+            // `favorites/add_item`, Subsonic takes `artistId` on `star`.
+            IconChip(
+                if (artist?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                if (artist?.favorite == true) "Remove from favourites" else "Add to favourites",
+                onClick = onFavorite,
+            )
         }
     }
+
 }
 
 @OptIn(ExperimentalFoundationApi::class)

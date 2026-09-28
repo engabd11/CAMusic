@@ -136,6 +136,13 @@ class AppSettings(private val context: Context) {
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
         private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" | "wave" (default) | "pill" | "glow"
+        // The album/artist pages and the library's dress — see PageLook.kt. Each shelf
+        // toggle has its own key, named by PageShelf.prefName.
+        private val DETAIL_STYLE = stringPreferencesKey("detail_style")         // classic | gallery
+        private val DISCOGRAPHY_LAYOUT = stringPreferencesKey("discography_layout") // list | grid
+        private val LIBRARY_TILE_STYLE = stringPreferencesKey("library_tile_style") // classic | gallery
+        private val LIBRARY_SPOTLIGHT = booleanPreferencesKey("library_spotlight")
+        private val LIBRARY_BACKDROP = booleanPreferencesKey("library_backdrop")
         // The library's category buttons: shape, size, corner, and which of them
         // appear and in what order. Every default is the row exactly as it shipped,
         // so an install that never opens the Library look page is unchanged.
@@ -1421,6 +1428,35 @@ class AppSettings(private val context: Context) {
     suspend fun setSeekBarStyle(style: String) {
         context.dataStore.edit { it[SEEK_BAR_STYLE] = style }
     }
+
+    // ── Album & artist pages, library dress (see PageLook.kt) ───────────────
+
+    val detailStyle: Flow<DetailStyle> = pref { DetailStyle.byKey(it[DETAIL_STYLE]) }
+    suspend fun setDetailStyle(style: DetailStyle) { context.dataStore.edit { it[DETAIL_STYLE] = style.key } }
+
+    /** The shelves switched on, each falling back to its own [PageShelf.default]. */
+    val enabledShelves: Flow<Set<PageShelf>> = pref { prefs ->
+        PageShelf.entries.filter { prefs[booleanPreferencesKey(it.prefName)] ?: it.default }.toSet()
+    }
+    suspend fun setShelfEnabled(shelf: PageShelf, on: Boolean) {
+        context.dataStore.edit { it[booleanPreferencesKey(shelf.prefName)] = on }
+    }
+
+    val discographyLayout: Flow<DiscographyLayout> = pref { DiscographyLayout.byKey(it[DISCOGRAPHY_LAYOUT]) }
+    suspend fun setDiscographyLayout(layout: DiscographyLayout) {
+        context.dataStore.edit { it[DISCOGRAPHY_LAYOUT] = layout.key }
+    }
+
+    val libraryTileStyle: Flow<TileStyle> = pref { TileStyle.byKey(it[LIBRARY_TILE_STYLE]) }
+    suspend fun setLibraryTileStyle(style: TileStyle) { context.dataStore.edit { it[LIBRARY_TILE_STYLE] = style.key } }
+
+    /** A featured record at the top of the library, painted in its own colours. Off by default. */
+    val librarySpotlight: Flow<Boolean> = pref { it[LIBRARY_SPOTLIGHT] ?: false }
+    suspend fun setLibrarySpotlight(on: Boolean) { context.dataStore.edit { it[LIBRARY_SPOTLIGHT] = on } }
+
+    /** The playing (or spotlit) cover's colours washed behind the library. Off by default. */
+    val libraryBackdrop: Flow<Boolean> = pref { it[LIBRARY_BACKDROP] ?: false }
+    suspend fun setLibraryBackdrop(on: Boolean) { context.dataStore.edit { it[LIBRARY_BACKDROP] = on } }
 
     suspend fun setLibraryCategoryStyle(key: String) {
         context.dataStore.edit { it[LIBRARY_CATEGORY_STYLE] = key }
