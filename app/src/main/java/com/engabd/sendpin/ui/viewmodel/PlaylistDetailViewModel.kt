@@ -82,6 +82,15 @@ class PlaylistDetailViewModel(
     private val _targetPlayer = MutableStateFlow("")
     private fun playTarget() = _targetPlayer.value.ifBlank { myPlayerId }
 
+    /**
+     * The playlist's id as the server knows it *now*. Fixed everywhere but MPD, where a
+     * stored playlist is keyed by its name, so a rename gives it a new one.
+     *
+     * Declared above `init` on purpose: `init` loads the playlist, which reads this,
+     * and the load starts at once — declared below, it was still null then.
+     */
+    private var currentId = itemId
+
     init {
         _playlist.value = MaItem(
             itemId = itemId, provider = provider, name = initialName,
@@ -101,7 +110,7 @@ class PlaylistDetailViewModel(
                 if (isLocal) {
                     val sc = source
                     if (sc == null) { _error.value = "That library isn't connected"; return@launch }
-                    _tracks.value = sc.playlistTracks(itemId)
+                    _tracks.value = sc.playlistTracks(currentId)
                 } else {
                     _tracks.value = maRepo.playlistTracks(ref)
                 }
@@ -109,6 +118,63 @@ class PlaylistDetailViewModel(
                 _error.value = e.message ?: "Failed to load playlist"
             }
             _loading.value = false
+        }
+    }
+
+    // --- editing ----------------------------------------------------------
+    //
+    // Applied to the list on screen at once, then sent. A refusal reloads what the
+    // server really holds and says why — the screen never keeps showing an edit that
+    // did not happen.
+
+    /** Whether this playlist can be edited from here. See [MusicSource.canEditPlaylist]. */
+    val canEdit: Boolean get() = isLocal && source?.canEditPlaylist(currentId) == true
+
+    val canRename: Boolean get() = isLocal && source?.canRenamePlaylist(currentId) == true
+
+    fun removeAt(index: Int) {
+        val before = _tracks.value
+        if (index !in before.indices) return
+        _tracks.value = com.engabd.sendpin.library.PlaylistEdits.removed(before, listOf(index))
+        edit("Couldn't remove that track") { it.removeFromPlaylist(currentId, listOf(index), before) }
+    }
+
+    fun move(from: Int, to: Int) {
+        val before = _tracks.value
+        if (from !in before.indices || to !in before.indices || from == to) return
+        _tracks.value = com.engabd.sendpin.library.PlaylistEdits.moved(before, from, to)
+        edit("Couldn't move that track") { it.movePlaylistEntry(currentId, from, to, before) }
+    }
+
+    fun rename(name: String) {
+        val title = name.trim()
+        if (title.isBlank() || title == _playlist.value?.name) return
+        val previous = _playlist.value
+        _playlist.value = previous?.copy(name = title)
+        viewModelScope.launch {
+            try {
+                val sc = source ?: throw IllegalStateException("That library isn't connected")
+                currentId = sc.renamePlaylist(currentId, title)
+                _toast.tryEmit("Renamed to \"$title\"")
+            } catch (e: Exception) {
+                _playlist.value = previous
+                _toast.tryEmit(e.message ?: "Couldn't rename the playlist")
+            }
+        }
+    }
+
+    private fun edit(failure: String, block: suspend (MusicSource) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val sc = source ?: throw IllegalStateException("That library isn't connected")
+                block(sc)
+                // Entry ids and positions are the server's; re-read so the next edit
+                // addresses the playlist as it now is rather than as it was.
+                _tracks.value = sc.playlistTracks(currentId)
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: failure)
+                loadPlaylist()
+            }
         }
     }
 

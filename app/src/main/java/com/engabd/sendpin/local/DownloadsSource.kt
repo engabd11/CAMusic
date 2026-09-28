@@ -71,6 +71,7 @@ class DownloadsSource(
         // Playlists made here, from what is downloaded — the same "New playlist" and
         // "Add to playlist" every server library has. They live on this phone.
         Capability.PLAYLIST_WRITE,
+        Capability.PLAYLIST_EDIT,
     )
 
     private fun all(): List<DownloadedTrack> = downloads.downloads.value
@@ -120,6 +121,17 @@ class DownloadsSource(
         playlistStore.append(playlistId, songIds)
 
     override suspend fun deletePlaylist(id: String) = playlistStore.remove(id)
+
+    override suspend fun removeFromPlaylist(playlistId: String, positions: List<Int>, tracks: List<MaItem>) =
+        playlistStore.removeAt(playlistId, positions)
+
+    override suspend fun movePlaylistEntry(playlistId: String, from: Int, to: Int, tracks: List<MaItem>) =
+        playlistStore.move(playlistId, from, to)
+
+    override suspend fun renamePlaylist(playlistId: String, name: String): String {
+        playlistStore.rename(playlistId, name)
+        return playlistId
+    }
 
     override suspend fun recentlyAdded(limit: Int): List<MaItem> =
         DownloadsIndex.recentlyAdded(all(), { runCatching { File(it.filePath).lastModified() }.getOrDefault(0L) }, limit)

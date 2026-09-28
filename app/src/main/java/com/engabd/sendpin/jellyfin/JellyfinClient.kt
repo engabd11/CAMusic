@@ -586,8 +586,38 @@ class JellyfinClient(
      * Every track in the playlist. Paged: a single request stopped at the query's
      * default of 200, so a longer playlist played — and downloaded — as its first 200.
      */
+    /**
+     * A playlist's entries, in order, from the playlist endpoint rather than a plain
+     * children query: only this one answers with each entry's `PlaylistItemId`, the
+     * handle removing or moving one needs (checked against Jellyfin 10.11 — the
+     * children query leaves it out).
+     */
     suspend fun playlistTracks(id: String): List<MaItem> = fetchAllPages(PAGE) { offset, limit ->
-        items(types = "Audio", parentId = id, recursive = false, limit = limit, offset = offset)
+        get(
+            "/Playlists/$id/Items",
+            buildMap {
+                if (userId.isNotBlank()) put("userId", userId)
+                put("Fields", BASE_FIELDS + ",MediaSources")
+                put("ImageTypeLimit", "1")
+                put("StartIndex", offset.toString())
+                put("Limit", limit.toString())
+            },
+        )["Items"]?.jsonArray.orEmpty().mapNotNull { (it as? JsonObject)?.let(::item) }
+    }
+
+    /** Remove entries by their `PlaylistItemId`s. */
+    suspend fun removeFromPlaylist(playlistId: String, entryIds: List<String>) {
+        if (entryIds.isEmpty()) return
+        delete("/Playlists/$playlistId/Items", mapOf("EntryIds" to entryIds.joinToString(",")))
+    }
+
+    /** Move one entry to [newIndex] (0-based). */
+    suspend fun movePlaylistEntry(playlistId: String, entryId: String, newIndex: Int) {
+        postQuery("/Playlists/$playlistId/Items/$entryId/Move/$newIndex", emptyMap())
+    }
+
+    suspend fun renamePlaylist(playlistId: String, name: String) {
+        post("/Playlists/$playlistId", buildJsonObject { put("Name", name) })
     }
 
     suspend fun genres(): List<MaItem> =
@@ -901,6 +931,7 @@ class JellyfinClient(
                 else -> o.str("AlbumId")
             },
             album = o.str("Album"),
+            entryId = o.str("PlaylistItemId"),
             year = o.int("ProductionYear"),
             genres = o["Genres"]?.jsonArray.orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull },
         )

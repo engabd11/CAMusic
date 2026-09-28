@@ -76,6 +76,22 @@ class MpdPlaylistWriteTest {
     }
 
     @Test
+    fun `removing several entries deletes the highest first, so none shift under it`() = runBlocking {
+        client().removeFromPlaylist("Mix", listOf(1, 4, 2))
+        assertEquals(
+            listOf("playlistdelete \"Mix\" 4", "playlistdelete \"Mix\" 2", "playlistdelete \"Mix\" 1"),
+            received.toList(),
+        )
+    }
+
+    @Test
+    fun `moving and renaming use MPD's own commands`() = runBlocking {
+        client().movePlaylistEntry("Mix", 3, 0)
+        client().renamePlaylist("Mix", "Mix II")
+        assertEquals(listOf("playlistmove \"Mix\" 3 0", "rename \"Mix\" \"Mix II\""), received.toList())
+    }
+
+    @Test
     fun `adding and deleting address the playlist by name`() = runBlocking {
         client().addToPlaylist("Mix", listOf("x.flac"))
         client().deletePlaylist("Mix")

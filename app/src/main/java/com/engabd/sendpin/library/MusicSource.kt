@@ -261,6 +261,30 @@ interface MusicSource {
     suspend fun addToPlaylistFrom(playlistId: String, tracks: List<MaItem>) =
         addToPlaylist(playlistId, tracks.map { it.itemId })
 
+    // ── Editing a playlist ────────────────────────────────────────────────────
+    //
+    // [tracks] is the playlist as the screen shows it, in order — what [playlistTracks]
+    // returned — so an implementation has what it needs whatever its server wants:
+    // positions, per-entry ids ([MaItem.entryId]), or the whole list to rewrite.
+
+    /** Whether [playlistId] can be edited here. Per playlist: see [WithAppPlaylists]. */
+    fun canEditPlaylist(playlistId: String): Boolean = Capability.PLAYLIST_EDIT in capabilities
+
+    /** Whether [playlistId] can be renamed here — a narrower question on some servers. */
+    fun canRenamePlaylist(playlistId: String): Boolean = canEditPlaylist(playlistId)
+
+    /** Remove the entries at [positions] (0-based, into [tracks]). */
+    suspend fun removeFromPlaylist(playlistId: String, positions: List<Int>, tracks: List<MaItem>) = Unit
+
+    /** Move the entry at [from] to [to] (0-based, into [tracks] before the move). */
+    suspend fun movePlaylistEntry(playlistId: String, from: Int, to: Int, tracks: List<MaItem>) = Unit
+
+    /**
+     * Rename [playlistId], returning its id afterwards — the same one, except where a
+     * playlist is keyed by its name (MPD), where the screen has to follow the new one.
+     */
+    suspend fun renamePlaylist(playlistId: String, name: String): String = playlistId
+
     // ── Extras ────────────────────────────────────────────────────────────
 
     suspend fun lyrics(songId: String): MaLyrics? = null
@@ -308,6 +332,12 @@ class SourceAuthException(message: String) : Exception(message)
 enum class Capability {
     SEARCH,
     GENRES,
+    /**
+     * Playlists can be edited in place: tracks removed and moved, the playlist renamed.
+     * See [MusicSource.canEditPlaylist], which is what a screen should ask.
+     */
+    PLAYLIST_EDIT,
+
     /** Favourites can be *listed* — the Starred shelf. See [STAR] for changing them. */
     FAVORITES,
 

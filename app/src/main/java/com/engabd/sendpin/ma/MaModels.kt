@@ -179,6 +179,13 @@ data class MaItem(
     val serverId: String? = null,
     /** That library's name, for the row to show beside the subtitle. Display only. */
     val serverLabel: String? = null,
+    /**
+     * This row's own identity *within a playlist*, where the server has one — the
+     * handle that removing or moving one entry needs, since the same track can sit in
+     * a playlist twice. Jellyfin's `PlaylistItemId`, Music Assistant's position. Null
+     * everywhere else.
+     */
+    val entryId: String? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE

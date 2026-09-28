@@ -53,6 +53,7 @@ class SubsonicSource(
             add(Capability.STAR)
             add(Capability.PLAYLIST_READ)
             add(Capability.PLAYLIST_WRITE)
+            add(Capability.PLAYLIST_EDIT)
             add(Capability.DOWNLOAD)
             add(Capability.HISTORY)
             add(Capability.SCROBBLE)
@@ -146,6 +147,19 @@ class SubsonicSource(
     }
 
     override suspend fun deletePlaylist(id: String) = client.deletePlaylist(id)
+
+    override suspend fun removeFromPlaylist(playlistId: String, positions: List<Int>, tracks: List<MaItem>) {
+        if (positions.isNotEmpty()) client.updatePlaylist(playlistId, removeIndices = positions)
+    }
+
+    override suspend fun movePlaylistEntry(playlistId: String, from: Int, to: Int, tracks: List<MaItem>) {
+        client.replacePlaylist(playlistId, PlaylistEdits.moved(tracks, from, to).map { it.itemId })
+    }
+
+    override suspend fun renamePlaylist(playlistId: String, name: String): String {
+        client.updatePlaylist(playlistId, name = name)
+        return playlistId
+    }
 
     override suspend fun lyrics(songId: String): MaLyrics? = client.getLyrics(songId)
     override suspend fun artistInfo(id: String, similarCount: Int): ArtistInfo =

@@ -442,6 +442,15 @@ class SubsonicClient(
     }
 
     /**
+     * Replace a playlist's contents with [songIds], in that order — how a reorder is
+     * written, since Subsonic has no "move". `createPlaylist` with a `playlistId`
+     * updates that playlist rather than making a new one, per the Subsonic API.
+     */
+    suspend fun replacePlaylist(id: String, songIds: List<String>) {
+        get("createPlaylist", mapOf("playlistId" to id), repeated = songIds.map { "songId" to it })
+    }
+
+    /**
      * A 1–5 star rating, or 0 to clear it.
      *
      * Distinct from starring: `star` is a boolean favourite, `setRating` is the
