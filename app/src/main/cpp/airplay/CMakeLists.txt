@@ -27,7 +27,10 @@ set(USE_STATIC_MBEDTLS_LIBRARY ON  CACHE BOOL "" FORCE)
 set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(mbedtls
     GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
-    GIT_TAG        2ca6c285a0dd3f33982dd57299012dacab1ff206   # v3.6.0, pinned by commit
+    # v3.6.7 (July 2026), the current release of the 3.6 LTS line, pinned by the
+    # tag's commit rather than the tag name so a moved tag cannot change what is
+    # built. 3.6.0 was two years and seven security releases behind.
+    GIT_TAG        068ff080b369adfac81509f9b57b2afabaf82dc5   # v3.6.7
     GIT_SHALLOW    FALSE)   # shallow fetch may not find a pinned commit
 FetchContent_MakeAvailable(mbedtls)
 
