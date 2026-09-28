@@ -427,4 +427,20 @@ class SecretOptionsTest {
             assertFalse(MusicSources.hostsFiles(p), "$p has no file to hand over")
         }
     }
+
+    @Test
+    fun `mobile data uses its own format only when one is set`() {
+        val wifiOnly = ServerConfig(kind = ServerKind.NAVIDROME, options = mapOf(ServerConfig.OPT_STREAM_FORMAT to "flac"))
+        assertEquals("flac", wifiOnly.streamFormatFor(metered = false))
+        // Unset, and blank (what "Same as Wi-Fi" stores), both follow Wi-Fi.
+        assertEquals("flac", wifiOnly.streamFormatFor(metered = true))
+        val blank = wifiOnly.withOption(ServerConfig.OPT_STREAM_FORMAT_MOBILE, "")
+        assertEquals("flac", blank.streamFormatFor(metered = true))
+
+        val both = wifiOnly.withOption(ServerConfig.OPT_STREAM_FORMAT_MOBILE, "opus-128")
+        assertEquals("flac", both.streamFormatFor(metered = false))
+        assertEquals("opus-128", both.streamFormatFor(metered = true))
+
+        assertEquals("raw", ServerConfig(kind = ServerKind.JELLYFIN).streamFormatFor(metered = true))
+    }
 }

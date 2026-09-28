@@ -166,6 +166,7 @@ class AppSettings(private val context: Context) {
         private val REGISTERED_NAME = stringPreferencesKey("registered_player_name")
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
+        private val NAV_STREAM_FORMAT_MOBILE = stringPreferencesKey("nav_stream_format_mobile") // the same on metered; "" = as above
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
         private val BIT_PERFECT_AAUDIO = booleanPreferencesKey("bit_perfect_aaudio") // AAudio direct I24/float exclusive path
         private val EXCLUSIVE_OUTPUT = booleanPreferencesKey("exclusive_output")  // no processors, no in-app volume — the source's own bits
@@ -794,6 +795,7 @@ class AppSettings(private val context: Context) {
         prefs[NAV_USERNAME] = nav?.username.orEmpty()
         prefs[NAV_PASSWORD] = Crypto.encrypt(nav?.password.orEmpty())
         prefs[NAV_STREAM_FORMAT] = nav?.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+        prefs[NAV_STREAM_FORMAT_MOBILE] = nav?.option(ServerConfig.OPT_STREAM_FORMAT_MOBILE).orEmpty()
     }
 
     /**
@@ -1126,7 +1128,10 @@ class AppSettings(private val context: Context) {
      * untouched; anything else asks the server to transcode, which is worth it on a
      * slow connection and wasteful on a fast one.
      */
-    val navStreamFormat: Flow<String> = pref { it[NAV_STREAM_FORMAT] ?: "raw" }
+    val navStreamFormat: Flow<String> = kotlinx.coroutines.flow.combine(
+        pref { (it[NAV_STREAM_FORMAT] ?: "raw") to it[NAV_STREAM_FORMAT_MOBILE].orEmpty() },
+        com.engabd.sendpin.library.StreamNetwork.metered,
+    ) { (wifi, mobile), metered -> if (metered && mobile.isNotBlank()) mobile else wifi }
 
     /**
      * Whether to keep more than 16 bits per sample instead of letting the

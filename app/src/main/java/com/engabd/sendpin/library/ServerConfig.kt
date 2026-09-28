@@ -324,9 +324,24 @@ data class ServerConfig(
     fun withOption(key: String, value: String): ServerConfig =
         copy(options = options + (key to value))
 
+    /**
+     * The format to ask this server for, on a metered network or not.
+     *
+     * [OPT_STREAM_FORMAT_MOBILE] unset means "the same as on Wi-Fi", which is also
+     * what every server saved before the second setting existed gets — so nobody's
+     * mobile stream changes until they pick one.
+     */
+    fun streamFormatFor(metered: Boolean): String =
+        (if (metered) option(OPT_STREAM_FORMAT_MOBILE) else null)
+            ?: option(OPT_STREAM_FORMAT)
+            ?: "raw"
+
     companion object {
         /** Navidrome / Subsonic: what `format=` the stream URL asks for. */
         const val OPT_STREAM_FORMAT = "streamFormat"
+
+        /** The same, on a metered network. Absent = as [OPT_STREAM_FORMAT]. */
+        const val OPT_STREAM_FORMAT_MOBILE = "streamFormatMobile"
 
         // ── Music Assistant player settings ───────────────────────────────
         //

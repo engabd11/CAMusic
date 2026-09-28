@@ -33,6 +33,7 @@ import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.library.SourceAuthException
 import com.engabd.sendpin.library.SourceError
+import com.engabd.sendpin.library.StreamNetwork
 import com.engabd.sendpin.library.SubsonicSource
 import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
@@ -872,9 +873,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // downloads and "play at original quality" — pushing it onto whatever source
         // happened to be connected meant editing server B's stream quality changed
         // server A's playback.
+        // And per network: a server can ask for less on mobile data, so moving
+        // between Wi-Fi and mobile data re-picks it for the next track.
         viewModelScope.launch {
-            settings.activeServer
-                .map { it?.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw" }
+            kotlinx.coroutines.flow.combine(settings.activeServer, StreamNetwork.metered) { config, metered ->
+                config?.streamFormatFor(metered) ?: "raw"
+            }
                 .distinctUntilChanged()
                 .collect { source?.streamFormat = it }
         }
@@ -1079,12 +1083,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // library simply did not change.
             existing.let { it.kind.auth != AuthStyle.NONE || sourceOptions == localOptionsOf(config) }
         if (sameKindAndAddress) {
-            existing.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+            existing.streamFormat = config.streamFormatFor(StreamNetwork.isMetered)
             return
         }
         val next = MusicSources.create(getApplication(), config)
         if (next != null) {
-            next.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+            next.streamFormat = config.streamFormatFor(StreamNetwork.isMetered)
             source = next
             sourceOptions = localOptionsOf(config)
         }
@@ -1320,6 +1324,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 source = next
                 activeConfig = config
                 next.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT)
+                    ?.let { config.streamFormatFor(StreamNetwork.isMetered) }
                     ?: settings.navStreamFormat.first()
                 // Signing in, and asking what the server can do. Both can fail, and a
                 // failure here is a connection failure like any other.
@@ -1723,7 +1728,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (!MusicSources.isLocalProvider(item.provider)) return null
         val config = activeConfig?.takeIf { it.kind.playsLocally } ?: return null
         val src = MusicSources.create(getApplication(), config)?.apply {
-            streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+            streamFormat = config.streamFormatFor(StreamNetwork.isMetered)
         } ?: return null
         return src.takeIf { it.providerId == item.provider }?.streamUrl(item.itemId)
     }

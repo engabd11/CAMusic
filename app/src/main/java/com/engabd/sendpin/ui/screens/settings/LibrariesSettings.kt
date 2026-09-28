@@ -558,6 +558,10 @@ private fun ServerDetailBody(
     var format by remember(config.id) {
         mutableStateOf(config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw")
     }
+    // "" = the same as on Wi-Fi, which is what every server starts with.
+    var mobileFormat by remember(config.id) {
+        mutableStateOf(config.option(ServerConfig.OPT_STREAM_FORMAT_MOBILE).orEmpty())
+    }
     var confirmRemove by remember(config.id) { mutableStateOf(false) }
 
     val connecting by libraryVm.connecting.collectAsStateWithLifecycle()
@@ -589,7 +593,9 @@ private fun ServerDetailBody(
             // The folder list stays. It used to be dropped here unconditionally, and
             // only the picker path survived that by passing `customOptions` — so every
             // *other* save of a local library silently wiped the chosen folder.
-            options = config.options.plus(ServerConfig.OPT_STREAM_FORMAT to format),
+            options = config.options
+                .plus(ServerConfig.OPT_STREAM_FORMAT to format)
+                .plus(ServerConfig.OPT_STREAM_FORMAT_MOBILE to mobileFormat),
         )
     }
 
@@ -894,7 +900,25 @@ private fun ServerDetailBody(
                         else -> "Transcoded, lossy. Worth it on a slow or metered connection."
                     },
                 )
-                Note("Applies to the next track.")
+                // A second choice for mobile data, off ("same as Wi-Fi") by default.
+                // A dropdown rather than a second segmented row: six options do not
+                // fit one row, and this is the one people set once and forget.
+                val mobileLabels = listOf("Same as Wi-Fi") + StreamFormatLabels
+                val mobileValues = listOf("") + StreamFormatValues
+                CardDivider()
+                FieldLabel("On mobile data")
+                DropdownPicker(
+                    options = mobileLabels,
+                    selectedIndex = mobileValues.indexOf(mobileFormat).coerceAtLeast(0),
+                    accent = accent,
+                ) {
+                    mobileFormat = mobileValues[it]
+                    scope.launch { save(makeActive = false) }
+                }
+                Note(
+                    "Used on any metered connection, including a hotspot marked as metered. " +
+                        "Applies to the next track after the network changes.",
+                )
             }
         }
 
