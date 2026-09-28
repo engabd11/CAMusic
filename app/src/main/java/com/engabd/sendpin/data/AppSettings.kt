@@ -35,7 +35,21 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.serialization.json.jsonPrimitive
 
-private val Context.dataStore by preferencesDataStore(name = "sendpin_settings")
+/**
+ * A settings file that no longer parses is replaced with an empty one rather than
+ * thrown on every read. Without a handler DataStore raises CorruptionException from
+ * `data` — every settings flow, the app's first read at launch included — so a file
+ * damaged by a crash mid-write or a full disk was a crash on every start until the
+ * app's data was cleared by hand. Starting again from defaults is that same outcome
+ * without the crash loop; the synchronous boot mirrors (theme, onboarding) survive it.
+ */
+private val Context.dataStore by preferencesDataStore(
+    name = "sendpin_settings",
+    corruptionHandler = androidx.datastore.core.handlers.ReplaceFileCorruptionHandler { e ->
+        android.util.Log.e("AppSettings", "Settings file was unreadable and has been reset", e)
+        androidx.datastore.preferences.core.emptyPreferences()
+    },
+)
 
 /**
  * Persisted app settings: the active library backend (Music Assistant or a direct
@@ -71,6 +85,9 @@ class AppSettings(private val context: Context) {
         context.dataStore.data.map(read).distinctUntilChanged()
 
     companion object {
+        /** See [decodeServersCached]. A pair so a reader never sees a key with another key's list. */
+        @Volatile private var serversMemo: Pair<String, List<ServerConfig>>? = null
+
         /**
          * The fixed id of the always-present Downloads library. See [withDownloads].
          */
@@ -568,7 +585,23 @@ class AppSettings(private val context: Context) {
      */
     private fun storedServers(
         prefs: androidx.datastore.preferences.core.Preferences,
-    ): List<ServerConfig> = withDownloads(prefs[SERVERS]?.let { decodeServers(it) } ?: legacyServers(prefs))
+    ): List<ServerConfig> = withDownloads(prefs[SERVERS]?.let { decodeServersCached(it) } ?: legacyServers(prefs))
+
+    /**
+     * [decodeServers], remembered by the raw string.
+     *
+     * Every flow built on [storedServers] re-runs on *every* DataStore write — the
+     * volume, a light-sync slider, a clock offset persisted every few seconds — and
+     * there are a couple of dozen of them across the AppSettings instances the app
+     * holds. Each run parsed the JSON and decrypted every server's secrets, so one
+     * unrelated write cost dozens of parses and Keystore operations, some of them on
+     * the main thread. The server list itself changes a handful of times a week.
+     * Process-wide, because every AppSettings instance reads the same file.
+     */
+    private fun decodeServersCached(raw: String): List<ServerConfig>? {
+        serversMemo?.let { (key, value) -> if (key == raw) return value }
+        return decodeServers(raw)?.also { serversMemo = raw to it }
+    }
 
     /**
      * Guarantee the Downloads library is in the list.
@@ -875,7 +908,7 @@ class AppSettings(private val context: Context) {
         } catch (e: Exception) {
             return false
         }
-        context.dataStore.edit { prefs ->
+        val imported = context.dataStore.edit { prefs ->
             obj.forEach { (name, element) ->
                 if (name == SERVERS_EXPORT_KEY) return@forEach
                 val primitive = element as? JsonPrimitive ?: return@forEach
@@ -893,7 +926,29 @@ class AppSettings(private val context: Context) {
                 mirrorLegacyKeys(prefs, list, resolveActiveId(prefs, list))
             }
         }
+        refreshBootMirrors(imported)
         return true
+    }
+
+    /**
+     * Restate every synchronous boot mirror from [prefs].
+     *
+     * Each setter writes its mirror beside the DataStore key, but an import writes the
+     * keys directly, so after one the launch window still showed the old theme, the
+     * player still built for the old output mode, and onboarding could reappear over
+     * a fully imported set-up — until each setting happened to be touched again.
+     */
+    private fun refreshBootMirrors(prefs: Preferences) {
+        bootPrefs.edit()
+            .putString("theme", prefs[THEME] ?: "oled")
+            .putBoolean("onboarded", prefs[ONBOARDING_COMPLETED] ?: false)
+            .putBoolean("onboarding_skipped", prefs[ONBOARDING_SKIPPED] ?: false)
+            .putBoolean("bit_perfect", prefs[BIT_PERFECT] ?: false)
+            .putBoolean("exclusive_output", prefs[EXCLUSIVE_OUTPUT] ?: false)
+            .putBoolean("bit_perfect_aaudio", prefs[BIT_PERFECT_AAUDIO] ?: false)
+            .putString("preferred_audio_device_id", prefs[PREFERRED_AUDIO_DEVICE_ID] ?: "")
+            .putBoolean(HAS_LIBRARY, storedServers(prefs).any { it.id != DOWNLOADS_SERVER_ID })
+            .apply()
     }
 
     val backend: Flow<String> = pref { it[BACKEND] ?: "ma" }
