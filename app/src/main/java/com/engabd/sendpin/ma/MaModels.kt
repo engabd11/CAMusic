@@ -590,6 +590,8 @@ data class LyricLine(val atMs: Long, val text: String)
 data class MaLyrics(
     val text: String,
     val synced: Boolean = false,
+    /** Where these came from when it is worth crediting — "LRCLIB". Null for the library's own. */
+    val source: String? = null,
 ) {
     /**
      * The lyric as timed lines. Plain lyrics come back as one line per row with a

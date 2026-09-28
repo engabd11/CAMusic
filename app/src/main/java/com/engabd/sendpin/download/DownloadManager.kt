@@ -21,6 +21,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -456,6 +457,7 @@ class DownloadManager(
             ).toEntity()
             dao.insert(entity)
             clearJob(item.itemId)
+            keepLyrics(item, file)
             enforceStorageCap(storageCapMb)
             true
         } catch (e: CancellationException) {
@@ -469,6 +471,33 @@ class DownloadManager(
             fail(item, e.message ?: e.javaClass.simpleName, part)
         }
     }
+
+    /**
+     * Keep the song's lyrics beside the download, so they are there offline.
+     *
+     * In the background and best-effort — a download is done when the audio is, and
+     * a missing lyric is not a failed download. A file that carries its own lyrics
+     * needs no copy. Otherwise the library's, then LRCLIB's if the listener allows it.
+     */
+    private fun keepLyrics(item: MaItem, file: File) {
+        if (item.mediaType != "track") return
+        lyricsScope.launch {
+            runCatching {
+                if (file.inputStream().use(com.engabd.sendpin.lyrics.EmbeddedLyrics::read) != null) return@launch
+                val source = com.engabd.sendpin.SendpinApp.instance.musicSource.value
+                    ?.takeIf { it.providerId == item.provider }
+                val lyrics = kotlinx.coroutines.withTimeoutOrNull(15_000) { runCatching { source?.lyrics(item.itemId) }.getOrNull() }
+                    ?: if (com.engabd.sendpin.data.AppSettings(context).lyricsOnline.first()) {
+                        kotlinx.coroutines.withTimeoutOrNull(15_000) {
+                            com.engabd.sendpin.lyrics.Lrclib().find(item.name, item.subtitle, item.album, item.duration)
+                        }
+                    } else null
+                lyrics?.let { com.engabd.sendpin.lyrics.LocalLyrics.save(file, it) }
+            }
+        }
+    }
+
+    private val lyricsScope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
 
     private sealed interface Outcome {
         data object Done : Outcome
@@ -649,6 +678,7 @@ class DownloadManager(
     suspend fun delete(id: String, provider: String? = null): Unit = withContext(Dispatchers.IO) {
         val entry = get(id, provider) ?: return@withContext
         runCatching { File(entry.filePath).delete() }
+        runCatching { com.engabd.sendpin.lyrics.LocalLyrics.sidecarFor(File(entry.filePath)).delete() }
         // The cover is shared across an album — only bin it once the last track goes.
         entry.coverPath?.let { path ->
             if (_downloads.value.none { it !== entry && it.coverPath == path }) runCatching { File(path).delete() }
@@ -665,7 +695,10 @@ class DownloadManager(
     }
 
     suspend fun deleteAll(): Unit = withContext(Dispatchers.IO) {
-        _downloads.value.forEach { runCatching { File(it.filePath).delete() } }
+        _downloads.value.forEach {
+            runCatching { File(it.filePath).delete() }
+            runCatching { com.engabd.sendpin.lyrics.LocalLyrics.sidecarFor(File(it.filePath)).delete() }
+        }
         runCatching { coverDir.listFiles()?.forEach { it.delete() } }
         dao.deleteAll()
         // The playlists go with the files. Keeping them would leave a Downloads

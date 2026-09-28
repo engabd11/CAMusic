@@ -129,17 +129,28 @@ internal fun BehaviorScansCard(
 @Composable
 internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
     val offset by settings.lyricsOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
+    val online by settings.lyricsOnline.collectAsStateWithLifecycle(initialValue = false)
     SettingsCard(
-        title = "Lyrics timing",
-        lead = "Nudge synced lyrics against the vocal.",
+        title = "Lyrics",
+        lead = "Where lyrics come from, and nudging synced ones against the vocal.",
         info = "Providers stamp the same track differently, so there is no right answer here, " +
             "only what looks in time to you. Adjustments snap to 50 ms, which is finer than " +
-            "anyone can pick out against a sung line.\n\nThe offset applies to every track " +
-            "rather than being remembered per song.\n\nTip: set it against a slow, clear " +
+            "anyone can pick out against a sung line.\n\nThis offset applies to every track. " +
+            "For one song that is off on its own, use the timing buttons under its lyrics on " +
+            "Now Playing; that is remembered for the song.\n\nTip: set it against a slow, clear " +
             "vocal rather than a fast one. If lyrics run late on some songs and early on " +
             "others, that is the provider disagreeing with itself and no single offset will " +
             "fix both.",
     ) {
+        ToggleRow(
+            title = "Find lyrics online",
+            subtitle = "Ask LRCLIB when your library and the file have none. Sends the artist and title",
+            checked = online,
+            accent = com.engabd.sendpin.ui.design.LocalAccent.current,
+        ) { on -> scope.launch { settings.setLyricsOnline(on) } }
+        Note("Downloads keep their lyrics beside the file, so they work offline.")
+        CardDivider()
+        FieldLabel("Timing, every song")
         SliderRow(
             value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
                 (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
