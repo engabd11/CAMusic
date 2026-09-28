@@ -203,7 +203,12 @@ object DownloadsIndex {
     }
 
     /**
-     * Newest first, by whatever [mtimeOf] says.
+     * The albums downloaded most recently, newest first — ordered by the newest file
+     * each one holds, by whatever [mtimeOf] says.
+     *
+     * Albums, as every other library's "Recently added" is. It listed tracks, so the
+     * shelf repeated one cover once per song and the library's Spotlight, which features
+     * a *record*, had nothing here to choose from.
      *
      * The clock is injected because a download has no "added" field of its own — the
      * file's own modification time is the only record — and reading it is `java.io`,
@@ -214,7 +219,9 @@ object DownloadsIndex {
         mtimeOf: (DownloadedTrack) -> Long,
         limit: Int,
     ): List<MaItem> = list
-        .sortedByDescending(mtimeOf)
+        .groupBy { albumId(it) }
+        .map { (id, tracks) -> albumItem(id, tracks) to tracks.maxOf(mtimeOf) }
+        .sortedByDescending { it.second }
         .take(limit)
-        .map(::item)
+        .map { it.first }
 }

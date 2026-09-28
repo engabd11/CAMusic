@@ -1,5 +1,7 @@
 package com.engabd.sendpin.ui.screens
 
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -241,6 +243,9 @@ internal fun CoverTile(
                 }
             )
     ) {
+        val gallery = LocalTileStyle.current == com.engabd.sendpin.data.TileStyle.GALLERY && item.image != null
+        val tint = if (gallery) rememberAlbumPalette(item.image).accent else Color.Unspecified
+        val corner = RoundedCornerShape(if (gallery) 18.dp else 14.dp)
         Box(
             // No elevation shadow. It cost a shadow-casting render node per grid cell
             // — the most-repeated element in the app — to draw something that is very
@@ -249,9 +254,10 @@ internal fun CoverTile(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(RoundedCornerShape(14.dp))
+                .then(if (gallery) Modifier.coverGlow(tint) else Modifier)
+                .clip(corner)
                 .background(Ink3)
-                .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp)),
+                .border(1.dp, HairlineSoft, corner),
             contentAlignment = Alignment.Center,
         ) {
             val art = rememberArtRequest(item.image, pixels = 200)
@@ -275,11 +281,42 @@ internal fun CoverTile(
         )
         item.subtitle?.let {
             Text(
-                it, color = inkOn(0.38f), fontFamily = AppFont, fontSize = 11.sp,
+                it, color = if (gallery) tint.a(0.85f) else inkOn(0.38f), fontFamily = AppFont, fontSize = 11.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
     }
+}
+
+/**
+ * How covers in the library are dressed — provided by the library (and the artist
+ * page's cover grid) from the Library look settings. Classic unless someone chose
+ * otherwise; see [com.engabd.sendpin.data.TileStyle].
+ */
+internal val LocalTileStyle = compositionLocalOf { com.engabd.sendpin.data.TileStyle.CLASSIC }
+
+/**
+ * The Gallery tile's pool of colour: the cover's own accent, spilling out beneath it
+ * as if the sleeve were lit from behind.
+ *
+ * A radial gradient drawn behind the cover rather than a blur or an elevation shadow —
+ * this is on every cell of a grid, and a gradient costs one draw where a blur costs a
+ * render pass. Drawn before the clip, so it can spill past the tile.
+ */
+private fun Modifier.coverGlow(tint: Color): Modifier = drawBehind {
+    val w = size.width
+    val h = size.height
+    // Sized to the tile and kept low, so a pool sits under its own cover — on the
+    // large two-column tiles a wider one ran into its neighbour and under the labels.
+    drawOval(
+        Brush.radialGradient(
+            listOf(tint.copy(alpha = 0.42f), tint.copy(alpha = 0.12f), Color.Transparent),
+            center = Offset(w / 2f, h * 0.92f),
+            radius = w * 0.52f,
+        ),
+        topLeft = Offset(-w * 0.04f, h * 0.60f),
+        size = Size(w * 1.08f, h * 0.60f),
+    )
 }
 
 /**
@@ -325,12 +362,15 @@ internal fun ShelfTile(
             ),
         horizontalAlignment = if (circular) Alignment.CenterHorizontally else Alignment.Start,
     ) {
+        val gallery = LocalTileStyle.current == com.engabd.sendpin.data.TileStyle.GALLERY && item.image != null
+        val tint = if (gallery) rememberAlbumPalette(item.image).accent else Color.Unspecified
         Box(
             // No elevation shadow, for the same reason CoverTile has none: a
             // shadow-casting render node per cell, to draw something very nearly
             // invisible against a true-black background.
             Modifier
                 .size(ShelfTileWidth)
+                .then(if (gallery) Modifier.coverGlow(tint) else Modifier)
                 .clip(shape)
                 .background(Ink3)
                 .border(1.dp, HairlineSoft, shape),
@@ -367,7 +407,7 @@ internal fun ShelfTile(
         )
         item.subtitle?.let {
             Text(
-                it, color = inkOn(0.38f), fontFamily = AppFont, fontSize = 11.sp,
+                it, color = if (gallery) tint.a(0.85f) else inkOn(0.38f), fontFamily = AppFont, fontSize = 11.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 textAlign = if (circular) TextAlign.Center else null,
                 modifier = Modifier.fillMaxWidth(),

@@ -118,4 +118,18 @@ class DownloadsIndexTest {
         // not, because existing comparisons are against the bare path.
         assertEquals("/data/a.flac", DownloadsIndex.item(track("a", "One")).uri)
     }
+
+    @Test
+    fun `recently added lists albums, newest download first, each once`() {
+        val list = listOf(
+            track("a1", "One", album = "Old Record", albumId = "old"),
+            track("a2", "Two", album = "Old Record", albumId = "old"),
+            track("b1", "Three", album = "New Record", albumId = "new"),
+            track("b2", "Four", album = "New Record", albumId = "new"),
+        )
+        val mtime = mapOf("a1" to 10L, "a2" to 20L, "b1" to 30L, "b2" to 40L)
+        val recent = DownloadsIndex.recentlyAdded(list, { mtime.getValue(it.id) }, limit = 10)
+        assertEquals(listOf("New Record", "Old Record"), recent.map { it.name })
+        assertEquals(listOf("album", "album"), recent.map { it.mediaType })
+    }
 }

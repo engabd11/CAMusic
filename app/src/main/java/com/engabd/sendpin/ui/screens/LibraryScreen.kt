@@ -203,10 +203,29 @@ fun LibraryScreen(
         if (searchFocused) focus.clearFocus() else viewModel.back()
     }
 
+    // The library's dress — see PageLook. Classic tiles and the plain page wash
+    // unless the Library look settings ask for more.
+    val looksContext = LocalContext.current
+    val looks = remember(looksContext) { AppSettings(looksContext) }
+    val tileStyle by looks.libraryTileStyle.collectAsStateWithLifecycle(initialValue = com.engabd.sendpin.data.TileStyle.CLASSIC)
+    val backdrop by looks.libraryBackdrop.collectAsStateWithLifecycle(initialValue = false)
+    val playingArt by com.engabd.sendpin.SendpinApp.instance.unifiedNowPlaying.state
+        .collectAsStateWithLifecycle()
+    val libraryShelves by viewModel.shelves.collectAsStateWithLifecycle()
+    // What the backdrop is painted from: the record playing, else today's spotlight.
+    val backdropArt = playingArt.artworkUrl?.takeIf { playingArt.title.isNotBlank() }
+        ?: remember(libraryShelves.recentlyAdded) { spotlightPick(libraryShelves.recentlyAdded)?.image }
+
+    CompositionLocalProvider(LocalTileStyle provides tileStyle) {
     Box(Modifier.fillMaxSize().background(Ink)) {
         // The app's page wash, named rather than spelled out — see [PageBloom],
-        // which is what every full-screen destination is meant to wear.
-        PageBloom(alpha = 0.30f, size = 520.dp, x = (-120).dp, y = (-260).dp)
+        // which is what every full-screen destination is meant to wear. With the
+        // backdrop on, the wash is the cover's own colours instead.
+        if (backdrop && backdropArt != null) {
+            MeltBackdrop(backdropArt, intensity = 0.55f, scrim = 0.35f)
+        } else {
+            PageBloom(alpha = 0.30f, size = 520.dp, x = (-120).dp, y = (-260).dp)
+        }
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Header(
@@ -381,6 +400,7 @@ fun LibraryScreen(
             )
         }
     }
+    }
 }
 /**
  * The library's own left and right margin.
@@ -514,6 +534,11 @@ private fun Browse(
 
     // DJ Radio's button sits at the very top of the root, above the categories —
     // see [DjRadioCard] for why it looks nothing like the rest of the page.
+    // Today's record, when the Spotlight is switched on (Library look settings).
+    val spotlightOn by settings.librarySpotlight.collectAsStateWithLifecycle(initialValue = false)
+    val spotlight = remember(shelves.recentlyAdded, spotlightOn) {
+        if (spotlightOn) spotlightPick(shelves.recentlyAdded) else null
+    }
     val djRadio by viewModel.djRadio.collectAsStateWithLifecycle()
     val djRadioAvailable by viewModel.djRadioAvailable.collectAsStateWithLifecycle()
     val djCrossfade by viewModel.djRadioCrossfadeSeconds.collectAsStateWithLifecycle()
@@ -597,7 +622,24 @@ private fun Browse(
             .distinctBy { it.title }
     }
 
+    // The Spotlight arrives a moment after the page (it waits on the recently-added
+    // read), and a lazy grid keeps its first visible item anchored when something is
+    // inserted above it — so the card landed just above the fold, unseen. If the list
+    // was still at its top, follow it up.
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    LaunchedEffect(spotlight?.itemId) {
+        if (spotlight == null) return@LaunchedEffect
+        // Checked on the frame *after* the card joins the list: asked in the same
+        // frame, the grid had not laid it out yet, so the scroll landed first and the
+        // insertion re-anchored on the card below it anyway — every library switch.
+        androidx.compose.runtime.withFrameNanos { }
+        if (gridState.firstVisibleItemIndex <= 1 && gridState.firstVisibleItemScrollOffset == 0) {
+            gridState.scrollToItem(0)
+        }
+    }
+
     LazyVerticalGrid(
+        state = gridState,
         columns = GridCells.Fixed(gridCols),
         modifier = Modifier.fillMaxSize().imePadding(),
         contentPadding = PaddingValues(start = LibraryEdge, end = LibraryEdge, top = 4.dp, bottom = navBarInset() + 16.dp),
@@ -679,6 +721,16 @@ private fun Browse(
             }
         }
 
+        if (depth == 0 && spotlight != null) {
+            val pick = spotlight
+            item(key = "spotlight", span = { full(gridCols) }, contentType = { "spotlight" }) {
+                SpotlightCard(
+                    item = pick,
+                    onOpen = { onAlbumClick(pick) },
+                    onPlay = { viewModel.play(pick) },
+                )
+            }
+        }
         if (depth == 0) {
             // Above the categories, because it is the one thing here that answers
             // "I want music" rather than "I want to find something" — and a listener

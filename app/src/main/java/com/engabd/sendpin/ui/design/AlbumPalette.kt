@@ -734,10 +734,14 @@ fun rememberAlbumPalette(url: String?, shownUrl: String? = url): AlbumPalette {
     val ctx = LocalContext.current
     /** The most recent extraction, paired with the url it was taken from. */
     var extracted by remember { mutableStateOf<Pair<String?, AlbumPalette>?>(null) }
-    var published by remember { mutableStateOf(AlbumPalette()) }
+    // Seeded from the cache, so a page opened on a cover already seen elsewhere — a
+    // library tile, the player — is in its colours from the first frame rather than
+    // easing out of the amber default.
+    var published by remember { mutableStateOf(url?.let { PaletteCache[it] } ?: AlbumPalette()) }
 
     LaunchedEffect(url) {
         if (url.isNullOrBlank()) { extracted = null to AlbumPalette(); return@LaunchedEffect }
+        PaletteCache[url]?.let { extracted = url to it; return@LaunchedEffect }
         val palette = withContext(Dispatchers.IO) {
             val bmp = try {
                 val res = ctx.imageLoader.execute(
@@ -747,6 +751,7 @@ fun rememberAlbumPalette(url: String?, shownUrl: String? = url): AlbumPalette {
             } catch (_: Exception) { null } ?: return@withContext null
             try { paletteOf(bmp) } catch (_: Exception) { null }
         }
+        palette?.let { PaletteCache[url] = it }
         extracted = url to (palette ?: AlbumPalette())
     }
 
@@ -758,6 +763,24 @@ fun rememberAlbumPalette(url: String?, shownUrl: String? = url): AlbumPalette {
         if (from == shownUrl) published = palette
     }
     return published
+}
+
+/**
+ * Palettes already extracted, by artwork url.
+ *
+ * Extraction is a decode and a k-means pass, and it ran again every time a cover came
+ * back on screen — each visit to an album, each tile scrolled back into view. It only
+ * mattered once something drew many at a time: the gallery tiles colour every cover
+ * in a grid, and without this each one was re-clustered on every pass of a scroll.
+ * A url names one image, so its palette never changes; a few hundred entries is well
+ * under a megabyte.
+ */
+internal object PaletteCache {
+    private val map = object : LinkedHashMap<String, AlbumPalette>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, AlbumPalette>) = size > 400
+    }
+    operator fun get(url: String): AlbumPalette? = synchronized(map) { map[url] }
+    operator fun set(url: String, palette: AlbumPalette) { synchronized(map) { map[url] = palette } }
 }
 
 /** The album's accent alone, for callers that don't need the companion swatches. */
