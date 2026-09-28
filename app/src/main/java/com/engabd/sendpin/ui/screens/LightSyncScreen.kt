@@ -1333,6 +1333,13 @@ private fun DirectLightSyncScreen(
                                 )
                             }
                         },
+                        onImport = { show ->
+                            scope.launch { settings.addSharedShow(show) }
+                            android.widget.Toast.makeText(
+                                context, "Added \u201C${show.name}\u201D to your shows",
+                                android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        },
                         onDelete = { preset ->
                             scope.launch {
                                 settings.saveShowPresets(presets.filterNot { it.id == preset.id })

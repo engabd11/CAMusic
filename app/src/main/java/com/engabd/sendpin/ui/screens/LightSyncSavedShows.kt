@@ -76,6 +76,8 @@ internal fun SavedShows(
     onSave: (String) -> Unit,
     onRename: (ShowPreset, String) -> Unit,
     onDelete: (ShowPreset) -> Unit,
+    /** Add a show someone shared — see [com.engabd.sendpin.hue.ShowShare]. */
+    onImport: (ShowPreset) -> Unit,
     onGenreAuto: (Boolean) -> Unit,
     onAddRule: (String, ShowPreset) -> Unit,
     onRemoveRule: (GenrePresetRule) -> Unit,
@@ -115,9 +117,23 @@ internal fun SavedShows(
     }
     Spacer(Modifier.height(10.dp))
     OledButton("Save this show as…", accent = accent, outline = true) { saving = true }
+    Spacer(Modifier.height(6.dp))
+    val context = androidx.compose.ui.platform.LocalContext.current
+    OledButton("Paste a shared show", accent = accent, outline = true) {
+        // What someone sent — the link alone or their whole message — from the
+        // clipboard. Added beside the others, never applied until tapped.
+        val clip = context.getSystemService(android.content.ClipboardManager::class.java)
+            ?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+        val show = com.engabd.sendpin.hue.ShowShare.parse(clip)
+        if (show != null) onImport(show)
+        else android.widget.Toast.makeText(
+            context, "No shared show on the clipboard. Copy the whole message or the camusic:// link.",
+            android.widget.Toast.LENGTH_LONG,
+        ).show()
+    }
     Spacer(Modifier.height(4.dp))
     Note(
-        "Hold a show for its options - delete it, rename it, or tie it to a genre. A " +
+        "Hold a show for its options - share it, delete it, rename it, or tie it to a genre. A " +
             "highlighted show is the one the room is on right now; change any tuning and " +
             "the highlight clears.",
     )
@@ -311,6 +327,14 @@ private fun PresetActionsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Note(preset.summary())
+                val context = androidx.compose.ui.platform.LocalContext.current
+                OledButton("Share this show", accent = accent, outline = true) {
+                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(android.content.Intent.EXTRA_TEXT, com.engabd.sendpin.hue.ShowShare.message(preset))
+                    }
+                    context.startActivity(android.content.Intent.createChooser(send, "Share a light show"))
+                }
                 if (builtIn) {
                     Note(
                         "The show as it ships. It cannot be renamed or deleted, and it is " +

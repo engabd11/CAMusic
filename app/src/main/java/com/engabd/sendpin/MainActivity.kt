@@ -95,6 +95,7 @@ class MainActivity : ComponentActivity() {
         // A voice request that cold-started the app. Not on a recreation: the intent
         // is redelivered with the saved state and would play the same search again.
         if (savedInstanceState == null) handleVoiceSearch(intent)
+        handleSharedShow(intent)
         com.engabd.sendpin.service.DrivingPip.registerControls(this, pipControls)
         watchDrivingForPip()
         setContent {
@@ -124,6 +125,31 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleVoiceSearch(intent)
+        handleSharedShow(intent)
+    }
+
+    /**
+     * A `camusic://show/…` link someone sent — see [com.engabd.sendpin.hue.ShowShare].
+     * The show is added to the Lights tab's saved shows and said so; it is not applied,
+     * because following a link must never change what the room is doing.
+     */
+    private fun handleSharedShow(intent: android.content.Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != com.engabd.sendpin.hue.ShowShare.SCHEME || data.host != com.engabd.sendpin.hue.ShowShare.HOST) return
+        val show = com.engabd.sendpin.hue.ShowShare.parse(data.toString())
+        if (show == null) {
+            android.widget.Toast.makeText(this, "That light show link is damaged.", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        // Consumed, so a rotation or a return to the activity does not add it twice.
+        intent.data = null
+        kotlinx.coroutines.MainScope().launch {
+            com.engabd.sendpin.data.AppSettings(this@MainActivity).addSharedShow(show)
+            android.widget.Toast.makeText(
+                this@MainActivity, "Added the light show \u201C${show.name}\u201D. Find it on the Lights tab.",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
     }
 
     /**
