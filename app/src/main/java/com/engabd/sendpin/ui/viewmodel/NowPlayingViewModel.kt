@@ -1467,17 +1467,28 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val queue = local.queue.value
         // `scrobbleId` is the *library* id — for a downloaded track it is the id on
         // the server it came from, which is exactly what a playlist wants.
-        val ids = queue
+        // Rows rather than bare ids: a library whose playlists the app keeps needs
+        // something it can draw and play later — see WithAppPlaylists. A server takes
+        // just the ids from these, as it always did.
+        val rows = queue
             .filter { it.scrobbleProvider == src.providerId }
-            .mapNotNull { it.scrobbleId ?: it.id }
-            .distinct()
+            .mapNotNull { t ->
+                val id = t.scrobbleId ?: t.id
+                com.engabd.sendpin.ma.MaItem(
+                    itemId = id, provider = src.providerId, name = t.title, uri = id,
+                    mediaType = "track", subtitle = t.artist, image = t.artUrl,
+                    duration = (t.durationMs / 1000).toInt().takeIf { it > 0 }, album = t.album,
+                )
+            }
+            .distinctBy { it.itemId }
+        val ids = rows.map { it.itemId }
         if (ids.isEmpty()) {
             _toast.tryEmit("Nothing in the queue belongs to " + src.kind.label)
             return
         }
         viewModelScope.launch {
             try {
-                src.createPlaylist(name, ids)
+                src.createPlaylistFrom(name, rows)
                 val skipped = queue.size - ids.size
                 _toast.tryEmit(
                     if (skipped > 0) "Saved \"$name\" - $skipped track(s) weren't from this library"

@@ -248,6 +248,19 @@ interface MusicSource {
     suspend fun addToPlaylist(playlistId: String, songIds: List<String>) = Unit
     suspend fun deletePlaylist(id: String) = Unit
 
+    /**
+     * [createPlaylist] with the tracks themselves rather than their ids. A server
+     * needs only the ids, which is the default; a playlist the app keeps needs the
+     * whole row so it can be drawn and played later without a lookup per track — see
+     * [WithAppPlaylists]. Callers holding the items should use these two.
+     */
+    suspend fun createPlaylistFrom(name: String, tracks: List<MaItem>): String? =
+        createPlaylist(name, tracks.map { it.itemId })
+
+    /** [addToPlaylist] with the tracks themselves. See [createPlaylistFrom]. */
+    suspend fun addToPlaylistFrom(playlistId: String, tracks: List<MaItem>) =
+        addToPlaylist(playlistId, tracks.map { it.itemId })
+
     // ── Extras ────────────────────────────────────────────────────────────
 
     suspend fun lyrics(songId: String): MaLyrics? = null

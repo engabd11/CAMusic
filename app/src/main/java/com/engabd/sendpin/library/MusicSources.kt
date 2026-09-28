@@ -72,7 +72,17 @@ object MusicSources {
      * call that can fail and whose result has to be written back to the config. See
      * [prepare].
      */
-    fun create(context: android.content.Context, config: ServerConfig): MusicSource? = when (config.kind) {
+    fun create(context: android.content.Context, config: ServerConfig): MusicSource? =
+        build(context, config)?.let { source ->
+            // A library whose server keeps no playlists (or none this app can write)
+            // gets the app's own instead, so New playlist and Add to playlist work the
+            // same on every library — see [AppPlaylists]. Keyed on the server's config
+            // id, so two servers of one kind keep separate lists.
+            if (Capability.PLAYLIST_WRITE in source.capabilities) source
+            else WithAppPlaylists(source, AppPlaylists.store(context.applicationContext, "${source.providerId}|${config.id}"))
+        }
+
+    private fun build(context: android.content.Context, config: ServerConfig): MusicSource? = when (config.kind) {
         ServerKind.NAVIDROME, ServerKind.SUBSONIC -> SubsonicSource(
             client = SubsonicClient(config.url, config.username, config.password).apply {
                 streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
@@ -222,7 +232,12 @@ object MusicSources {
      * showing, and swallowing it here would leave a source that silently answers
      * nothing.
      */
-    suspend fun prepare(source: MusicSource, config: ServerConfig): ServerConfig = when (source) {
+    suspend fun prepare(source: MusicSource, config: ServerConfig): ServerConfig =
+        // Preparing is about the server, and the app's playlists have nothing to add
+        // to it: look through the wrapper so the kind checks below still see the kind.
+        if (source is WithAppPlaylists) prepareBase(source.inner, config) else prepareBase(source, config)
+
+    private suspend fun prepareBase(source: MusicSource, config: ServerConfig): ServerConfig = when (source) {
         is SubsonicSource -> {
             source.probeCapabilities()
             config

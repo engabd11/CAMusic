@@ -635,7 +635,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 when {
                     MusicSources.isLocalProvider(playlist.provider) -> {
                         val sc = writablePlaylistSource()
-                        sc.addToPlaylist(playlist.itemId, tracks.map { it.itemId })
+                        sc.addToPlaylistFrom(playlist.itemId, tracks)
                     }
                     // MA identifies playlist members by uri, not by library id.
                     else -> maRepo.addPlaylistTracks(playlist, tracks.mapNotNull { it.uri })
@@ -682,7 +682,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     Backend.SUBSONIC -> {
                         val sc = writablePlaylistSource()
-                        sc.createPlaylist(title, tracks.map { it.itemId })
+                        sc.createPlaylistFrom(title, tracks)
                     }
                 }
                 _toast.tryEmit(
