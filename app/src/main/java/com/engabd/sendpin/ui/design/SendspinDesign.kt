@@ -119,8 +119,10 @@ fun rememberArtRequest(url: String?, pixels: Int? = null): ImageRequest? {
     val ctx = LocalContext.current
     if (url.isNullOrBlank()) return null
     return remember(url, pixels) {
+        // See ArtUrls: the size the tile needs. The cache key is the loader's job
+        // (ArtUrls.StableKeys), so every request gets it, not only these.
         ImageRequest.Builder(ctx)
-            .data(url)
+            .data(ArtUrls.sized(url, pixels))
             .crossfade(220)
             .apply { if (pixels != null) size(pixels).scale(Scale.FILL) }
             .build()
