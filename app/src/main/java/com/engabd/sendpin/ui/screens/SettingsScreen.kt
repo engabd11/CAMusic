@@ -752,8 +752,14 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
     if (exportPrompt) {
         PasswordPromptDialog(
             title = "Export settings",
-            note = "This password encrypts the file. Choose one you'll remember, it can't be reset.",
+            note = "This password encrypts the file, and the file holds every server login. " +
+                "At least ${com.engabd.sendpin.data.PortableCrypto.MIN_PASSWORD_LENGTH} characters; " +
+                "choose one you'll remember, it can't be reset.",
             confirmLabel = "Export",
+            // Typed twice: a typo here is a backup nobody can open, discovered on the
+            // day it is needed.
+            repeat = true,
+            minLength = com.engabd.sendpin.data.PortableCrypto.MIN_PASSWORD_LENGTH,
             onDismiss = { exportPrompt = false },
             onConfirm = { password ->
                 exportPrompt = false
@@ -847,10 +853,17 @@ private fun PasswordPromptDialog(
     confirmLabel: String,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
+    /** Ask for it twice — for a password being *set*, not one being entered. */
+    repeat: Boolean = false,
+    minLength: Int = 1,
 ) {
     val accent = LocalAccent.current
     var password by remember { mutableStateOf("") }
+    var again by remember { mutableStateOf("") }
     var visible by remember { mutableStateOf(false) }
+    val longEnough = password.length >= minLength && password.isNotBlank()
+    val matches = !repeat || again == password
+    val ok = longEnough && matches
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Ink2,
@@ -865,12 +878,30 @@ private fun PasswordPromptDialog(
                     visible = visible,
                     onVisibilityChange = { visible = it },
                 )
+                if (repeat) {
+                    SecretField(
+                        value = again,
+                        onChange = { again = it },
+                        label = "Repeat password",
+                        accent = accent,
+                        visible = visible,
+                        onVisibilityChange = { visible = it },
+                    )
+                }
                 Note(note)
+                // Said while typing rather than after a refused tap, so the button
+                // being grey is never a mystery.
+                when {
+                    password.isNotEmpty() && !longEnough ->
+                        Note("${minLength - password.length} more characters", warn = true)
+                    repeat && again.isNotEmpty() && !matches ->
+                        Note("The two don't match", warn = true)
+                }
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = { onConfirm(password) }, enabled = password.isNotBlank()) {
-                Text(confirmLabel, color = if (password.isBlank()) TextFaint else accent, fontFamily = AppFont, fontWeight = FontWeight.Bold)
+            androidx.compose.material3.TextButton(onClick = { onConfirm(password) }, enabled = ok) {
+                Text(confirmLabel, color = if (!ok) TextFaint else accent, fontFamily = AppFont, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {

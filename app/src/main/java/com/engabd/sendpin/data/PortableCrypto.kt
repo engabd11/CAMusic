@@ -23,19 +23,38 @@ import javax.crypto.spec.SecretKeySpec
  * off-device, same as [Crypto]).
  */
 object PortableCrypto {
-    private const val PREFIX = "pc1:"
+    /**
+     * Two formats, told apart by prefix: the iteration count is part of what the
+     * file *is*, so an old backup keeps opening after the count goes up.
+     *
+     * `pc2` is OWASP's current PBKDF2-HMAC-SHA256 figure, 600,000. `pc1` was 210,000
+     * and is read, never written. The file holds every server login, and whoever
+     * has a copy can guess at it offline for as long as they like, so this is the
+     * one place where a second of work on export is worth paying.
+     */
+    private const val PREFIX_V1 = "pc1:"
+    private const val PREFIX = "pc2:"
     private const val IV_LEN = 12
     private const val SALT_LEN = 16
-    private const val PBKDF2_ITERATIONS = 210_000
+    private const val PBKDF2_ITERATIONS_V1 = 210_000
+    private const val PBKDF2_ITERATIONS = 600_000
     private const val KEY_BITS = 256
 
-    private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
-        val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_BITS)
+    /**
+     * The shortest passphrase an export accepts.
+     *
+     * Ten characters, because the iteration count only multiplies the cost of each
+     * guess — it cannot make a four-digit PIN expensive to try all of.
+     */
+    const val MIN_PASSWORD_LENGTH = 10
+
+    private fun deriveKey(password: String, salt: ByteArray, iterations: Int = PBKDF2_ITERATIONS): SecretKeySpec {
+        val spec = PBEKeySpec(password.toCharArray(), salt, iterations, KEY_BITS)
         val raw = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
         return SecretKeySpec(raw, "AES")
     }
 
-    /** @return `pc1:<base64 of salt+iv+ciphertext>`, or null if the platform can't do AES-GCM. */
+    /** @return `pc2:<base64 of salt+iv+ciphertext>`, or null if the platform can't do AES-GCM. */
     fun encrypt(plain: String, password: String): String? = try {
         val salt = ByteArray(SALT_LEN).also { SecureRandom().nextBytes(it) }
         val key = deriveKey(password, salt)
@@ -50,13 +69,17 @@ object PortableCrypto {
 
     /** @return the decrypted plaintext, or null on a wrong password or corrupt/foreign input. */
     fun decrypt(blob: String, password: String): String? {
-        if (!blob.startsWith(PREFIX)) return null
+        val (prefix, iterations) = when {
+            blob.startsWith(PREFIX) -> PREFIX to PBKDF2_ITERATIONS
+            blob.startsWith(PREFIX_V1) -> PREFIX_V1 to PBKDF2_ITERATIONS_V1
+            else -> return null
+        }
         return try {
-            val data = Base64.getDecoder().decode(blob.removePrefix(PREFIX))
+            val data = Base64.getDecoder().decode(blob.removePrefix(prefix))
             val salt = data.copyOfRange(0, SALT_LEN)
             val iv = data.copyOfRange(SALT_LEN, SALT_LEN + IV_LEN)
             val ct = data.copyOfRange(SALT_LEN + IV_LEN, data.size)
-            val key = deriveKey(password, salt)
+            val key = deriveKey(password, salt, iterations)
             val c = Cipher.getInstance("AES/GCM/NoPadding")
             c.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
             String(c.doFinal(ct), Charsets.UTF_8)
