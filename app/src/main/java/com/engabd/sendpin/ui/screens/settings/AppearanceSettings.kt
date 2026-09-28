@@ -118,6 +118,7 @@ internal fun AccentCard(settings: AppSettings, scope: CoroutineScope) {
 @Composable
 internal fun NowPlayingLayoutCard(settings: AppSettings, scope: CoroutineScope) {
     val layout by settings.nowPlayingLayout.collectAsStateWithLifecycle(initialValue = "tab")
+    val tabMini by settings.tabMiniPlayer.collectAsStateWithLifecycle(initialValue = false)
     SettingsCard(
         title = "Now Playing",
         lead = "Two ways to reach what's playing.",
@@ -144,6 +145,14 @@ internal fun NowPlayingLayoutCard(settings: AppSettings, scope: CoroutineScope) 
             else
                 "The classic full-screen player, as its own bottom tab.",
         )
+        if (layout != "overlay") {
+            ToggleRow(
+                title = "Mini player on the other tabs",
+                subtitle = "What's playing, above the tabs, while you browse. Tap it for the full player",
+                checked = tabMini,
+                accent = com.engabd.sendpin.ui.design.LocalAccent.current,
+            ) { on -> scope.launch { settings.setTabMiniPlayer(on) } }
+        }
     }
 }
 

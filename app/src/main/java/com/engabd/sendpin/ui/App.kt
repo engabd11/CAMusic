@@ -581,6 +581,13 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         val compactChrome = currentRoute == "rhythm_game"
         val miniBarHeight = if (compactChrome) CompactMiniBarHeight else MiniBarHeight
 
+        // The tab layout's own mini player, when asked for: on every tab but Playing
+        // (which *is* the player), and only while something is loaded — an idle bar
+        // there would be a second way to reach an empty screen.
+        val tabMini by settings.tabMiniPlayer.collectAsState(initial = false)
+        val showTabMini = !isOverlay && tabMini && !npState.idle &&
+            currentRoute != null && sectionOf(currentRoute) != "now_playing"
+
         // The car takes a different shell entirely, and takes it here — above the
         // NavHost, because the whole of what it changes is that there isn't one. See
         // [CarShell]: the player and the library are both on the main screen, so
@@ -627,7 +634,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         CompositionLocalProvider(
             LocalAccent provides appAccent,
             LocalPalette provides animatedAppPalette,
-            LocalMiniBarInset provides if (isOverlay) miniBarHeight else 0.dp,
+            LocalMiniBarInset provides if (isOverlay || showTabMini) miniBarHeight else 0.dp,
             LocalBottomChrome provides bottomChrome,
         ) {
             val tabs = if (isOverlay) OverlayTabs else TabTabs
@@ -980,15 +987,32 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                     }
                 } else {
                     BottomChrome(bottomChrome) {
-                        SendspinNavBar(
-                            tabs = tabs,
-                            currentRoute = sectionOf(currentRoute),
-                            modifier = Modifier.align(Alignment.BottomCenter),
-                            disabledRoutes = disabledRoutes,
-                            disabledReasons = disabledReasons,
-                            onDisabledTap = ::explainDisabled,
-                            onSelect = ::go,
-                        )
+                        Column(Modifier.align(Alignment.BottomCenter)) {
+                            // The same bar the overlay layout uses, pinned to the same
+                            // height so `navBarInset()` reserves exactly what it takes.
+                            // Here it opens the Playing tab rather than an overlay.
+                            if (showTabMini) {
+                                Box(
+                                    Modifier
+                                        .height(miniBarHeight)
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                ) {
+                                    MiniPlayerBar(
+                                        viewModel = nowPlayingVm,
+                                        onExpand = { go("now_playing") },
+                                        compact = compactChrome,
+                                    )
+                                }
+                            }
+                            SendspinNavBar(
+                                tabs = tabs,
+                                currentRoute = sectionOf(currentRoute),
+                                disabledRoutes = disabledRoutes,
+                                disabledReasons = disabledReasons,
+                                onDisabledTap = ::explainDisabled,
+                                onSelect = ::go,
+                            )
+                        }
                     }
                 }
                     } // Box
