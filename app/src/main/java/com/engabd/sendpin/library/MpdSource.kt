@@ -84,6 +84,7 @@ class MpdSource(
         add(Capability.GENRES)
         add(Capability.PLAYLIST_READ)
         add(Capability.PLAYLIST_WRITE)
+        add(Capability.PLAYLIST_EDIT)
         add(Capability.TRACKS)
         add(Capability.RICH_FORMAT)
         // MPD applies ReplayGain itself, in its own mixer, from the tags on the
@@ -202,6 +203,18 @@ class MpdSource(
         client.addToPlaylist(playlistId, songIds)
 
     override suspend fun deletePlaylist(id: String) = client.deletePlaylist(id)
+
+    override suspend fun removeFromPlaylist(playlistId: String, positions: List<Int>, tracks: List<MaItem>) =
+        client.removeFromPlaylist(playlistId, positions)
+
+    override suspend fun movePlaylistEntry(playlistId: String, from: Int, to: Int, tracks: List<MaItem>) =
+        client.movePlaylistEntry(playlistId, from, to)
+
+    /** A stored playlist *is* its name here, so renaming gives it a new id. */
+    override suspend fun renamePlaylist(playlistId: String, name: String): String {
+        client.renamePlaylist(playlistId, name)
+        return name
+    }
 
     /** Kept on this phone rather than on the server — see the class docs. */
     override suspend fun setStarred(item: MaItem, starred: Boolean) {

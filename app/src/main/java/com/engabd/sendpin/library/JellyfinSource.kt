@@ -55,6 +55,7 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
         Capability.STAR,
         Capability.PLAYLIST_READ,
         Capability.PLAYLIST_WRITE,
+        Capability.PLAYLIST_EDIT,
         Capability.TRACKS,
         Capability.DOWNLOAD,
         Capability.LYRICS,
@@ -167,4 +168,17 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
 
     override suspend fun topSongs(artistName: String, count: Int): List<MaItem> =
         client.topSongsByArtist(artistName, count)
+
+    override suspend fun removeFromPlaylist(playlistId: String, positions: List<Int>, tracks: List<MaItem>) =
+        client.removeFromPlaylist(playlistId, positions.mapNotNull { tracks.getOrNull(it)?.entryId })
+
+    override suspend fun movePlaylistEntry(playlistId: String, from: Int, to: Int, tracks: List<MaItem>) {
+        val entry = tracks.getOrNull(from)?.entryId ?: return
+        client.movePlaylistEntry(playlistId, entry, to)
+    }
+
+    override suspend fun renamePlaylist(playlistId: String, name: String): String {
+        client.renamePlaylist(playlistId, name)
+        return playlistId
+    }
 }

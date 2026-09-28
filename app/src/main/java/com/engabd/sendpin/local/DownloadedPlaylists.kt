@@ -103,6 +103,28 @@ class DownloadedPlaylists(context: Context) {
         appendMembers(playlistId, trackIds)
     }
 
+    // ── Editing ─────────────────────────────────────────────────────────────
+    //
+    // Positions are into [tracks] — the playable entries, in order — which is what the
+    // screen shows and numbers. The membership is rewritten from that order.
+
+    suspend fun removeAt(playlistId: String, positions: List<Int>) =
+        rewrite(playlistId) { com.engabd.sendpin.library.PlaylistEdits.removed(it, positions) }
+
+    suspend fun move(playlistId: String, from: Int, to: Int) =
+        rewrite(playlistId) { com.engabd.sendpin.library.PlaylistEdits.moved(it, from, to) }
+
+    suspend fun rename(playlistId: String, name: String) {
+        val existing = dao.get(playlistId) ?: return
+        dao.upsert(existing.copy(name = name, updatedAt = System.currentTimeMillis()))
+    }
+
+    private suspend fun rewrite(playlistId: String, edit: (List<String>) -> List<String>) {
+        val next = edit(tracks(playlistId).map { it.id })
+        dao.replaceMembers(playlistId, next.mapIndexed { i, id -> DownloadedPlaylistTrackEntity(playlistId, id, i) })
+        dao.get(playlistId)?.let { dao.upsert(it.copy(updatedAt = System.currentTimeMillis())) }
+    }
+
     /** Add ids not already filed under this playlist, after whatever is there. */
     private suspend fun appendMembers(playlistId: String, trackIds: List<String>) {
         if (trackIds.isEmpty()) return

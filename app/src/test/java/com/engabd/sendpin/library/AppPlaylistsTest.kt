@@ -81,6 +81,15 @@ class AppPlaylistsTest {
         }
         override fun append(id: String, tracks: List<MaItem>) { list = AppPlaylists.appended(list, id, tracks) }
         override fun delete(id: String) { list = list.filterNot { it.id == id } }
+        override fun removeAt(id: String, positions: List<Int>) {
+            list = list.map { if (it.id == id) it.copy(tracks = PlaylistEdits.removed(it.tracks, positions)) else it }
+        }
+        override fun move(id: String, from: Int, to: Int) {
+            list = list.map { if (it.id == id) it.copy(tracks = PlaylistEdits.moved(it.tracks, from, to)) else it }
+        }
+        override fun rename(id: String, name: String) {
+            list = list.map { if (it.id == id) it.copy(name = name) else it }
+        }
     }
 
     @Test

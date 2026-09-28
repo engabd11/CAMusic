@@ -82,6 +82,20 @@ object AppPlaylists {
         save(context, library, all(context, library).filterNot { it.id == id })
     }
 
+    /** Apply [change] to playlist [id], leaving the others as they are. */
+    private fun update(context: Context, library: String, id: String, change: (Playlist) -> Playlist) {
+        save(context, library, all(context, library).map { if (it.id == id) change(it) else it })
+    }
+
+    fun removeAt(context: Context, library: String, id: String, positions: List<Int>) =
+        update(context, library, id) { it.copy(tracks = PlaylistEdits.removed(it.tracks, positions)) }
+
+    fun move(context: Context, library: String, id: String, from: Int, to: Int) =
+        update(context, library, id) { it.copy(tracks = PlaylistEdits.moved(it.tracks, from, to)) }
+
+    fun rename(context: Context, library: String, id: String, name: String) =
+        update(context, library, id) { it.copy(name = name) }
+
     // ── Pure, for tests ─────────────────────────────────────────────────────
 
     internal fun appended(list: List<Playlist>, id: String, tracks: List<MaItem>): List<Playlist> =
@@ -121,6 +135,9 @@ object AppPlaylists {
         override fun create(name: String, tracks: List<MaItem>) = create(context, library, name, tracks)
         override fun append(id: String, tracks: List<MaItem>) = append(context, library, id, tracks)
         override fun delete(id: String) = delete(context, library, id)
+        override fun removeAt(id: String, positions: List<Int>) = removeAt(context, library, id, positions)
+        override fun move(id: String, from: Int, to: Int) = move(context, library, id, from, to)
+        override fun rename(id: String, name: String) = rename(context, library, id, name)
     }
 
     /** One library's app-kept playlists. An interface so a test can hold them in memory. */
@@ -129,6 +146,9 @@ object AppPlaylists {
         fun create(name: String, tracks: List<MaItem>): String
         fun append(id: String, tracks: List<MaItem>)
         fun delete(id: String)
+        fun removeAt(id: String, positions: List<Int>)
+        fun move(id: String, from: Int, to: Int)
+        fun rename(id: String, name: String)
     }
 
     /** A playlist as a library row: its first track's cover, and where it lives. */
@@ -198,4 +218,26 @@ class WithAppPlaylists(
         if (AppPlaylists.isAppPlaylist(id)) store.delete(id)
         else inner.deletePlaylist(id)
     }
+
+    // The app's own playlists are always editable; a server playlist is exactly as
+    // editable as the server makes it.
+    override fun canEditPlaylist(playlistId: String): Boolean =
+        AppPlaylists.isAppPlaylist(playlistId) || inner.canEditPlaylist(playlistId)
+
+    override fun canRenamePlaylist(playlistId: String): Boolean =
+        AppPlaylists.isAppPlaylist(playlistId) || inner.canRenamePlaylist(playlistId)
+
+    override suspend fun removeFromPlaylist(playlistId: String, positions: List<Int>, tracks: List<MaItem>) {
+        if (AppPlaylists.isAppPlaylist(playlistId)) store.removeAt(playlistId, positions)
+        else inner.removeFromPlaylist(playlistId, positions, tracks)
+    }
+
+    override suspend fun movePlaylistEntry(playlistId: String, from: Int, to: Int, tracks: List<MaItem>) {
+        if (AppPlaylists.isAppPlaylist(playlistId)) store.move(playlistId, from, to)
+        else inner.movePlaylistEntry(playlistId, from, to, tracks)
+    }
+
+    override suspend fun renamePlaylist(playlistId: String, name: String): String =
+        if (AppPlaylists.isAppPlaylist(playlistId)) { store.rename(playlistId, name); playlistId }
+        else inner.renamePlaylist(playlistId, name)
 }

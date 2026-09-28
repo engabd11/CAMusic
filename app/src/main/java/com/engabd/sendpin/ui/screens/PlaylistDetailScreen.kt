@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -68,6 +69,11 @@ fun PlaylistDetailScreen(
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
     // Whether the "keep it as a playlist?" chooser is up — see [DownloadChoiceDialog].
     var downloadChoice by remember { mutableStateOf(false) }
+    // Edit mode: rows gain move and remove controls. See PlaylistDetailViewModel's
+    // editing section for what each does against the server.
+    var editing by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    BackHandler(enabled = editing) { editing = false }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
     BackHandler { onBack() }
@@ -99,6 +105,15 @@ fun PlaylistDetailScreen(
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
+                    if ((viewModel.canEdit && tracks.isNotEmpty()) || editing) {
+                        Spacer(Modifier.width(12.dp))
+                        IconChip(
+                            if (editing) Icons.Default.Check else Icons.Default.Edit,
+                            if (editing) "Done editing" else "Edit playlist",
+                            active = editing,
+                            onClick = { editing = !editing },
+                        )
+                    }
                 }
 
                 LazyColumn(
@@ -137,7 +152,35 @@ fun PlaylistDetailScreen(
                         // Index in the key, not the item id alone: a playlist is
                         // allowed to hold the same track twice, and a duplicate key
                         // is a hard crash in a lazy list.
-                        itemsIndexed(
+                        if (editing && viewModel.canRename) {
+                            item(key = "rename", contentType = "rename") {
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { renaming = true }
+                                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                ) {
+                                    Icon(Icons.Default.DriveFileRenameOutline, null, tint = playlistPalette.accent, modifier = Modifier.size(20.dp))
+                                    Text("Rename playlist", color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                            }
+                        }
+                        if (editing) {
+                            itemsIndexed(
+                                tracks,
+                                key = { i, t -> "edit:$i:${t.itemId}" },
+                                contentType = { _, _ -> "editTrack" },
+                            ) { index, track ->
+                                EditTrackRow(
+                                    track = track,
+                                    index = index,
+                                    last = index == tracks.lastIndex,
+                                    onUp = { viewModel.move(index, index - 1) },
+                                    onDown = { viewModel.move(index, index + 1) },
+                                    onRemove = { viewModel.removeAt(index) },
+                                )
+                            }
+                        } else itemsIndexed(
                             tracks,
                             key = { i, t -> "track:$i:${t.itemId}" },
                             contentType = { _, _ -> "track" },
@@ -165,6 +208,14 @@ fun PlaylistDetailScreen(
                 Snackbar(containerColor = Ink3, contentColor = TextPrimary, shape = RoundedCornerShape(14.dp)) {
                     Text(data.visuals.message, style = MaterialTheme.typography.bodyMedium)
                 }
+            }
+
+            if (renaming) {
+                RenamePlaylistDialog(
+                    current = playlist?.name ?: name,
+                    onDismiss = { renaming = false },
+                    onRename = { renaming = false; viewModel.rename(it) },
+                )
             }
 
             if (downloadChoice) {
@@ -278,4 +329,76 @@ private fun PlaylistHero(
             }
         }
     }
+}
+
+/**
+ * One row in edit mode: the track, and the three things that can be done to it.
+ * Buttons rather than drag handles, so a reorder is possible with TalkBack and with
+ * one thumb; each is a full 48 dp target.
+ */
+@Composable
+private fun EditTrackRow(
+    track: MaItem,
+    index: Int,
+    last: Boolean,
+    onUp: () -> Unit,
+    onDown: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "${index + 1}", color = TextMuted, fontFamily = AppFont,
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.width(28.dp), textAlign = TextAlign.End,
+        )
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text(
+                track.name, color = TextPrimary, fontFamily = AppFont,
+                style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            track.subtitle?.takeIf { it.isNotBlank() }?.let {
+                Text(it, color = TextMuted, fontFamily = AppFont, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        IconButton(onClick = onUp, enabled = index > 0) {
+            Icon(Icons.Default.ArrowUpward, "Move ${track.name} up", tint = if (index > 0) TextSecondary else TextFaint)
+        }
+        IconButton(onClick = onDown, enabled = !last) {
+            Icon(Icons.Default.ArrowDownward, "Move ${track.name} down", tint = if (!last) TextSecondary else TextFaint)
+        }
+        IconButton(onClick = onRemove) {
+            Icon(Icons.Default.RemoveCircleOutline, "Remove ${track.name} from the playlist", tint = ErrorRed)
+        }
+    }
+}
+
+@Composable
+private fun RenamePlaylistDialog(current: String, onDismiss: () -> Unit, onRename: (String) -> Unit) {
+    // Opened focused, with the cursor after the current name — a rename is usually an
+    // edit of the name, and a cursor at the start put typing in front of it.
+    var text by remember {
+        mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(current, androidx.compose.ui.text.TextRange(current.length)))
+    }
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Ink2,
+        title = { Text("Rename playlist", color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold) },
+        text = {
+            OutlinedTextField(
+                value = text, onValueChange = { text = it }, singleLine = true,
+                label = { Text("Name") },
+                modifier = Modifier.focusRequester(focus),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onRename(text.text) }, enabled = text.text.isNotBlank()) { Text("Rename") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

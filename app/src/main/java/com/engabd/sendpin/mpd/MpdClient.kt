@@ -517,6 +517,24 @@ class MpdClient(
         }
     }
 
+    /** Remove the entries at [positions] of stored playlist [name]. */
+    suspend fun removeFromPlaylist(name: String, positions: List<Int>) {
+        if (positions.isEmpty()) return
+        // Highest first, in one command list: each delete shifts everything after it,
+        // so deleting in ascending order would remove the wrong songs.
+        commandList(*positions.distinct().sortedDescending().map { "playlistdelete ${quote(name)} $it" }.toTypedArray())
+    }
+
+    /** Move the entry at [from] of stored playlist [name] to [to]. */
+    suspend fun movePlaylistEntry(name: String, from: Int, to: Int) {
+        command("playlistmove ${quote(name)} $from $to")
+    }
+
+    /** Rename stored playlist [name] to [newName]. */
+    suspend fun renamePlaylist(name: String, newName: String) {
+        command("rename ${quote(name)} ${quote(newName)}")
+    }
+
     /** Delete the stored playlist [name]. */
     suspend fun deletePlaylist(name: String) {
         command("rm ${quote(name)}")

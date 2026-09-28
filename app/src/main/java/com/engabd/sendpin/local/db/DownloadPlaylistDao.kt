@@ -119,6 +119,13 @@ interface DownloadPlaylistDao {
     @Query("DELETE FROM downloaded_playlists")
     suspend fun deleteAllPlaylists()
 
+    /** Replace a playlist's membership in one go — an edit is never half-applied. */
+    @Transaction
+    suspend fun replaceMembers(playlistId: String, members: List<DownloadedPlaylistTrackEntity>) {
+        clearMembers(playlistId)
+        addMembers(members)
+    }
+
     /** Remove a playlist and its membership together, so neither can be orphaned. */
     @Transaction
     suspend fun remove(id: String) {
