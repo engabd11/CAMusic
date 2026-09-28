@@ -1,5 +1,20 @@
 package com.engabd.sendpin.ui.design
 
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -843,7 +858,9 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
             .clip(RoundedCornerShape(100))
             .background(if (selected) accent else Glass)
             .border(1.dp, if (selected) accent else Hairline, RoundedCornerShape(100))
-            .clickable(onClick = onClick)
+            // Says "selected" when it is: the fill was the only sign, and colour is
+            // not something a screen reader can describe.
+            .selectable(selected = selected, role = Role.Button, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -864,7 +881,7 @@ fun ToggleChip(text: String, selected: Boolean, modifier: Modifier = Modifier, o
             .clip(RoundedCornerShape(9.dp))
             .background(if (selected) accent.a(0.14f) else Glass)
             .then(if (selected) Modifier.border(1.dp, accent.a(0.5f), RoundedCornerShape(9.dp)) else Modifier)
-            .clickable(onClick = onClick)
+            .selectable(selected = selected, role = Role.Button, onClick = onClick)
             .padding(horizontal = 13.dp, vertical = 7.dp),
     ) {
         Text(
@@ -889,6 +906,8 @@ fun SegmentedToggle(
             .clip(RoundedCornerShape(100))
             .background(Glass)
             .border(1.dp, Hairline, RoundedCornerShape(100))
+            // One choice among several: announced as "1 of 5" and "selected".
+            .selectableGroup()
             .padding(3.dp),
     ) {
         options.forEachIndexed { i, label ->
@@ -898,7 +917,7 @@ fun SegmentedToggle(
                     .then(if (on) Modifier.shadow(12.dp, RoundedCornerShape(100), ambientColor = accent, spotColor = accent) else Modifier)
                     .clip(RoundedCornerShape(100))
                     .background(if (on) accent else Color.Transparent)
-                    .clickable { onSelect(i) }
+                    .selectable(selected = on, role = Role.Tab) { onSelect(i) }
                     .padding(horizontal = 15.dp, vertical = 8.dp),
             ) {
                 Text(
@@ -1260,28 +1279,81 @@ private fun Modifier.sliderInput(
     width: () -> Int,
     onChange: (Float) -> Unit,
     commit: (Float) -> Unit,
+    /** The value being shown, 0..1 — what a screen reader reads out. */
+    value: () -> Float,
+    /** Spoken instead of a percentage, e.g. the timestamp; null says the percentage. */
+    describe: ((Float) -> String)? = null,
+    /**
+     * True when the track is drawn right to left — a slider laid out with a Box that
+     * fills from the *start* edge, in an RTL layout. The Canvas-drawn seek bars paint
+     * left to right in every direction and must read the finger the same way, or they
+     * would move opposite to the touch; they pass false.
+     */
+    mirrored: Boolean = false,
 ): Modifier = this
-    .pointerInput(Unit) {
+    // What TalkBack and Switch Access see. The custom drawing made every slider in
+    // the app a blank region to them: no value, no role, nothing to adjust. A range,
+    // a spoken value and a set-progress action are what make it a slider — the
+    // volume keys and swipe-up/down adjust it through setProgress, in 5% steps.
+    .semantics(mergeDescendants = true) {
+        val v = value().coerceIn(0f, 1f)
+        progressBarRangeInfo = ProgressBarRangeInfo(v, 0f..1f, steps = 0)
+        stateDescription = describe?.invoke(v) ?: "${(v * 100).roundToInt()}%"
+        setProgress { target ->
+            val t = target.coerceIn(0f, 1f)
+            onChange(t)
+            gesture.finish(t)
+            commit(t)
+            true
+        }
+    }
+    // A keyboard or D-pad (a Chromebook, a TV remote on a phone build) steps it too.
+    .onPreviewKeyEvent { e ->
+        if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        val step = when (e.key) {
+            Key.DirectionRight -> SLIDER_KEY_STEP
+            Key.DirectionLeft -> -SLIDER_KEY_STEP
+            else -> return@onPreviewKeyEvent false
+        }
+        val t = (value() + step).coerceIn(0f, 1f)
+        onChange(t)
+        gesture.finish(t)
+        commit(t)
+        true
+    }
+    .focusable()
+    .pointerInput(mirrored) {
+        fun at(x: Float): Float {
+            val f = x / width()
+            return if (mirrored) 1f - f else f
+        }
         detectTapGestures { o ->
-            val f = (o.x / width()).coerceIn(0f, 1f)
+            val f = at(o.x).coerceIn(0f, 1f)
             onChange(f)
             gesture.finish(f)
             commit(f)
         }
     }
-    .pointerInput(Unit) {
+    .pointerInput(mirrored) {
+        fun at(x: Float): Float {
+            val f = x / width()
+            return if (mirrored) 1f - f else f
+        }
         detectHorizontalDragGestures(
             onDragStart = { o ->
-                gesture.begin(o.x / width())
+                gesture.begin(at(o.x))
                 onChange(gesture.dragValue)
             },
             onDragEnd = { gesture.finish(gesture.dragValue); commit(gesture.dragValue) },
             onDragCancel = { gesture.finish(gesture.dragValue); commit(gesture.dragValue) },
         ) { change, _ ->
-            gesture.move(change.position.x / width())
+            gesture.move(at(change.position.x))
             onChange(gesture.dragValue)
         }
     }
+
+/** One press of an arrow key: a twentieth of the range, the same as a screen reader's step. */
+private const val SLIDER_KEY_STEP = 0.05f
 
 /**
  * The magnifier bubble: where a release would land, e.g. the timestamp being
@@ -1359,7 +1431,7 @@ fun HSlider(
             .fillMaxWidth()
             .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .sliderInput(gesture, { width }, onChange, ::commit),
+            .sliderInput(gesture, { width }, onChange, ::commit, value = { v }, describe = label, mirrored = LocalLayoutDirection.current == LayoutDirection.Rtl),
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(50)).background(inkOn(0.14f)))
@@ -1479,7 +1551,7 @@ fun WaveSeekBar(
             .fillMaxWidth()
             .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .sliderInput(gesture, { width }, onChange, ::commit),
+            .sliderInput(gesture, { width }, onChange, ::commit, value = { v }, describe = label),
         contentAlignment = Alignment.CenterStart,
     ) {
         val fill = v.coerceIn(0f, 1f)
@@ -1594,7 +1666,7 @@ fun PillSeekBar(
             .fillMaxWidth()
             .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .sliderInput(gesture, { width }, onChange, ::commit),
+            .sliderInput(gesture, { width }, onChange, ::commit, value = { v }, describe = label, mirrored = LocalLayoutDirection.current == LayoutDirection.Rtl),
         contentAlignment = Alignment.CenterStart,
     ) {
         val fillWidth = (v * width).coerceIn(0f, width.toFloat())
@@ -1698,7 +1770,7 @@ fun GlowSeekBar(
             .fillMaxWidth()
             .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .sliderInput(gesture, { width }, onChange, ::commit),
+            .sliderInput(gesture, { width }, onChange, ::commit, value = { v }, describe = label),
         contentAlignment = Alignment.CenterStart,
     ) {
         Canvas(Modifier.matchParentSize()) {

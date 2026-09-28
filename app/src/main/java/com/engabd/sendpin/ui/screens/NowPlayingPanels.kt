@@ -1,5 +1,8 @@
 package com.engabd.sendpin.ui.screens
 
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.foundation.background
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
@@ -355,6 +358,7 @@ private fun ColumnScope.QueueList(
                     .onSizeChanged { if (it.height > 0) rowHeight = it.height },
                 onPlay = { viewModel.playQueueItem(item) },
                 onRemove = { viewModel.removeQueueItem(item) },
+                onMove = { shift -> viewModel.moveQueueItem(item, shift) },
                 onDragStart = {
                     // Whatever the last row was still doing on its way home, it stops
                     // now — the settle writes `dragOffset`, and this press owns it.
@@ -397,6 +401,8 @@ private fun QueueRow(
     modifier: Modifier = Modifier,
     onPlay: () -> Unit,
     onRemove: () -> Unit,
+    /** One place earlier (-1) or later (+1) — the screen-reader way to reorder. */
+    onMove: (Int) -> Unit,
     onDragStart: () -> Unit,
     onDrag: (Float) -> Unit,
     onDragEnd: () -> Unit,
@@ -417,6 +423,14 @@ private fun QueueRow(
             // The row is the track: tapping it plays it. Everything else on the row
             // is a control with its own target.
             .clickable(onClick = onPlay)
+            // Reordering is a drag on the grip, which a screen reader cannot do; these
+            // are the same move, one place at a time, from the actions menu.
+            .semantics {
+                customActions = listOf(
+                    CustomAccessibilityAction("Move up") { onMove(-1); true },
+                    CustomAccessibilityAction("Move down") { onMove(1); true },
+                )
+            }
             .padding(9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

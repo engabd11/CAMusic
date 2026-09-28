@@ -1,5 +1,8 @@
 package com.engabd.sendpin.ui.design
 
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -206,6 +209,8 @@ fun SendspinNavBar(
                         // Announced as disabled, and carrying the reason, so the bar
                         // says the same thing to TalkBack that it says on screen.
                         .semantics {
+                            role = Role.Tab
+                            selected = on
                             if (off) {
                                 disabled()
                                 reason?.let { stateDescription = it }

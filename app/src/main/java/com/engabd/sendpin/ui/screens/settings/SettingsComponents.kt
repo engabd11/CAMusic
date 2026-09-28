@@ -1,5 +1,7 @@
 package com.engabd.sendpin.ui.screens.settings
 
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -536,7 +538,10 @@ internal fun ToggleRow(
 ) {
     Row(
         Modifier.fillMaxWidth()
-            .clickable(enabled = enabled) { onChange(!checked) }
+            // A switch, to a screen reader: the whole row is the target, it says
+            // "on" or "off", and double-tap flips it. A plain clickable here left every
+            // settings toggle announced as an unlabelled button with no state.
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
