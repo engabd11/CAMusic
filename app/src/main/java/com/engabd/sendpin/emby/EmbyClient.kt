@@ -325,7 +325,29 @@ class EmbyClient(
 
     /** Every artist, paged — this was one request capped at 500, cut off silently. */
     suspend fun artists(): List<MaItem> = fetchAllPages(PAGE) { offset, limit ->
-        items(types = "MusicArtist", sortBy = "SortName", limit = limit, offset = offset)
+        val library = libraryId.takeIf { it.isNotBlank() }
+        if (library == null) {
+            items(types = "MusicArtist", sortBy = "SortName", limit = limit, offset = offset)
+        } else {
+            // `Items?IncludeItemTypes=MusicArtist` ignores ParentId — artists are not
+            // children of a library folder — so on a server with more than one music
+            // library the list held every library's artists, while their albums (which
+            // do honour ParentId) stayed scoped: an artist from another library opened
+            // onto "No albums". The artists endpoint scopes properly.
+            get(
+                "/Artists/AlbumArtists",
+                mapOf(
+                    "userId" to userId,
+                    "ParentId" to library,
+                    "SortBy" to "SortName",
+                    "SortOrder" to "Ascending",
+                    "StartIndex" to offset.toString(),
+                    "Limit" to limit.toString(),
+                    "Fields" to BASE_FIELDS,
+                    "ImageTypeLimit" to "1",
+                ),
+            )["Items"]?.jsonArray.orEmpty().mapNotNull { (it as? JsonObject)?.let(::item) }
+        }
     }
 
     suspend fun albums(offset: Int = 0, limit: Int = 200): List<MaItem> =

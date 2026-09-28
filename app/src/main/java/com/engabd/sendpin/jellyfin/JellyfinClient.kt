@@ -444,7 +444,29 @@ class JellyfinClient(
 
     /** Every artist, paged — this was one request capped at 500, cut off silently. */
     suspend fun artists(): List<MaItem> = fetchAllPages(PAGE) { offset, limit ->
-        items(types = "MusicArtist", sortBy = "SortName", limit = limit, offset = offset)
+        val library = libraryId.takeIf { it.isNotBlank() }
+        if (library == null) {
+            items(types = "MusicArtist", sortBy = "SortName", limit = limit, offset = offset)
+        } else {
+            // `Items?IncludeItemTypes=MusicArtist` ignores ParentId — artists are not
+            // children of a library folder — so on a server with more than one music
+            // library the list held every library's artists, while their albums (which
+            // do honour ParentId) stayed scoped: an artist from another library opened
+            // onto "No albums". The artists endpoint scopes properly.
+            get(
+                "/Artists/AlbumArtists",
+                mapOf(
+                    "userId" to userId,
+                    "ParentId" to library,
+                    "SortBy" to "SortName",
+                    "SortOrder" to "Ascending",
+                    "StartIndex" to offset.toString(),
+                    "Limit" to limit.toString(),
+                    "Fields" to BASE_FIELDS,
+                    "ImageTypeLimit" to "1",
+                ),
+            )["Items"]?.jsonArray.orEmpty().mapNotNull { (it as? JsonObject)?.let(::item) }
+        }
     }
 
     suspend fun albums(offset: Int = 0, limit: Int = 200): List<MaItem> =
@@ -862,10 +884,7 @@ class JellyfinClient(
             },
             // Album and track art usually lives on the album, not the track, so the
             // fallback keeps a track row from showing a blank tile.
-            image = coverUrl(
-                if (o["ImageTags"]?.jsonObject?.get("Primary") != null) id
-                else o.str("AlbumId") ?: id
-            ),
+            image = coverUrl(imageOwner(o, id)),
             duration = seconds,
             favorite = (o["UserData"] as? JsonObject)?.bool("IsFavorite") ?: false,
             audioFormat = if (mediaType == "track") audioFormat(o) else null,
@@ -885,6 +904,26 @@ class JellyfinClient(
             year = o.int("ProductionYear"),
             genres = o["Genres"]?.jsonArray.orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull },
         )
+    }
+
+    /**
+     * Whose Primary image to show for [o]: its own, its album's (a track's art usually
+     * lives there), or none.
+     *
+     * None is a real answer. The id was the fallback of last resort, so an album or an
+     * artist with no picture still got an image url — one that 404s — and every such
+     * tile drew a dark square instead of its placeholder, and an artist page with no
+     * portrait never reached for a stand-in. Jellyfin states which images exist in
+     * `ImageTags` and `AlbumPrimaryImageTag`; only when a response carries neither
+     * field at all is the old guess kept, since then nothing is known either way.
+     */
+    private fun imageOwner(o: JsonObject, id: String): String? {
+        val tags = o["ImageTags"] as? JsonObject
+        if (tags?.get("Primary") != null) return id
+        val albumTag = o.str("AlbumPrimaryImageTag")
+        val albumId = o.str("AlbumId")
+        if (albumTag != null && albumId != null) return albumId
+        return if (tags == null && albumTag == null) (albumId ?: id) else null
     }
 
     /**
