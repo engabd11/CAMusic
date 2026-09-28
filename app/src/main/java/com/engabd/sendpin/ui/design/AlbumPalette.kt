@@ -737,21 +737,24 @@ fun rememberAlbumPalette(url: String?, shownUrl: String? = url): AlbumPalette {
     // Seeded from the cache, so a page opened on a cover already seen elsewhere — a
     // library tile, the player — is in its colours from the first frame rather than
     // easing out of the amber default.
-    var published by remember { mutableStateOf(url?.let { PaletteCache[it] } ?: AlbumPalette()) }
+    var published by remember { mutableStateOf(url?.let { PaletteCache[ArtUrls.cacheKey(it)] } ?: AlbumPalette()) }
 
     LaunchedEffect(url) {
         if (url.isNullOrBlank()) { extracted = null to AlbumPalette(); return@LaunchedEffect }
-        PaletteCache[url]?.let { extracted = url to it; return@LaunchedEffect }
+        // Keyed without Subsonic's per-request salt — see ArtUrls — or a signed cover
+        // would never hit its own palette twice.
+        val cacheKey = ArtUrls.cacheKey(url)
+        PaletteCache[cacheKey]?.let { extracted = url to it; return@LaunchedEffect }
         val palette = withContext(Dispatchers.IO) {
             val bmp = try {
                 val res = ctx.imageLoader.execute(
-                    ImageRequest.Builder(ctx).data(url).allowHardware(false).size(128).build()
+                    ImageRequest.Builder(ctx).data(ArtUrls.sized(url, 128)).allowHardware(false).size(128).build()
                 )
                 (res as? SuccessResult)?.drawable?.toBitmap()
             } catch (_: Exception) { null } ?: return@withContext null
             try { paletteOf(bmp) } catch (_: Exception) { null }
         }
-        palette?.let { PaletteCache[url] = it }
+        palette?.let { PaletteCache[cacheKey] = it }
         extracted = url to (palette ?: AlbumPalette())
     }
 
