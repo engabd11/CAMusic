@@ -1,8 +1,8 @@
 # CAMusic for webOS TV
 
 Music streaming app for LG webOS TVs. Multi-library playback (Navidrome,
-Subsonic, Jellyfin, Music Assistant) with direct Hue Entertainment
-light sync.
+Subsonic, Jellyfin, Music Assistant) with a light show that turns the TV
+itself into a lamp. Hue Entertainment sync is not available on webOS yet (see below).
 
 ## Architecture
 
@@ -39,11 +39,11 @@ light sync.
 | Component | Tech | Role |
 |-----------|------|------|
 | **Web App** | HTML5 + CSS3 + JS | UI, audio playback, API clients |
-| **JS Service** | Node.js (webos-service) | Hue Entertainment UDP streaming |
+| **JS Service** | Node.js (webos-service) | Hue Entertainment service (reports unavailable: no DTLS yet) |
 | **Audio** | Single `<audio>` element | Music playback (webOS constraint) |
 | **Subsonic Client** | fetch API | Navidrome/Subsonic browsing & streaming |
 | **MA Client** | WebSocket | Music Assistant control |
-| **Hue Service** | Luna IPC → Node.js → UDP | Direct bridge connection |
+| **Hue Service** | Luna IPC → Node.js | Placeholder until DTLS lands |
 | **Light Show** | Canvas 2D + Web Audio | The TV itself as the light source |
 
 ### Key Constraints (from LG webOS TV docs)
@@ -164,12 +164,16 @@ The show then runs on a **time-based fallback** that stands on its own. The musi
 never at risk; a failed tap costs the reactivity and nothing else. The Light Show tab
 says which engine is running rather than claiming reactivity it may not have.
 
-### Configure Hue Sync
+### Hue Sync (not available yet)
 
-1. Navigate to Hue Sync tab
-2. Enter Hue Bridge IP, username token, and entertainment group ID
-3. Select "Connect to Bridge"
-4. Select "Toggle Light Sync" to start/stop
+The Hue Sync tab says **"Unavailable on webOS"** and its Connect and Toggle buttons
+are disabled. A Hue bridge accepts entertainment frames only over DTLS-PSK, and the
+JS service has no DTLS: it used to send plain UDP, get no answer, and report
+"connected" while the lamps stayed dark. It now answers `UNAVAILABLE` and leaves the
+bridge alone. Bridge settings you enter are still saved for when real support lands.
+
+Until then, use the **Light Show** tab (the TV as a lamp), or run light sync from the
+CAMusic phone app.
 
 ## Server Setup
 

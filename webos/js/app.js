@@ -453,6 +453,21 @@
         }
 
         /**
+         * Whether Hue streaming can work here. The service has no DTLS yet
+         * (see hueservice.js), so this is false today; an older service
+         * without the `status` method is treated the same way, because it
+         * could never stream either.
+         */
+        async status() {
+            try {
+                const result = await this._callService('status', {});
+                return { available: !!result.available, reason: result.reason || '' };
+            } catch (e) {
+                return { available: false, reason: '' };
+            }
+        }
+
+        /**
          * Push one frame of colours to the bridge.
          *
          * The service has exposed this since it was written and **nothing ever
@@ -1036,6 +1051,23 @@
                 const gidInput = document.getElementById('hueGroupId');
                 gidInput.focus();
                 gidInput.select();
+            });
+
+            // Hue streaming needs DTLS, which the TV service does not have yet.
+            // Say so before anyone types a bridge IP, and grey out the two
+            // buttons that could only fail. The fields stay, so a saved bridge
+            // is kept for when real support lands.
+            state.hueService.status().then(({ available, reason }) => {
+                if (available) return;
+                const notice = document.getElementById('hueUnavailable');
+                if (reason) notice.querySelector('.hue-unavailable-reason').textContent = reason;
+                notice.hidden = false;
+                document.getElementById('hueBridgeStatus').textContent = 'Unavailable on webOS';
+                ['hueConnectBtn', 'hueToggleBtn'].forEach((id) => {
+                    const b = document.getElementById(id);
+                    b.disabled = true;
+                    b.setAttribute('aria-disabled', 'true');
+                });
             });
 
             document.getElementById('hueToggleBtn').addEventListener('click', async () => {
