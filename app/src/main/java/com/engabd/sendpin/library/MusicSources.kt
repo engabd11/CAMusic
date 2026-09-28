@@ -106,7 +106,7 @@ object MusicSources {
     private fun build(context: android.content.Context, config: ServerConfig): MusicSource? = when (config.kind) {
         ServerKind.NAVIDROME, ServerKind.SUBSONIC -> SubsonicSource(
             client = SubsonicClient(config.url, config.username, config.password).apply {
-                streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+                streamFormat = config.streamFormatFor(StreamNetwork.isMetered)
             },
             kind = config.kind,
         )
@@ -123,7 +123,7 @@ object MusicSources {
                 deviceId = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
                 deviceName = android.os.Build.MODEL.ifBlank { "Android" },
             ).apply {
-                streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+                streamFormat = config.streamFormatFor(StreamNetwork.isMetered)
             },
         )
 
@@ -136,7 +136,7 @@ object MusicSources {
                 deviceId = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
                 deviceName = android.os.Build.MODEL.ifBlank { "Android" },
             ).apply {
-                streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+                streamFormat = config.streamFormatFor(StreamNetwork.isMetered)
             },
         )
 
@@ -150,7 +150,7 @@ object MusicSources {
                 librarySectionKey = config.option(ServerConfig.OPT_LIBRARY_ID).orEmpty(),
                 clientIdentifier = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
             ).apply {
-                streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+                streamFormat = config.streamFormatFor(StreamNetwork.isMetered)
             },
         )
 
