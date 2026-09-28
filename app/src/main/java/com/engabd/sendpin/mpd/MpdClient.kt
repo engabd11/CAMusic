@@ -675,6 +675,37 @@ class MpdClient(
         return parseTracks(response).drop(offset).take(count)
     }
 
+    // ── Ratings ──────────────────────────────────────────────────────────
+
+    /**
+     * A song's rating from MPD's sticker database, as 1–5 stars, or null.
+     *
+     * Stored as the `rating` sticker on a 0–10 scale, which is what Cantata and
+     * myMPD read and write, so a rating made here shows up in them and back. A
+     * server without a `sticker_file` answers every sticker command with an ACK;
+     * that reads as "no rating" here and as an error from [setRating].
+     */
+    suspend fun rating(file: String): Int? = try {
+        command("sticker get song ${quote(file)} rating")
+            .firstOrNull { it.first == "sticker" }?.second
+            ?.substringAfter('=')?.trim()?.toIntOrNull()
+            ?.let { ((it + 1) / 2).coerceIn(0, 5) }
+            ?.takeIf { it > 0 }
+    } catch (_: MpdException) {
+        null
+    }
+
+    /** Store [stars] (1–5) as `rating` = stars × 2, or delete it for 0. */
+    suspend fun setRating(file: String, stars: Int) {
+        val s = stars.coerceIn(0, 5)
+        if (s == 0) {
+            // Deleting a sticker that is not there is an ACK; nothing to clear is fine.
+            try { command("sticker delete song ${quote(file)} rating") } catch (_: MpdException) { }
+        } else {
+            command("sticker set song ${quote(file)} rating ${s * 2}")
+        }
+    }
+
     // ── Favorites ────────────────────────────────────────────────────────
 
     /**

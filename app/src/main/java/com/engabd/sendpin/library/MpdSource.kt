@@ -86,6 +86,9 @@ class MpdSource(
         add(Capability.PLAYLIST_WRITE)
         add(Capability.PLAYLIST_EDIT)
         add(Capability.TRACKS)
+        // In MPD's own sticker database, so any MPD client that reads the `rating`
+        // sticker sees it. Needs `sticker_file` in mpd.conf; see [MpdClient.rating].
+        add(Capability.RATING)
         add(Capability.RICH_FORMAT)
         // MPD applies ReplayGain itself, in its own mixer, from the tags on the
         // files it scanned — `replay_gain_mode`, driven by [MpdRemote.setReplayGain].
@@ -215,6 +218,10 @@ class MpdSource(
         client.renamePlaylist(playlistId, name)
         return name
     }
+
+    override suspend fun rating(item: MaItem): Int? = client.rating(item.itemId)
+
+    override suspend fun setRating(item: MaItem, stars: Int) = client.setRating(item.itemId, stars)
 
     /** Kept on this phone rather than on the server — see the class docs. */
     override suspend fun setStarred(item: MaItem, starred: Boolean) {

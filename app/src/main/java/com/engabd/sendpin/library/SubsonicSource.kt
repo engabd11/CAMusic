@@ -51,6 +51,7 @@ class SubsonicSource(
             add(Capability.GENRES)
             add(Capability.FAVORITES)
             add(Capability.STAR)
+            add(Capability.RATING)
             add(Capability.PLAYLIST_READ)
             add(Capability.PLAYLIST_WRITE)
             add(Capability.PLAYLIST_EDIT)
@@ -132,6 +133,18 @@ class SubsonicSource(
     override fun coverUrl(id: String?, size: Int): String? = client.coverUrl(id, size)
 
     override suspend fun setStarred(item: MaItem, starred: Boolean) = client.setStarred(item, starred)
+
+    // Subsonic's `setRating` takes any id — song, album or artist — and Navidrome
+    // shows all three in its own UI.
+    override fun ratable(item: MaItem): Boolean = item.mediaType in setOf("track", "album", "artist")
+
+    // A track is re-read, since the row may predate a rating made elsewhere; albums
+    // and artists answer from the item, which is what `getAlbum` just sent.
+    override suspend fun rating(item: MaItem): Int? =
+        if (item.mediaType == "track") client.song(item.itemId)?.userRating ?: item.userRating
+        else item.userRating
+
+    override suspend fun setRating(item: MaItem, stars: Int) = client.setRating(item.itemId, stars)
 
     // Subsonic's `time` *is* the epoch this parameter carries, so it passes straight
     // through — the one provider where that is true. `positionMs` is Jellyfin-only

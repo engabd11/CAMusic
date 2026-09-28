@@ -844,6 +844,7 @@ class SubsonicClient(
         image = coverUrl(o.str("coverArt") ?: o.str("id")),
         duration = o.int("duration"),
         favorite = o.str("starred") != null,
+        userRating = o.int("userRating")?.takeIf { it in 1..5 },
         year = o.int("year"),
         parentId = o.str("artistId"),
         // Was never parsed, so the Navidrome album header showed a year and a track
@@ -895,6 +896,7 @@ class SubsonicClient(
         image = coverUrl(o.str("coverArt") ?: o.str("albumId") ?: o.str("id")),
         duration = o.int("duration"),
         favorite = o.str("starred") != null,
+        userRating = o.int("userRating")?.takeIf { it in 1..5 },
         audioFormat = audioFormat(o),
         trackNumber = o.int("track"),
         discNumber = o.discNumber("discNumber"),

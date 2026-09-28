@@ -201,6 +201,20 @@ interface MusicSource {
 
     suspend fun setStarred(item: MaItem, starred: Boolean) = Unit
 
+    /** Whether [item] can be rated here. Only asked when [Capability.RATING] is present. */
+    fun ratable(item: MaItem): Boolean = item.mediaType == "track"
+
+    /**
+     * The rating [item] has now, 1–5, or null when it has none.
+     *
+     * A call rather than a field read because a list row can be stale — rated on
+     * another client since it loaded — and MPD sends no rating with a song at all.
+     */
+    suspend fun rating(item: MaItem): Int? = item.userRating
+
+    /** Rate [item] 1–5, or clear its rating with 0. Only called with [Capability.RATING]. */
+    suspend fun setRating(item: MaItem, stars: Int) = Unit
+
     /**
      * Report a play. [completed] false is a now-playing ping, true is a finished play.
      *
@@ -351,6 +365,13 @@ enum class Capability {
      * Declared only by a source whose `setStarred` does something.
      */
     STAR,
+
+    /**
+     * Tracks (and, where [MusicSource.ratable] says so, albums and artists) take a
+     * 1–5 star rating through [MusicSource.setRating]. Separate from [STAR]: a
+     * favourite is yes/no, a rating is how much, and servers keep them apart.
+     */
+    RATING,
     PLAYLIST_READ,
     PLAYLIST_WRITE,
     /** Every song in the library can be listed — see [MusicSource.tracks]. */

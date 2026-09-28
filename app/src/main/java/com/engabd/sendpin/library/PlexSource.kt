@@ -45,7 +45,12 @@ class PlexSource(private val client: PlexClient) : MusicSource {
         Capability.DOWNLOAD,
         Capability.HISTORY,
         Capability.SCROBBLE,
+        Capability.RATING,
     )
+
+    override fun ratable(item: MaItem): Boolean = item.mediaType in setOf("track", "album", "artist")
+
+    override suspend fun setRating(item: MaItem, stars: Int) = client.setRating(item.itemId, stars)
 
     override suspend fun probe(): SourceError? = client.pingResult()?.let {
         SourceError(it.message ?: "Plex refused the request", isAuth = it.isAuth)

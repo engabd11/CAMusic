@@ -22,11 +22,16 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -35,11 +40,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.engabd.sendpin.SendpinApp
+import com.engabd.sendpin.library.Ratings
 import com.engabd.sendpin.ma.MaItem
+import kotlinx.coroutines.launch
 import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.dismissOnDragDown
@@ -215,6 +227,7 @@ fun BoxScope.MediaActionsSheet(
                     "Tracks that sound like this one",
                 ) { onClose(); more() }
             }
+            RatingRow(item)
             if (isFavourite != null && onToggleFavourite != null) {
                 ActionRow(
                     if (isFavourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -247,6 +260,86 @@ fun BoxScope.MediaActionsSheet(
                     if (confirming) "This can't be undone" else "Removes it from the server",
                     tint = if (confirming) ErrorRed else null,
                 ) { if (confirming) { onClose(); del() } else confirming = true }
+            }
+        }
+    }
+}
+
+/**
+ * Five stars, on every sheet whose item comes from a library that keeps ratings —
+ * Navidrome and other Subsonic servers, Plex, and MPD's sticker database. Absent
+ * everywhere else, rather than drawn and inert.
+ *
+ * Reads the active library itself (see [Ratings]) so each of the five screens that
+ * open this sheet gets it without threading one more callback through them. Tapping
+ * the star that is already the rating clears it, the way Navidrome's own UI does.
+ * The sheet stays open: a rating is something one adjusts, not a command.
+ */
+@Composable
+private fun RatingRow(item: MaItem) {
+    val context = LocalContext.current
+    val app = context.applicationContext as? SendpinApp ?: return
+    val source by app.musicSource.collectAsState()
+    val rater = Ratings.rater(source, item) ?: return
+    val scope = rememberCoroutineScope()
+    var stars by remember(item.provider, item.itemId) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(rater, item.provider, item.itemId) { stars = Ratings.current(rater, item) }
+    val accent = LocalAccent.current
+
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Icon(Icons.Default.Star, null, tint = accent, modifier = Modifier.size(20.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text("Rating", color = TextPrimary, style = MaterialTheme.typography.titleLarge)
+            Text(
+                when (val n = stars) {
+                    null -> "Checking…"
+                    0 -> "Not rated"
+                    1 -> "1 star"
+                    else -> "$n stars"
+                },
+                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
+            )
+        }
+        Row {
+            for (n in 1..5) {
+                val on = (stars ?: 0) >= n
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(100))
+                        .semantics { selected = stars == n }
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = if (stars == n) "Clear rating" else "Rate $n",
+                        ) {
+                            val before = stars ?: 0
+                            val next = if (before == n) 0 else n
+                            stars = next
+                            scope.launch {
+                                try {
+                                    Ratings.set(rater, item, next)
+                                } catch (e: Exception) {
+                                    stars = before
+                                    android.widget.Toast.makeText(
+                                        context, e.message ?: "Couldn't save the rating",
+                                        android.widget.Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (on) Icons.Default.Star else Icons.Default.StarBorder,
+                        contentDescription = if (n == 1) "1 star" else "$n stars",
+                        tint = if (on) accent else TextMuted,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
             }
         }
     }

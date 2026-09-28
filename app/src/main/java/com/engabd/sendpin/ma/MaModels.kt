@@ -186,6 +186,12 @@ data class MaItem(
      * everywhere else.
      */
     val entryId: String? = null,
+    /**
+     * The user's own 1–5 star rating, where the library keeps one and sent it with
+     * the item: Subsonic's `userRating`, Plex's 0–10 `userRating` halved. Null when
+     * unrated or unknown. See [com.engabd.sendpin.library.Capability.RATING].
+     */
+    val userRating: Int? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
