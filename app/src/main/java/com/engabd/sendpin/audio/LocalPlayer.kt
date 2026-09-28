@@ -1128,7 +1128,7 @@ class LocalPlayer(private val context: Context) {
             var sincePoll = REMOTE_POLL_MS
             while (isActive) {
                 val busy = remotePending.get() > 0
-                if (!busy && (remoteRepoll || sincePoll >= REMOTE_POLL_MS)) {
+                if (!busy && (remoteRepoll || sincePoll >= remotePollInterval())) {
                     remoteRepoll = false
                     sincePoll = 0
                     val issuedAt = remoteEpoch.get()
@@ -1153,6 +1153,21 @@ class LocalPlayer(private val context: Context) {
     }
 
     private fun stopRemoteLoop() { remoteJob?.cancel(); remoteJob = null }
+
+    /**
+     * How long between reads of the remote player. Once a second while it plays, so
+     * a track change shows promptly; while it is paused nothing is changing on its
+     * own, so slower — and much slower with the app in the background, where the
+     * only reader is a notification. It used to be a fresh TCP connection to the
+     * server every second, paused or not, for as long as the app lived. A command
+     * from here still re-polls at once (`remoteRepoll`), so a press of play from
+     * the notification is not left waiting on this.
+     */
+    private fun remotePollInterval(): Long = when {
+        _playing.value -> REMOTE_POLL_MS
+        com.engabd.sendpin.service.AppLifecycleObserver.get()?.foreground?.value != false -> REMOTE_PAUSED_POLL_MS
+        else -> REMOTE_BACKGROUND_PAUSED_POLL_MS
+    }
 
     /** Put one reading of the remote player onto the flows the screens read. */
     private fun applyRemoteState(state: RemoteState) {
@@ -2540,5 +2555,11 @@ class LocalPlayer(private val context: Context) {
          * rarely as a scrub bar can bear.
          */
         const val REMOTE_POLL_MS = 1000L
+
+        /** Paused, app on screen: someone could press play on the server itself. */
+        const val REMOTE_PAUSED_POLL_MS = 2_000L
+
+        /** Paused, app in the background: only the notification is reading. */
+        const val REMOTE_BACKGROUND_PAUSED_POLL_MS = 15_000L
     }
 }
