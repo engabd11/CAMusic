@@ -306,6 +306,22 @@ html, body {
     margin-bottom: 32px;
 }
 
+.hue-unavailable {
+    margin: 0 0 24px;
+    padding: 16px 20px;
+    border-radius: 12px;
+    border: 2px solid rgba(255, 176, 64, 0.6);
+    background: rgba(255, 176, 64, 0.12);
+}
+
+.hue-unavailable p {
+    margin: 4px 0;
+}
+
+.hue-button:disabled {
+    opacity: 0.4;
+}
+
 .hue-status {
     background: var(--surface);
     padding: 24px;

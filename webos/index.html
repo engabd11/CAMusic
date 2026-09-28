@@ -107,6 +107,12 @@
             <div id="view-hue" class="view">
                 <div class="hue-container">
                     <h2 class="section-title">Hue Entertainment Sync</h2>
+                    <div class="hue-unavailable" id="hueUnavailable" role="status" hidden>
+                        <p><strong>Not available on webOS yet.</strong></p>
+                        <p class="hue-unavailable-reason">Hue sync is not available on webOS yet: the bridge
+                            needs an encrypted (DTLS) stream this TV app cannot open. Use the Light Show tab,
+                            or run light sync from the CAMusic phone app.</p>
+                    </div>
                     <div class="hue-status" id="hueStatus">
                         <p>Hue bridge connection status: <span id="hueBridgeStatus">Disconnected</span></p>
                         <p>Light sync: <span id="hueSyncStatus">Off</span></p>

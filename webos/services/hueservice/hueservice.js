@@ -42,6 +42,29 @@ var hueState = {
 
 // ── Hue Entertainment Protocol Constants ─────────────────────
 var HUE_ENTERTAINMENT_PORT = 21000;
+
+/**
+ * Whether this service can actually drive a Hue bridge. It cannot, yet.
+ *
+ * The bridge accepts entertainment frames only inside a DTLS-PSK session
+ * (HueStream on UDP 2100). This service has never had DTLS: it sent plain
+ * UDP to port 21000, got no reply, and reported "connected" anyway, so the
+ * TV showed a working sync while every lamp stayed dark. Worse, `connect`
+ * first switched the entertainment area to streaming mode, which takes the
+ * lamps away from the Hue app and any other sync until the bridge times out.
+ *
+ * Until real DTLS lands (audit item LS9) every method answers honestly with
+ * UNAVAILABLE and touches nothing on the bridge. The framing code below is
+ * kept for that work. The TV's own light show (panel-as-lamp) is unaffected.
+ */
+var STREAMING_AVAILABLE = false;
+var UNAVAILABLE = {
+    returnValue: false,
+    errorCode: 'UNAVAILABLE',
+    errorMessage: 'Hue sync is not available on webOS yet: the bridge needs an ' +
+        'encrypted (DTLS) stream this TV app cannot open. Use the Light Show tab, ' +
+        'or run light sync from the CAMusic phone app.',
+};
 var PROTOCOL_VERSION = 0x0001; // V2 protocol
 var MESSAGE_TYPE_LIGHT = 0x0000;
 
@@ -72,6 +95,10 @@ var MESSAGE_TYPE_LIGHT = 0x0000;
  * performs the DTLS PSK handshake using the username as the client ID.
  */
 svc.register('connect', function (message) {
+    if (!STREAMING_AVAILABLE) {
+        message.respond(UNAVAILABLE);
+        return;
+    }
     var params = message.payload || {};
 
     hueState.bridgeIp = params.bridgeIp || '';
@@ -136,6 +163,10 @@ svc.register('connect', function (message) {
  * messages at ~30fps to the bridge.
  */
 svc.register('startSync', function (message) {
+    if (!STREAMING_AVAILABLE) {
+        message.respond(UNAVAILABLE);
+        return;
+    }
     if (!hueState.connected) {
         message.respond({
             returnValue: false,
@@ -179,6 +210,18 @@ svc.register('disconnect', function (message) {
         .catch(function () {
             message.respond({ returnValue: true, connected: false });
         });
+});
+
+/**
+ * Whether Hue streaming works on this TV, so the app can say so up front
+ * instead of after a failed connect.
+ */
+svc.register('status', function (message) {
+    message.respond({
+        returnValue: true,
+        available: STREAMING_AVAILABLE,
+        reason: STREAMING_AVAILABLE ? '' : UNAVAILABLE.errorMessage,
+    });
 });
 
 /**
