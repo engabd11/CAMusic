@@ -923,10 +923,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             localPlayer.queue.collect { if (it.isEmpty()) leaveDjRadio() }
         }
-        // The fade belongs to the player, and the setting can change under a queue
-        // that is already running.
-        viewModelScope.launch { settings.navFadeSeconds.collect { localPlayer.fadeSeconds = it } }
-        viewModelScope.launch { settings.beatMatchedCrossfade.collect { localPlayer.beatMatchedFade = it } }
+        // The fade settings (length, beat-matching, overlap, DJ smart joins) are
+        // collected by LocalPlayer itself, so they hold with no screen open.
         // The DJ crossfade is only ever pushed at the player while a set is running,
         // so an ordinary album keeps exactly the fade behaviour it had — but a drag
         // of the slider mid-set has to be audible on the next transition rather than
@@ -935,12 +933,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             settings.djRadioCrossfadeSeconds.collect {
                 if (_djRadio.value) localPlayer.djCrossfadeSeconds = it
             }
-        }
-        // Smart fade is safe to leave set at all times: the player only consults it
-        // while [LocalPlayer.djCrossfadeSeconds] is non-zero, which is only while a
-        // set is running.
-        viewModelScope.launch {
-            settings.djRadioSmartFade.collect { localPlayer.djSmartFade = it }
         }
         // Scrobbles, "now playing" pings, Jellyfin progress/stop reports and the saved
         // play queue are PlaybackReporter's (SendpinApp), not this screen's: they have

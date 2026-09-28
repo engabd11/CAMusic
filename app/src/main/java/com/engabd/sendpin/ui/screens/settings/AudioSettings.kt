@@ -456,6 +456,7 @@ internal fun LoudnessCard(settings: AppSettings, accent: Color, scope: Coroutine
 internal fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     val fade by settings.navFadeSeconds.collectAsStateWithLifecycle(initialValue = 0)
     val beatMatched by settings.beatMatchedCrossfade.collectAsStateWithLifecycle(initialValue = false)
+    val overlap by settings.navCrossfadeOverlap.collectAsStateWithLifecycle(initialValue = false)
 
     SettingsCard(
         title = "Between tracks",
@@ -480,8 +481,10 @@ internal fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Cor
                 "Fades one track out and the next in, on the player this phone runs.\n\nOff " +
                     "is gapless, which is what an album wants. This is suppressed automatically " +
                     "while the queue is a single record, however it is set here, so you do not " +
-                    "have to keep turning it off and on.\n\nIt is not a crossfade: the two " +
-                    "tracks do not overlap, because one player has one output.\n\nTip: two to " +
+                    "have to keep turning it off and on.\n\nOn its own it is not a crossfade: " +
+                    "one song fades down, then the next fades up. Turn on Overlap the songs " +
+                    "for a real crossfade, both playing at once, the way DJ Radio joins " +
+                    "tracks.\n\nTip: two to " +
                     "four seconds suits a shuffled queue. Much longer and a short track starts " +
                     "fading before its last chorus has finished.",
                 Modifier.heightIn(0.dp),
@@ -495,8 +498,18 @@ internal fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Cor
         if (fade > 0) {
             Spacer(Modifier.height(4.dp))
             ToggleRow(
+                title = "Overlap the songs",
+                subtitle = "A real crossfade: the next song starts under the last, as in DJ Radio",
+                checked = overlap,
+                accent = accent,
+            ) { on -> scope.launch { settings.setNavCrossfadeOverlap(on) } }
+            ToggleRow(
                 title = "Beat-matched fade",
-                subtitle = "Time the fade to end on a beat, when the track has been scanned",
+                subtitle = if (overlap) {
+                    "Plan the overlap on the beat, past any silence, when both tracks are scanned"
+                } else {
+                    "Time the fade to end on a beat, when the track has been scanned"
+                },
                 checked = beatMatched,
                 accent = accent,
             ) { on -> scope.launch { settings.setBeatMatchedCrossfade(on) } }
