@@ -83,8 +83,17 @@ class AudioAnalysisTapTest {
         return out.toByteArray()
     }
 
-    /** Wait until the analysis thread stops producing, then report the count. */
-    private fun settle(counter: AtomicInteger, timeoutMs: Long = 5_000): Int {
+    /**
+     * Wait until the analysis thread stops producing, then report the count.
+     *
+     * "Stopped" means a full second without a new frame. It was 200 ms, and on a
+     * loaded machine (emulators, a parallel build) the analysis thread can simply not
+     * be scheduled for that long mid-run — the count was read early, 82 of 100, and
+     * the test failed on a busy CI box while the code was fine. The count itself is
+     * driven by samples, not time, so waiting longer cannot change the answer, only
+     * make sure it has been reached.
+     */
+    private fun settle(counter: AtomicInteger, timeoutMs: Long = 15_000, quietMs: Int = 1_000): Int {
         val deadline = System.currentTimeMillis() + timeoutMs
         var last = -1
         var stableFor = 0
@@ -93,7 +102,7 @@ class AudioAnalysisTapTest {
             val now = counter.get()
             if (now == last) {
                 stableFor += 25
-                if (stableFor >= 200 && now > 0) return now
+                if (stableFor >= quietMs && now > 0) return now
             } else {
                 stableFor = 0
                 last = now
