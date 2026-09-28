@@ -58,6 +58,29 @@ object MpdArt {
      */
     fun isAlbumId(id: String): Boolean = id.contains(Char(0))
 
+    /**
+     * The art URL for an artist, by name.
+     *
+     * MPD has no artist pictures — its metadata is file tags, and tags hold covers,
+     * not portraits — so every MPD artist tile was a blank initial. The artist's own
+     * album cover is the honest stand-in: this names the artist, and the fetcher
+     * resolves it to one of their songs and reads that song's cover.
+     */
+    fun artistUrl(name: String?): String? {
+        val raw = name?.takeIf { it.isNotBlank() } ?: return null
+        return url(ARTIST_MARK + raw)
+    }
+
+    /** The artist's name, when [id] is one [artistUrl] made; null otherwise. */
+    fun artistFrom(id: String): String? =
+        id.takeIf { it.startsWith(ARTIST_MARK) }?.removePrefix(ARTIST_MARK)?.takeIf { it.isNotBlank() }
+
+    /**
+     * Marks an artist id. A control character, so it can never begin a real file
+     * path or an album id (which starts with the album's name).
+     */
+    private const val ARTIST_MARK = "\u0001artist\u0001"
+
     private fun encode(s: String): String = try {
         URLEncoder.encode(s, Charsets.UTF_8.name())
     } catch (_: UnsupportedEncodingException) {

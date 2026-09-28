@@ -66,6 +66,9 @@ class MpdClient(
     companion object {
         const val PROVIDER = "mpd"
 
+        /** Songs per `playlistadd` command list — see [addToPlaylist]. */
+        private const val PLAYLIST_CHUNK = 200
+
         /** The MPD protocol's response terminator for a successful command. */
         private const val OK = "OK"
         /** The MPD protocol's error response prefix. */
@@ -359,7 +362,8 @@ class MpdClient(
                 uri = name,
                 mediaType = "artist",
                 subtitle = null,
-                image = null,
+                // Their own cover, fetched only if the tile is ever drawn.
+                image = MpdArt.artistUrl(name),
                 duration = null,
             )
         }
@@ -426,7 +430,7 @@ class MpdClient(
     suspend fun artistDetail(id: String): Pair<MaItem?, List<MaItem>> {
         val artistItem = MaItem(
             itemId = id, provider = PROVIDER, name = id, uri = id,
-            mediaType = "artist", subtitle = null, image = null, duration = null,
+            mediaType = "artist", subtitle = null, image = MpdArt.artistUrl(id), duration = null,
         )
         val artistAlbums = albums(artist = id)
         return artistItem to artistAlbums
@@ -478,6 +482,59 @@ class MpdClient(
     suspend fun playlistTracks(id: String): List<MaItem> {
         val response = command("listplaylistinfo ${quote(id)}")
         return parseTracks(response)
+    }
+
+    // ── Stored playlists: writes ─────────────────────────────────────────────
+    //
+    // A stored playlist is keyed by its name, and its members by file path — the
+    // same ids [playlists] and [playlistTracks] hand out, so what is written here is
+    // what the library reads back.
+
+    /**
+     * Create the stored playlist [name] holding [files], in order.
+     *
+     * MPD has no command that makes an empty playlist: one comes into being on its
+     * first `playlistadd`. So an empty one is made by adding a song and taking it
+     * out again, which leaves the playlist file in place and empty — the only way
+     * the protocol has to say "new playlist" before anything is in it.
+     */
+    suspend fun createPlaylist(name: String, files: List<String>) {
+        if (files.isNotEmpty()) {
+            addToPlaylist(name, files)
+            return
+        }
+        val any = firstSongUri() ?: throw MpdException("MPD's database is empty, so there is nothing to start a playlist with")
+        commandList("playlistadd ${quote(name)} ${quote(any)}", "playlistdelete ${quote(name)} 0")
+    }
+
+    /** Append [files] to the stored playlist [name], creating it if it does not exist. */
+    suspend fun addToPlaylist(name: String, files: List<String>) {
+        if (files.isEmpty()) return
+        // One command list, in chunks: a whole album is one round trip, and a very
+        // long list stays well under MPD's command-list size limit.
+        files.chunked(PLAYLIST_CHUNK).forEach { chunk ->
+            commandList(*chunk.map { "playlistadd ${quote(name)} ${quote(it)}" }.toTypedArray())
+        }
+    }
+
+    /** Delete the stored playlist [name]. */
+    suspend fun deletePlaylist(name: String) {
+        command("rm ${quote(name)}")
+    }
+
+    /**
+     * The first song in MPD's database, found by walking down from the root one
+     * directory at a time — a handful of small listings, where `listall` would send
+     * the whole library.
+     */
+    private suspend fun firstSongUri(): String? {
+        var dir = ""
+        repeat(12) {
+            val listing = command("lsinfo ${quote(dir)}")
+            listing.firstOrNull { it.first == "file" }?.let { return it.second }
+            dir = listing.firstOrNull { it.first == "directory" }?.second ?: return null
+        }
+        return null
     }
 
     /** A single song by file path. */
@@ -840,6 +897,25 @@ class MpdClient(
      */
     suspend fun anySongIn(albumId: String): String? =
         albumDetail(albumId).second.firstOrNull()?.itemId
+
+    /**
+     * One song by [artist] — whose cover stands in for the artist's picture, see
+     * [MpdArt.artistUrl]. Asked for a single result (`window`, MPD 0.20+) so an
+     * artist with a thousand songs costs one line; older servers get the plain
+     * `find` and the first of its answer. The album artist is tried second, for
+     * artists who appear only as that.
+     */
+    suspend fun anySongBy(artist: String): String? {
+        for (tag in listOf("artist", "albumartist")) {
+            val hit = try {
+                command("find $tag ${quote(artist)} window 0:1")
+            } catch (_: MpdException) {
+                try { command("find $tag ${quote(artist)}") } catch (_: MpdException) { emptyList() }
+            }.firstOrNull { it.first == "file" }?.second
+            if (hit != null) return hit
+        }
+        return null
+    }
 
     /**
      * One chunked binary command (`albumart` / `readpicture`), over one socket.

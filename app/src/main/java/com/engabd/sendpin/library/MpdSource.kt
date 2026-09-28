@@ -83,6 +83,7 @@ class MpdSource(
         add(Capability.SEARCH)
         add(Capability.GENRES)
         add(Capability.PLAYLIST_READ)
+        add(Capability.PLAYLIST_WRITE)
         add(Capability.TRACKS)
         add(Capability.RICH_FORMAT)
         // MPD applies ReplayGain itself, in its own mixer, from the tags on the
@@ -183,6 +184,24 @@ class MpdSource(
         marked(client.songsByGenre(genre, count, offset))
 
     // ── Write ─────────────────────────────────────────────────────────────
+
+    /**
+     * Stored playlists, on the server — MPD's own, so every MPD client sees them.
+     * A playlist's id is its name, which is also what [playlists] hands out.
+     *
+     * These were missing entirely, so creating a playlist fell through to the
+     * interface's do-nothing default: the app said "Created", reloaded, and the
+     * playlist was not there — because it had never been sent.
+     */
+    override suspend fun createPlaylist(name: String, songIds: List<String>): String {
+        client.createPlaylist(name, songIds)
+        return name
+    }
+
+    override suspend fun addToPlaylist(playlistId: String, songIds: List<String>) =
+        client.addToPlaylist(playlistId, songIds)
+
+    override suspend fun deletePlaylist(id: String) = client.deletePlaylist(id)
 
     /** Kept on this phone rather than on the server — see the class docs. */
     override suspend fun setStarred(item: MaItem, starred: Boolean) {

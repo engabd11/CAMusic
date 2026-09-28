@@ -88,6 +88,21 @@ class DownloadedPlaylists(context: Context) {
         return id
     }
 
+    /**
+     * A playlist made on this phone, from tracks already downloaded — the Downloads
+     * library's own "New playlist". Filed under the provider [USER_PROVIDER], so it
+     * can never collide with a playlist that came down from a server.
+     */
+    suspend fun create(name: String, trackIds: List<String>): String =
+        record(USER_PROVIDER, java.util.UUID.randomUUID().toString(), name, image = null, trackIds = trackIds)
+
+    /** Add tracks to the end of [playlistId], skipping any it already holds. */
+    suspend fun append(playlistId: String, trackIds: List<String>) {
+        val existing = dao.get(playlistId) ?: return
+        dao.upsert(existing.copy(updatedAt = System.currentTimeMillis()))
+        appendMembers(playlistId, trackIds)
+    }
+
     /** Add ids not already filed under this playlist, after whatever is there. */
     private suspend fun appendMembers(playlistId: String, trackIds: List<String>) {
         if (trackIds.isEmpty()) return
@@ -123,4 +138,9 @@ class DownloadedPlaylists(context: Context) {
 
     private fun PlaylistWithCount.toItem(): MaItem =
         DownloadsIndex.playlistItem(id, name, trackCount, image)
+
+    companion object {
+        /** The "provider" of a playlist made on this phone rather than downloaded. */
+        const val USER_PROVIDER = "phone"
+    }
 }
