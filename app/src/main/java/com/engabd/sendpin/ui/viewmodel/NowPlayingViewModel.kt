@@ -757,6 +757,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             if (!l.active || track == null) return@combine null
             val id = track.scrobbleId ?: return@combine null
             val provider = track.scrobbleProvider ?: return@combine null
+            // No heart for a library whose heart would do nothing — see Capability.STAR.
+            val source = SendpinApp.instance.musicSource.value?.takeIf { it.providerId == provider }
+            if (source != null && !source.has(com.engabd.sendpin.library.Capability.STAR)) return@combine null
             MaItem(
                 itemId = id,
                 provider = provider,

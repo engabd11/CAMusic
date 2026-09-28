@@ -41,6 +41,7 @@ class QobuzSource(private val client: QobuzClient) : MusicSource {
         setOf(
             Capability.SEARCH,
             Capability.FAVORITES,
+            Capability.STAR,
             Capability.PLAYLIST_READ,
             Capability.METADATA,
         )

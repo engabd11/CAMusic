@@ -295,7 +295,19 @@ class SourceAuthException(message: String) : Exception(message)
 enum class Capability {
     SEARCH,
     GENRES,
+    /** Favourites can be *listed* — the Starred shelf. See [STAR] for changing them. */
     FAVORITES,
+
+    /**
+     * The heart works: [MusicSource.setStarred] really changes the favourite.
+     *
+     * Split from [FAVORITES] because the two came apart. Tidal and Spotify list a
+     * user's favourites (they are the library there) but their write endpoints have
+     * never been exercised, so `setStarred` is the default no-op — and a heart shown
+     * off FAVORITES flipped, said "Added to favourites", and changed nothing.
+     * Declared only by a source whose `setStarred` does something.
+     */
+    STAR,
     PLAYLIST_READ,
     PLAYLIST_WRITE,
     /** Every song in the library can be listed — see [MusicSource.tracks]. */

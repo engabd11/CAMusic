@@ -59,7 +59,7 @@ class FoobarSource(
         add(Capability.RICH_FORMAT)
         add(Capability.TRACKS)
         // Only when there is somewhere to keep them — same as MpdSource.
-        if (context != null) add(Capability.FAVORITES)
+        if (context != null) { add(Capability.FAVORITES); add(Capability.STAR) }
     }
 
     /** Everything this source hands out, with the app's own stars applied. */
