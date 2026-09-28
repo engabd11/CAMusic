@@ -416,4 +416,15 @@ class SecretOptionsTest {
         val options = mapOf(ServerConfig.OPT_STREAM_FORMAT to "raw")
         kotlin.test.assertSame(options, ServerConfig.mapSecretOptions(options) { error("must not be called") })
     }
+
+    @Test
+    fun `only libraries that hand over files offer a download`() {
+        for (p in listOf("subsonic", "jellyfin", "emby", "plex", MusicSources.DOWNLOAD_PROVIDER)) {
+            assertTrue(MusicSources.hostsFiles(p), "$p hands over files")
+        }
+        // Played here, but with no file to give: the button used to show on all of them.
+        for (p in listOf("mpd", "foobar2000", "qobuz-direct", "tidal-direct", "spotify-direct", "library", "")) {
+            assertFalse(MusicSources.hostsFiles(p), "$p has no file to hand over")
+        }
+    }
 }

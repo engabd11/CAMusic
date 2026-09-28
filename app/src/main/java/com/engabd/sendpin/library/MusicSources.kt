@@ -63,6 +63,27 @@ object MusicSources {
     fun isLocalProvider(provider: String): Boolean =
         provider == DOWNLOAD_PROVIDER || provider in SOURCE_PROVIDERS
 
+    /**
+     * Whether a [provider]'s library can hand over its files — what a Download button
+     * needs — or, for Downloads itself, already has.
+     *
+     * Asked of the provider rather than a live source for the reason the detail
+     * screens give: the source is briefly null around a reconnect. The screens used
+     * [isLocalProvider] for this, which is true of every library this phone *plays*,
+     * so MPD, foobar2000 and the streaming services offered "Download discography"
+     * over files they have no endpoint to give. These are the ones that declare
+     * `Capability.DOWNLOAD`.
+     */
+    fun hostsFiles(provider: String): Boolean = provider in FILE_PROVIDERS
+
+    private val FILE_PROVIDERS = setOf(
+        DOWNLOAD_PROVIDER,
+        com.engabd.sendpin.subsonic.SubsonicClient.PROVIDER,
+        com.engabd.sendpin.jellyfin.JellyfinClient.PROVIDER,
+        com.engabd.sendpin.emby.EmbyClient.PROVIDER,
+        com.engabd.sendpin.plex.PlexClient.PROVIDER,
+    )
+
 
     /**
      * Build a source for [config], or null for a kind that has no adapter yet.
