@@ -1366,8 +1366,49 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun removeQueueItem(item: MaQueueItem) {
-        if (isLocal) { local.removeAt(item.index); loadQueue(); return }
+        if (isLocal) {
+            val track = local.queue.value.getOrNull(item.index)
+            local.removeAt(item.index)
+            loadQueue()
+            if (track != null && local.remote == null) {
+                offerUndo("Removed \u201C${track.title}\u201D") { local.insertAt(item.index, track) }
+            }
+            return
+        }
         queueAction { repo.deleteQueueItem(it, item.queueItemId) }
+    }
+
+    /**
+     * A queue edit that can still be taken back, and what taking it back does.
+     *
+     * Only for the queue this phone plays itself: Music Assistant has no "insert at"
+     * or "restore", and MPD keeps its own queue, so an undo there would be a promise
+     * the app could only half keep. Those keep the confirm step on Clear instead.
+     */
+    data class QueueUndo(val message: String, val undo: () -> Unit)
+
+    private val _queueUndo = MutableStateFlow<QueueUndo?>(null)
+    val queueUndo: StateFlow<QueueUndo?> = _queueUndo
+    private var queueUndoJob: kotlinx.coroutines.Job? = null
+
+    /** Whether Clear can be undone here — and so needs no "Sure?" first. */
+    val queueUndoable: Boolean get() = isLocal && local.remote == null
+
+    private fun offerUndo(message: String, undo: () -> Unit) {
+        _queueUndo.value = QueueUndo(message, undo)
+        queueUndoJob?.cancel()
+        queueUndoJob = viewModelScope.launch {
+            delay(UNDO_WINDOW_MS)
+            _queueUndo.value = null
+        }
+    }
+
+    fun undoQueueEdit() {
+        val pending = _queueUndo.value ?: return
+        _queueUndo.value = null
+        queueUndoJob?.cancel()
+        pending.undo()
+        loadQueue(silent = true)
     }
 
     /** [shift] is relative: -1 moves the item one place earlier, +1 one later. */
@@ -1377,7 +1418,22 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearQueue() {
-        if (isLocal) { local.clear(); loadQueue(); return }
+        if (isLocal) {
+            val tracks = local.queue.value
+            val index = local.index.value
+            val position = local.positionMs.value
+            val wasPlaying = local.playing.value
+            val undoable = queueUndoable
+            local.clear()
+            loadQueue()
+            if (undoable && tracks.isNotEmpty()) {
+                val n = tracks.size
+                offerUndo("Cleared $n ${if (n == 1) "track" else "tracks"}") {
+                    local.restoreQueue(tracks, index, position, wasPlaying)
+                }
+            }
+            return
+        }
         queueAction { repo.clearQueue(it) }
     }
 
@@ -1911,6 +1967,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        /** How long "Undo" stays up after a queue edit. */
+        const val UNDO_WINDOW_MS = 8_000L
+
         /** How long the sleep timer spends fading out before it pauses. */
         const val FADE_MS = 10_000L
 

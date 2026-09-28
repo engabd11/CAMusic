@@ -193,6 +193,7 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
     var naming by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
+    val undo by viewModel.queueUndo.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { if (load is Load.Idle) viewModel.loadQueue() }
 
@@ -212,8 +213,9 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
         )
         SmallAction(Icons.Default.Shuffle, "Shuffle") { viewModel.shuffleQueueNow() }
         SmallAction(Icons.AutoMirrored.Filled.PlaylistAdd, "Save as playlist") { naming = true; playlistName = "" }
+        // One tap where it can be undone; the confirm step stays where it cannot.
         SmallAction(Icons.Default.DeleteSweep, if (confirmClear) "Sure?" else "Clear") {
-            if (confirmClear) { viewModel.clearQueue(); confirmClear = false } else confirmClear = true
+            if (confirmClear || viewModel.queueUndoable) { viewModel.clearQueue(); confirmClear = false } else confirmClear = true
         }
     }
 
@@ -248,6 +250,30 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
             } else {
                 QueueList(l.value, st.currentQueueItemId, viewModel)
             }
+        }
+    }
+
+    undo?.let { pending ->
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = systemNavInset() + 10.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Ink3)
+                .padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                pending.message, color = TextPrimary, fontFamily = AppFont, fontSize = 13.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            )
+            Text(
+                "Undo", color = accent, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClickLabel = "Undo") { viewModel.undoQueueEdit() }
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+            )
         }
     }
 }
@@ -330,6 +356,17 @@ private fun ColumnScope.QueueList(
             contentType = { _, _ -> "queueRow" },
         ) { _, item ->
             val dragging = item.queueItemId == draggingId
+            SwipeToRemoveRow(
+                color = ErrorRed,
+                onRemove = { viewModel.removeQueueItem(item) },
+                // Not while a row is being dragged to reorder: one gesture at a time.
+                enabled = draggingId == null,
+                modifier = Modifier
+                    .animateItem(
+                        placementSpec = if (dragging) null else Motion.itemPlacement(),
+                    )
+                    .zIndex(if (dragging) 1f else 0f),
+            ) {
             QueueRow(
                 item = item,
                 playing = item.queueItemId == currentId,
@@ -347,10 +384,6 @@ private fun ColumnScope.QueueList(
                     // already being driven by `translationY` below, and animating its
                     // placement as well would have the row chasing a slot the finger
                     // has already left. Removals from the queue keep the default fades.
-                    .animateItem(
-                        placementSpec = if (dragging) null else Motion.itemPlacement(),
-                    )
-                    .zIndex(if (dragging) 1f else 0f)
                     .graphicsLayer { translationY = if (dragging) dragOffset else 0f }
                     .onSizeChanged { if (it.height > 0) rowHeight = it.height },
                 onPlay = { viewModel.playQueueItem(item) },
@@ -385,6 +418,7 @@ private fun ColumnScope.QueueList(
                 },
                 onDragEnd = { endDrag() },
             )
+            }
         }
     }
 }
