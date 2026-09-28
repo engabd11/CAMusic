@@ -195,7 +195,7 @@ class AppSettings(private val context: Context) {
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val CLOCK_OFFSET_US = stringPreferencesKey("sendspin_clock_offset_us") // persisted clock offset for fast reconnect
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
-        private val REPLAY_GAIN_UNTAGGED = stringPreferencesKey("replay_gain_untagged_db") // dB as text; "0" = leave untagged alone
+        private val REPLAY_GAIN_UNTAGGED = stringPreferencesKey("replay_gain_untagged") // dB as text; "0" = leave untagged alone
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
