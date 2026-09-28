@@ -47,6 +47,7 @@ class EmbySource(private val client: EmbyClient) : MusicSource {
         Capability.STAR,
         Capability.PLAYLIST_READ,
         Capability.PLAYLIST_WRITE,
+        Capability.PLAYLIST_EDIT,
         Capability.TRACKS,
         Capability.DOWNLOAD,
         // As Jellyfin: `InstantMix` is the similarity engine, so the radio ladder
@@ -116,6 +117,54 @@ class EmbySource(private val client: EmbyClient) : MusicSource {
         client.addToPlaylist(playlistId, songIds)
 
     override suspend fun deletePlaylist(id: String) = client.deleteItem(id)
+
+    override suspend fun removeFromPlaylist(playlistId: String, positions: List<Int>, tracks: List<MaItem>) {
+        val entries = positions.mapNotNull { tracks.getOrNull(it)?.entryId }
+        if (entries.isEmpty()) return
+        val expected = PlaylistEdits.removed(tracks, positions).map { it.itemId }
+        verified(playlistId, tracks, expected) { client.removeFromPlaylist(playlistId, entries) }
+    }
+
+    override suspend fun movePlaylistEntry(playlistId: String, from: Int, to: Int, tracks: List<MaItem>) {
+        val entry = tracks.getOrNull(from)?.entryId ?: return
+        val expected = PlaylistEdits.moved(tracks, from, to).map { it.itemId }
+        verified(playlistId, tracks, expected) { client.movePlaylistEntry(playlistId, entry, to) }
+    }
+
+    override suspend fun renamePlaylist(playlistId: String, name: String): String {
+        client.renamePlaylist(playlistId, name)
+        return playlistId
+    }
+
+    /**
+     * Run [edit], then check the playlist really reads as [expected]; once, if not,
+     * wait and run it again.
+     *
+     * Emby refreshes a playlist shortly after it is created, and an edit landing
+     * during that refresh is silently undone (seen on 4.10: the third quick edit to
+     * a new playlist, every time). It is re-sent only when the list still reads
+     * exactly as it did [before] — the edit was lost whole, so its entry ids are still
+     * the right ones — and never on a list that changed some other way, where a
+     * second send could land twice. Anything else is left to the screen's own
+     * re-read, which shows what the server holds rather than what was asked for.
+     */
+    private suspend fun verified(
+        playlistId: String,
+        before: List<MaItem>,
+        expected: List<String>,
+        edit: suspend () -> Unit,
+    ) {
+        edit()
+        if (client.playlistTracks(playlistId).map { it.itemId } == expected) return
+        kotlinx.coroutines.delay(RETRY_AFTER_MS)
+        val now = client.playlistTracks(playlistId)
+        if (now.map { it.itemId } == expected) return
+        if (now.map { it.entryId } == before.map { it.entryId } && now.map { it.itemId } == before.map { it.itemId }) edit()
+    }
+
+    private companion object {
+        const val RETRY_AFTER_MS = 2_500L
+    }
 
     /** `InstantMix`, exactly as `JellyfinSource.similarSongs` — see it for why. */
     override suspend fun similarSongs(id: String, count: Int): List<MaItem> =
