@@ -665,16 +665,21 @@ private fun SimilarRow(track: MaSimilarTrack, onPlay: () -> Unit, onQueue: () ->
 fun SleepTimerChip(viewModel: NowPlayingViewModel) {
     val minutes by viewModel.sleepTimerMin.collectAsStateWithLifecycle()
     val remainingMs by viewModel.sleepTimerRemainingMs.collectAsStateWithLifecycle()
+    val endOfTrack by viewModel.sleepAtEndOfTrack.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
     var picking by remember { mutableStateOf(false) }
-    val running = minutes > 0
+    val running = minutes > 0 || endOfTrack
 
     // The countdown lives in the content description only — a visible Text here used
     // to widen this chip's Row whenever the timer started, shifting every chip after
     // it. The active tint already signals "running"; screen readers still get the time.
     IconChip(
         Icons.Default.Bedtime,
-        if (running) "Sleep timer, ${countdown(remainingMs)} left" else "Sleep timer",
+        when {
+            endOfTrack -> "Sleep timer, stopping after this song"
+            running -> "Sleep timer, ${countdown(remainingMs)} left"
+            else -> "Sleep timer"
+        },
         active = running,
     ) { picking = true }
 
@@ -720,8 +725,11 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
                     fontWeight = FontWeight.ExtraBold, fontSize = 16.sp,
                 )
                 Text(
-                    if (running) "${countdown(remainingMs)} left - the music fades out over the last 10 seconds."
-                    else "Fades the music out, then pauses the player.",
+                    when {
+                        endOfTrack -> "Stopping when this song ends."
+                        running -> "${countdown(remainingMs)} left - the music fades out over the last 10 seconds."
+                        else -> "Fades the music out, then pauses the player. Keeps running with the app closed."
+                    },
                     color = TextMuted, fontFamily = AppFont, fontSize = 12.sp, lineHeight = 16.sp,
                 )
                 // Slider: 1–360 minutes (six hours), snapping to 5-minute steps past
@@ -742,6 +750,9 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
                         valueRange = 1f..360f,
                         modifier = Modifier.weight(1f),
                     )
+                }
+                Pill("End of this song", endOfTrack, Modifier.fillMaxWidth()) {
+                    viewModel.sleepAtEndOfTrack(); picking = false
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Pill(if (running) "Cancel timer" else "Off", false, Modifier.weight(1f)) {

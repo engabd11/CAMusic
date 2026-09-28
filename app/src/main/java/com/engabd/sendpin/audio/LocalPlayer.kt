@@ -2059,12 +2059,33 @@ class LocalPlayer(private val context: Context) {
         // A cut rides the player's volume, as it always has; a rise cannot — that
         // volume stops at 1.0 — so it goes to the DSP's limited boost instead.
         localDsp.setBoost(factor.coerceAtLeast(1f))
-        player.volume = (userVolume * factor.coerceAtMost(1f) * fadeFactor * speedGainFactor).coerceIn(0f, 1f)
+        player.volume = (userVolume * factor.coerceAtMost(1f) * fadeFactor * speedGainFactor * sleepFade).coerceIn(0f, 1f)
         // The tail is the same listener's volume on a different track: its own
         // ReplayGain, none of this player's fade. Kept in step here rather than at
         // arm time only, so a volume change mid-mix moves both songs at once.
-        if (deck.active) deck.setGain(userVolume * deckReplayGain * speedGainFactor)
+        if (deck.active) deck.setGain(userVolume * deckReplayGain * speedGainFactor * sleepFade)
     }
+
+    /**
+     * The sleep timer's fade, 1 to 0 — see `service.SleepTimer`. The player's own
+     * gain rather than the phone's media volume, so a timer cancelled halfway
+     * leaves nothing turned down. Main thread, like every other call on the player.
+     */
+    @Volatile
+    private var sleepFade = 1f
+
+    fun setSleepFade(level: Float) {
+        sleepFade = level.coerceIn(0f, 1f)
+        applyGain()
+    }
+
+    /** Stop at the end of the current track rather than going on to the next. */
+    fun setPauseAtEndOfTrack(on: Boolean) {
+        if (remote == null) player.pauseAtEndOfMediaItems = on
+    }
+
+    /** A player that plays its own music (MPD) is being driven, not this one's output. */
+    val playsRemotely: Boolean get() = remote != null
 
     /**
      * The outgoing track's ReplayGain factor, held from the moment the deck was

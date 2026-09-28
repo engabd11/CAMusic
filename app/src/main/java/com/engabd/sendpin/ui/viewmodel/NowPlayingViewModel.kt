@@ -1947,65 +1947,50 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         try { repo.trackPreview(itemId, provider) } catch (_: Exception) { null }
 
     // --- sleep timer -------------------------------------------------------
+    //
+    // The timer itself is the process's (`SendpinApp.sleepTimer`): it has to fire
+    // with this screen gone, and fade the player rather than the phone's volume.
+    // This is only its face on Now Playing.
 
-    private var sleepTimerJob: kotlinx.coroutines.Job? = null
-    private val _sleepTimerMin = MutableStateFlow(0); val sleepTimerMin: StateFlow<Int> = _sleepTimerMin
+    private val sleepTimer get() = (getApplication<Application>() as SendpinApp).sleepTimer
+
+    /** Minutes set on a running timed timer, else 0. */
+    val sleepTimerMin: StateFlow<Int> = (getApplication<Application>() as SendpinApp).sleepTimer.state
+        .map { it.minutes }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     /**
      * Milliseconds left on the running timer, ticking once a second — the chip had
      * no readout at all before, so a timer that was quietly counting down looked
      * exactly like a button that did nothing.
      */
-    private val _sleepTimerRemainingMs = MutableStateFlow(0L)
-    val sleepTimerRemainingMs: StateFlow<Long> = _sleepTimerRemainingMs
+    val sleepTimerRemainingMs: StateFlow<Long> = (getApplication<Application>() as SendpinApp).sleepTimer.state
+        .map { it.remainingMs }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
 
-    /**
-     * Start a sleep timer that fades playback to silence over the last 10 seconds,
-     * then pauses. [minutes] = 0 cancels an existing timer.
-     *
-     * The countdown is driven off a wall-clock deadline rather than accumulated
-     * delays, so a timer stays honest across a doze or a long GC pause.
-     */
+    /** "Stop after this song" is set. */
+    val sleepAtEndOfTrack: StateFlow<Boolean> = (getApplication<Application>() as SendpinApp).sleepTimer.state
+        .map { it.mode == com.engabd.sendpin.service.SleepTimer.Mode.END_OF_TRACK }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    init {
+        viewModelScope.launch { sleepTimer.ended.collect { _toast.tryEmit("Sleep timer ended") } }
+    }
+
+    /** Fade out over the last 10 seconds of [minutes], then pause. 0 cancels. */
     fun setSleepTimer(minutes: Int) {
-        sleepTimerJob?.cancel()
-        if (minutes <= 0) {
-            _sleepTimerMin.value = 0
-            _sleepTimerRemainingMs.value = 0
-            return
-        }
-        _sleepTimerMin.value = minutes
-        val totalMs = minutes * 60_000L
-        _sleepTimerRemainingMs.value = totalMs
-        _toast.tryEmit("Sleeping in ${minutes}m")
+        sleepTimer.start(minutes)
+        if (minutes > 0) _toast.tryEmit("Sleeping in ${minutes}m")
+    }
 
-        sleepTimerJob = viewModelScope.launch {
-            val deadline = System.currentTimeMillis() + totalMs
-            while (true) {
-                val left = deadline - System.currentTimeMillis()
-                _sleepTimerRemainingMs.value = left.coerceAtLeast(0)
-                if (left <= FADE_MS) break
-                delay(minOf(1_000L, left - FADE_MS))
-            }
-            // Fade out over the last stretch by stepping the volume down.
-            val player = targetId()
-            val startVol = state.value.volume
-            val steps = 20
-            for (i in 1..steps) {
-                setVolume(startVol * (1f - i.toFloat() / steps))
-                _sleepTimerRemainingMs.value = (deadline - System.currentTimeMillis()).coerceAtLeast(0)
-                delay(FADE_MS / steps)
-            }
-            if (isLocal) local.pause() else try { repo.pause(player) } catch (_: Exception) {}
-            setVolume(startVol)   // restore so the user's volume isn't stuck at zero
-            _sleepTimerMin.value = 0
-            _sleepTimerRemainingMs.value = 0
-            _toast.tryEmit("Sleep timer ended")
-        }
+    fun sleepAtEndOfTrack() {
+        sleepTimer.endOfTrack()
+        _toast.tryEmit("Stopping after this song")
     }
 
     fun cancelSleepTimer() {
-        val wasRunning = _sleepTimerMin.value > 0
-        setSleepTimer(0)
+        val wasRunning = sleepTimer.state.value.running
+        sleepTimer.cancel()
         if (wasRunning) _toast.tryEmit("Sleep timer cancelled")
     }
 
@@ -2031,9 +2016,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         /** How long "Undo" stays up after a queue edit. */
         const val UNDO_WINDOW_MS = 8_000L
-
-        /** How long the sleep timer spends fading out before it pauses. */
-        const val FADE_MS = 10_000L
 
         /**
          * Matches LibraryViewModel.SCROBBLE_MAX_MS — the same "was this a real play" call.
