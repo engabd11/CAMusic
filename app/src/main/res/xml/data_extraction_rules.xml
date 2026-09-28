@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
+  What leaves the phone in a backup, and what does not.
+
   The settings DataStore ("sendpin_settings") is excluded from both cloud backup and
   device-to-device transfer, deliberately.
 
@@ -14,12 +16,45 @@
   also not restored. That is the honest trade: either the whole file is excluded, or
   credentials ride along undecryptable — Android backup rules work at file
   granularity, and the keys share one file.
+
+  The rest, excluded from cloud backup (audit EF1):
+
+  - speed_zones.sqlite3: 78 MB expanded, and re-expanded from the APK's own asset.
+    Alone it is three times the 25 MB cloud-backup quota, and a backup over quota
+    is not trimmed — it silently stops, for every file. This is what made cloud
+    backup quietly do nothing at all.
+  - downloads/: the audio itself, gigabytes on a real library, fetched again from
+    the server that owns it.
+  - local_media.db (+ -wal, -shm): the downloads index, which points at files that
+    were not backed up, and cover URLs that carry the Subsonic token or the
+    Jellyfin/Plex key in their query string.
+  - exoplayer_internal.db: the player's own cache bookkeeping.
+  - crash_reports.json: debug output, not the user's data.
+  - sendspin_pairing.xml: this install's Sendspin identity and pairing key.
+    Restored onto a second phone, two devices would answer to one player id and
+    one key — the server could no longer tell them apart. Excluded from device
+    transfer as well, for the same reason: a new phone is a new player.
+
+  Device-to-device transfer keeps the downloads and their index: it is local, has
+  no quota, and a new phone that arrives with its offline music is the point of it.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="datastore/sendpin_settings.preferences_pb" />
+        <exclude domain="file" path="speed_zones.sqlite3" />
+        <exclude domain="file" path="downloads/" />
+        <exclude domain="file" path="crash_reports.json" />
+        <exclude domain="database" path="local_media.db" />
+        <exclude domain="database" path="local_media.db-wal" />
+        <exclude domain="database" path="local_media.db-shm" />
+        <exclude domain="database" path="exoplayer_internal.db" />
+        <exclude domain="sharedpref" path="sendspin_pairing.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="datastore/sendpin_settings.preferences_pb" />
+        <exclude domain="file" path="speed_zones.sqlite3" />
+        <exclude domain="file" path="crash_reports.json" />
+        <exclude domain="database" path="exoplayer_internal.db" />
+        <exclude domain="sharedpref" path="sendspin_pairing.xml" />
     </device-transfer>
 </data-extraction-rules>
