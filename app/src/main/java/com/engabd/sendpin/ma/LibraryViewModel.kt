@@ -606,6 +606,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun closeAddToPlaylist() { _addingToPlaylist.value = null }
 
     /**
+     * The active library, if it can store playlists; otherwise an error that says so.
+     *
+     * A library without [Capability.PLAYLIST_WRITE] answers the playlist calls with
+     * the interface's do-nothing defaults, and this screen used to take that silence
+     * for success: "Created", a reload, and no playlist — MPD did exactly this until
+     * it learned to write them. Saying the library can't is the honest answer.
+     */
+    private fun writablePlaylistSource(): MusicSource {
+        val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
+        if (!sc.has(Capability.PLAYLIST_WRITE)) {
+            throw IllegalStateException("${libraryName()} can't store playlists")
+        }
+        return sc
+    }
+
+    /**
      * File [item] into [playlist]. A container resolves to its tracks first, so
      * "add this album to my playlist" means the album's tracks rather than nothing.
      */
@@ -618,7 +634,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (tracks.isEmpty()) { _toast.tryEmit("Nothing to add"); return@launch }
                 when {
                     MusicSources.isLocalProvider(playlist.provider) -> {
-                        val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
+                        val sc = writablePlaylistSource()
                         sc.addToPlaylist(playlist.itemId, tracks.map { it.itemId })
                     }
                     // MA identifies playlist members by uri, not by library id.
@@ -665,7 +681,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     Backend.SUBSONIC -> {
-                        val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
+                        val sc = writablePlaylistSource()
                         sc.createPlaylist(title, tracks.map { it.itemId })
                     }
                 }

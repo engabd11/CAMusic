@@ -39,7 +39,12 @@ class MpdArtFetcher(
         val client = (SendpinApp.instance.musicSource.value as? MpdSource)?.mpd ?: return null
         val id = MpdArt.idFrom(data.toString()) ?: return null
 
-        val file = if (MpdArt.isAlbumId(id)) client.anySongIn(id) else id
+        val artist = MpdArt.artistFrom(id)
+        val file = when {
+            artist != null -> client.anySongBy(artist)
+            MpdArt.isAlbumId(id) -> client.anySongIn(id)
+            else -> id
+        }
         val bytes = file?.let { client.coverArt(it) }
         // Null rather than an exception: a library with no embedded art and no
         // cover files is a normal library, and every one of its items would
