@@ -50,6 +50,7 @@ class SubsonicSource(
             add(Capability.SEARCH)
             add(Capability.GENRES)
             add(Capability.FAVORITES)
+            add(Capability.STAR)
             add(Capability.PLAYLIST_READ)
             add(Capability.PLAYLIST_WRITE)
             add(Capability.DOWNLOAD)

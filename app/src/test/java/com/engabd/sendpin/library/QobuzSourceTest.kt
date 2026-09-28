@@ -27,6 +27,7 @@ class QobuzSourceTest {
         val caps = QobuzSource(QobuzClient()).capabilities
         assertTrue(Capability.SEARCH in caps)
         assertTrue(Capability.FAVORITES in caps)
+        assertTrue(Capability.STAR in caps, "Qobuz implements setStarred, so its heart must show")
         assertTrue(Capability.PLAYLIST_READ in caps)
         assertTrue(Capability.METADATA in caps)
         // Qobuz serves what it serves: there is no original file to download, no

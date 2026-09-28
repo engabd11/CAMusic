@@ -44,6 +44,7 @@ class EmbySource(private val client: EmbyClient) : MusicSource {
         Capability.SEARCH,
         Capability.GENRES,
         Capability.FAVORITES,
+        Capability.STAR,
         Capability.PLAYLIST_READ,
         Capability.PLAYLIST_WRITE,
         Capability.TRACKS,

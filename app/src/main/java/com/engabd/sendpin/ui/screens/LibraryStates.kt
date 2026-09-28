@@ -161,7 +161,7 @@ internal fun ResumeCard(saved: SavedQueue, onResume: () -> Unit, onDismiss: () -
  * with the one action that matters if the server is actually back.
  */
 @Composable
-internal fun OfflineNotice(onRetry: () -> Unit) {
+internal fun OfflineNotice(libraryName: String?, onRetry: () -> Unit) {
     val accent = LocalAccent.current
     Row(
         Modifier
@@ -180,7 +180,10 @@ internal fun OfflineNotice(onRetry: () -> Unit) {
                 fontWeight = FontWeight.Bold, fontSize = 13.sp,
             )
             Text(
-                "Navidrome isn't reachable - playing your downloads.",
+                // Named after the library that is actually out of reach. It said
+                // "Navidrome" for every server — Jellyfin, Plex, Emby, MA — since
+                // the days Navidrome was the only one.
+                "${libraryName?.takeIf { it.isNotBlank() } ?: "Your library"} isn't reachable - playing your downloads.",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }

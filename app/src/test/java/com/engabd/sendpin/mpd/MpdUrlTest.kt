@@ -113,6 +113,7 @@ class MpdUrlTest {
         val source = MpdSource(client("192.168.0.202:6600"))
         assertFalse(source.has(Capability.DOWNLOAD))
         assertFalse(source.has(Capability.FAVORITES))
+        assertFalse(source.has(Capability.STAR))
         assertTrue(source.has(Capability.RICH_FORMAT), "tags carry codec, rate and depth")
     }
 

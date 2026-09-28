@@ -607,7 +607,7 @@ private fun Browse(
         // Running on downloads alone is a working state, not a failure — say so
         // once, at the top, and let the rest of the screen behave normally.
         if (offline) {
-            item(span = { full(gridCols) }) { OfflineNotice { viewModel.connect() } }
+            item(span = { full(gridCols) }) { OfflineNotice(activeConfig?.displayName) { viewModel.connect() } }
         }
         // Something another device left mid-track. An offer, not an interruption:
         // it sits above the shelves and goes away when dismissed or superseded.
@@ -909,7 +909,7 @@ private fun isDownloadable(item: MaItem, capabilities: Set<Capability>) =
 private fun isFavouritable(item: MaItem, capabilities: Set<Capability>) = when {
     isCategory(item) || isDownload(item) -> false
     !selfHosted(item) -> item.mediaType in MaActionTypes
-    Capability.FAVORITES !in capabilities -> false
+    Capability.STAR !in capabilities -> false
     item.provider == SubsonicClient.PROVIDER -> item.mediaType in SubsonicActionTypes
     else -> item.mediaType in MaActionTypes
 }
