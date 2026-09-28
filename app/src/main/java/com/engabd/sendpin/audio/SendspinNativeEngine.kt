@@ -116,6 +116,13 @@ class SendspinNativeEngine(
 
     companion object {
         private const val TAG = "SendspinNative"
+
+        /**
+         * Codec calls in a row that may throw before the decoder is given up on —
+         * about half a second of frames. Far past a race, well short of a silence
+         * anyone would sit through wondering whether it is the song.
+         */
+        private const val CODEC_FAILURES_FATAL = 25
         private const val HEADER_SIZE = 9
         private const val TYPE_PLAYER_AUDIO = 4
 
@@ -326,6 +333,34 @@ class SendspinNativeEngine(
     private val nativeOutput = SendspinNativeOutput()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * Consecutive codec calls that threw. A healthy decoder throws now and then —
+     * a flush racing a queue, a buffer returned late — and one frame skipped is the
+     * right answer to that. A decoder that has *died* (MediaCodec in its error state,
+     * a hardware codec reclaimed by the system) throws on every call after, and
+     * skipping each frame meant silence for the rest of the session with nothing
+     * said and nothing retried: [onFatalError] was declared for exactly this and
+     * never called.
+     */
+    @Volatile private var codecFailures = 0
+    @Volatile private var fatalReported = false
+
+    private fun codecOk() {
+        codecFailures = 0
+    }
+
+    /** Count a codec failure; past [CODEC_FAILURES_FATAL] in a row, ask for a reconnect once. */
+    private fun codecFailed(where: String, e: IllegalStateException) {
+        val fatal = e is MediaCodec.CodecException && !e.isTransient && !e.isRecoverable
+        if (++codecFailures < CODEC_FAILURES_FATAL && !fatal) return
+        if (fatalReported) return
+        fatalReported = true
+        Log.e(TAG, "Decoder is not recovering ($where, $codecFailures in a row): ${e.message}; reconnecting")
+        // Off the codec lock and the timeline thread: the reconnect tears this
+        // engine down, and doing that from inside its own decode loop would deadlock.
+        mainHandler.post { onFatalError() }
+    }
+
     private val frameQueue = PriorityBlockingQueue<EncodedFrame>()
     private val frameQueueBytes = AtomicLong(0)
     private val decoderMarks = ArrayDeque<DecoderMark>()
@@ -479,6 +514,8 @@ class SendspinNativeEngine(
         refreshRoutedDevice()
 
         codec = createCodec(format.codec, format.sampleRate, format.channels, format.bitDepth, format.codecHeader)
+        codecFailures = 0
+        fatalReported = false
         configured = true
         playbackActive = true
         playbackStarted = false
@@ -536,6 +573,8 @@ class SendspinNativeEngine(
             startNativeOutput()
         }
         codec = createCodec(format.codec, format.sampleRate, format.channels, format.bitDepth, format.codecHeader)
+        codecFailures = 0
+        fatalReported = false
     }
 
     override fun submit(frame: ByteArray) {
@@ -1072,8 +1111,10 @@ class SendspinNativeEngine(
                 mc.queueInputBuffer(inputIndex, 0, frame.length, frame.serverTimestampUs, 0)
             } catch (e: IllegalStateException) {
                 Log.w(TAG, "queueCodecInput skipped: ${e.message}")
+                codecFailed("input", e)
                 return@synchronized true
             }
+            codecOk()
             true
         }
     }
@@ -1093,6 +1134,7 @@ class SendspinNativeEngine(
                     mc.dequeueOutputBuffer(info, 0)
                 } catch (e: IllegalStateException) {
                     Log.w(TAG, "drainDecoder stop: ${e.message}")
+                    codecFailed("output", e)
                     return@synchronized false
                 }
                 if (outputIndex < 0) {

@@ -305,7 +305,16 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
                 // likely reason the state isn't CONNECTED yet.
                 val wait = if (attempt == 0) 5_000L else 15_000L
                 try { withTimeout(wait) { state.first { it == State.CONNECTED } } } catch (_: Exception) {
-                    if (attempt++ >= retries) return null
+                    // Thrown, not `return null`. Callers parse a null as an empty
+                    // answer, so a Music Assistant that was simply unreachable used
+                    // to look like a library with nothing in it — the "a failed load
+                    // looks like an empty library" bug this app had fixed everywhere
+                    // else. A transport error is what it is, and every caller already
+                    // handles one: sendRaw throws the same for a timeout.
+                    if (attempt++ >= retries) {
+                        Log.w("MaApi", "command '$command' failed: not connected")
+                        throw MaApiException("Not connected to Music Assistant", -1, isTransport = true)
+                    }
                     continue
                 }
             }
