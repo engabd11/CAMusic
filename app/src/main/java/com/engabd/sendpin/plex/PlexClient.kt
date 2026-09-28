@@ -10,6 +10,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 
@@ -523,7 +524,29 @@ class PlexClient(
             album = o.str("parentTitle").takeIf { mediaType == "track" },
             year = o.int("year"),
             genres = o["Genre"]?.jsonArray.orEmpty().mapNotNull { (it as? JsonObject)?.str("tag") },
+            // 0–10 on Plex, where its own apps draw five stars in half steps; whole
+            // stars here, so a 7 (three and a half) shows as four.
+            userRating = o["userRating"]?.let { runCatching { it.toString().trim('"').toDouble() }.getOrNull() }
+                ?.let { ((it + 1) / 2).toInt().coerceIn(0, 5) }
+                ?.takeIf { it > 0 },
         )
+    }
+
+    /**
+     * Rate an item 1–5 stars (sent as Plex's 0–10), or clear it with 0.
+     *
+     * `PUT /:/rate` is what Plex Web sends. A cleared rating is `rating=-1`.
+     */
+    suspend fun setRating(id: String, stars: Int) {
+        val s = stars.coerceIn(0, 5)
+        val params = mapOf(
+            "key" to id,
+            "identifier" to "com.plexapp.plugins.library",
+            "rating" to if (s == 0) "-1" else (s * 2).toString(),
+        )
+        withContext(Dispatchers.IO) {
+            request(Request.Builder().url(url("/:/rate", params)).put(ByteArray(0).toRequestBody(null)))
+        }
     }
 
     /**

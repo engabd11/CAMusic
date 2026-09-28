@@ -26,6 +26,16 @@ class SubsonicItemParseTest {
     // ─── Songs ───────────────────────────────────────────────────────────────
 
     @Test
+    fun `a song's star rating is read, and zero means unrated`() {
+        val rated = client.songItem(obj("""{"id": "1", "title": "A", "userRating": 4}"""))
+        assertEquals(4, rated.userRating)
+        // Navidrome sends 0 for a cleared rating; that is "no rating", not a zero-star one.
+        val cleared = client.songItem(obj("""{"id": "2", "title": "B", "userRating": 0}"""))
+        assertNull(cleared.userRating)
+        assertNull(client.songItem(obj("""{"id": "3", "title": "C"}""")).userRating)
+    }
+
+    @Test
     fun `a song on the second disc keeps its disc number`() {
         val song = client.songItem(
             obj(
