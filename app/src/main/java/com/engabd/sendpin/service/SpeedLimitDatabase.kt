@@ -32,7 +32,8 @@ import java.util.zip.GZIPInputStream
  *    as little-endian int32 microdegree (lon, lat) pairs
  *  - `meta` — version, source, generation date
  *
- * The database **ships with the app**. `app/src/main/assets/speed_zones.sqlite3.gz`
+ * The database **ships with the app**. `app/src/mobile/assets/speed_zones.sqlite3.gz` (mobile only: TV never
+ * starts the speed monitor, so it no longer carries the 36 MB)
  * is what is committed (in git-lfs), but the asset this code opens is called
  * `speed_zones.sqlite3`, without the suffix, and arrives already expanded:
  * **AGP's asset merger gunzips any `.gz` under `assets/` at build time.** The gzip
