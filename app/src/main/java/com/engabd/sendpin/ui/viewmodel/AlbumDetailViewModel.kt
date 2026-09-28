@@ -351,8 +351,9 @@ class AlbumDetailViewModel(
     // Keyed on the item's own provider, not on a live source read during
     // composition — the source is null for a moment around a reconnect, and a plain
     // getter read at that instant dropped the Download action and never brought it
-    // back. Every library this phone plays can hand over its files.
-    val canDownload: Boolean get() = isLocal
+    // back. Not every library this phone plays can hand over its files, though —
+    // see MusicSources.hostsFiles.
+    val canDownload: Boolean get() = MusicSources.hostsFiles(provider)
 
     /** Every track of this album is already on the phone. */
     val allDownloaded: StateFlow<Boolean> = combine(_tracks, downloads.downloads) { tracks, index ->

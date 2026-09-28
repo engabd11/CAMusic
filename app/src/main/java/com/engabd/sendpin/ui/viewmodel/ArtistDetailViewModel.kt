@@ -619,7 +619,7 @@ class ArtistDetailViewModel(
     /** Only Navidrome hands over the file; MA streams, so there is nothing to keep. */
     // See the same property on [AlbumDetailViewModel] for why this is not a live
     // source read.
-    val canDownload: Boolean get() = isLocal
+    val canDownload: Boolean get() = MusicSources.hostsFiles(provider)
 
     /**
      * Every track by this artist is already on the phone.
