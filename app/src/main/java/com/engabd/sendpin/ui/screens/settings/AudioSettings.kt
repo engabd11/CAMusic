@@ -436,14 +436,28 @@ internal fun LoudnessCard(settings: AppSettings, accent: Color, scope: Coroutine
                 else -> "Play files at their mastered level."
             },
         )
+        if (mode != ReplayGain.OFF) {
+            val untagged by settings.replayGainUntaggedDb.collectAsStateWithLifecycle(initialValue = 0f)
+            CardDivider()
+            FieldLabel("Untagged files")
+            SegmentedToggleRow(
+                labels = ReplayGain.UNTAGGED_CHOICES.map { if (it == 0f) "As is" else "${it.toInt()} dB" },
+                selectedIndex = ReplayGain.UNTAGGED_CHOICES.indexOf(untagged).coerceAtLeast(0),
+            ) { i -> scope.launch { settings.setReplayGainUntaggedDb(ReplayGain.UNTAGGED_CHOICES[i]) } }
+            Note(
+                "Levelled tracks usually come down 6 to 9 dB, so a file with no tag can sound " +
+                    "much louder beside them. This turns those down to match.",
+            )
+        }
         Note(
             "Applies to the library this phone plays, and to downloads.",
             title = "ReplayGain",
             info = "This covers the library this phone plays and your downloads. It is not applied " +
                 "to anything Music Assistant streams, because the server does its own gain, and " +
-                "doing it here as well would double it.\n\nBoosts are capped at " +
-                "+${ReplayGain.MAX_BOOST_DB.toInt()} dB, which is roughly where raising a quiet " +
-                "master starts to clip.\n\nTip: Album keeps the loud and quiet tracks of one " +
+                "doing it here as well would double it.\n\nA quiet master is raised by up to " +
+                "+${ReplayGain.MAX_BOOST_DB.toInt()} dB, through a limiter so it never clips. " +
+                "Bit-perfect and exclusive output skip it, like every other change to the " +
+                "signal.\n\nTip: Album keeps the loud and quiet tracks of one " +
                 "record in the relationship the engineer intended, which is what you want for " +
                 "albums. Track levels everything flat, which suits a shuffled queue of singles.",
         )

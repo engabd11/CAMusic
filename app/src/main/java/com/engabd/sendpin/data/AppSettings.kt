@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -195,6 +196,7 @@ class AppSettings(private val context: Context) {
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val CLOCK_OFFSET_US = stringPreferencesKey("sendspin_clock_offset_us") // persisted clock offset for fast reconnect
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
+        private val REPLAY_GAIN_UNTAGGED = floatPreferencesKey("replay_gain_untagged_db") // 0 = leave untagged alone
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
@@ -1245,6 +1247,11 @@ class AppSettings(private val context: Context) {
     val replayGainMode: Flow<String> = pref { it[REPLAY_GAIN] ?: "album" }
 
     suspend fun setReplayGainMode(mode: String) = context.dataStore.edit { it[REPLAY_GAIN] = mode }
+
+    /** The level for tracks with no ReplayGain tag, in dB. See `ReplayGain.decibels`. */
+    val replayGainUntaggedDb: Flow<Float> = pref { it[REPLAY_GAIN_UNTAGGED] ?: 0f }
+
+    suspend fun setReplayGainUntaggedDb(db: Float) = context.dataStore.edit { it[REPLAY_GAIN_UNTAGGED] = db }
 
     /**
      * Manual trim on synced lyrics, in milliseconds. Positive means the words are
