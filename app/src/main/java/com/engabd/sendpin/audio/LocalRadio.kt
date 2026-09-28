@@ -1,5 +1,6 @@
 package com.engabd.sendpin.audio
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.ma.MaItem
 
@@ -33,19 +34,19 @@ interface RadioSource {
  */
 class LibraryRadioSource(private val source: MusicSource) : RadioSource {
     override suspend fun similarToTrack(trackId: String, count: Int) =
-        runCatching { source.similarSongs(trackId, count) }.getOrDefault(emptyList())
+        runCatchingCancellable { source.similarSongs(trackId, count) }.getOrDefault(emptyList())
 
     override suspend fun similarToAlbum(albumId: String, count: Int) =
-        runCatching { source.similarSongs(albumId, count) }.getOrDefault(emptyList())
+        runCatchingCancellable { source.similarSongs(albumId, count) }.getOrDefault(emptyList())
 
     override suspend fun topSongs(artistName: String, count: Int) =
-        runCatching { source.topSongs(artistName, count) }.getOrDefault(emptyList())
+        runCatchingCancellable { source.topSongs(artistName, count) }.getOrDefault(emptyList())
 
     override suspend fun byGenre(genre: String, count: Int) =
-        runCatching { source.songsByGenre(genre, count) }.getOrDefault(emptyList())
+        runCatchingCancellable { source.songsByGenre(genre, count) }.getOrDefault(emptyList())
 
     override suspend fun random(count: Int) =
-        runCatching { source.randomSongs(count) }.getOrDefault(emptyList())
+        runCatchingCancellable { source.randomSongs(count) }.getOrDefault(emptyList())
 }
 
 /**

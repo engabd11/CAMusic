@@ -1,5 +1,6 @@
 package com.engabd.sendpin.service
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -678,7 +679,7 @@ class Playback(private val app: Context) {
                 if (network != initial || !initialValidated) woke.complete(Unit)
             }
         }
-        val registered = runCatching { cm.registerDefaultNetworkCallback(cb) }.isSuccess
+        val registered = runCatchingCancellable { cm.registerDefaultNetworkCallback(cb) }.isSuccess
         try {
             withTimeoutOrNull(ms) { woke.await() }
         } finally {
@@ -1181,7 +1182,7 @@ class Playback(private val app: Context) {
         }
         // Best-effort by contrast: not every server build has this key, and the
         // advertised format list already decides what we actually receive.
-        runCatching {
+        runCatchingCancellable {
             maRepo.setPreferredSendspinFormat(playerId, if (codec == "auto") "automatic" else codec)
         }
     }
@@ -1485,7 +1486,7 @@ class Playback(private val app: Context) {
         // What the server advertises (`_sendspin-server._tcp`: its port and path) first,
         // as the spec's client-initiated mode has it; the documented default when
         // nothing answers in time.
-        val advertised = runCatching { SendspinServerDiscovery(app).resolve(host) }.getOrNull()
+        val advertised = runCatchingCancellable { SendspinServerDiscovery(app).resolve(host) }.getOrNull()
         val derived = "ws://$host:$SENDSPIN_SERVER_PORT/sendspin"
         val native = listOfNotNull(advertised, derived).distinct().map { SendspinClient.Endpoint(it) }
         val proxyScheme = if (base.startsWith("https://")) "wss://" else "ws://"
@@ -1500,7 +1501,7 @@ class Playback(private val app: Context) {
      * quietly drops to cleartext against a server that could have done better.
      */
     private suspend fun resolveEncryption(base: String): SendspinClient.Encryption {
-        val schema = runCatching {
+        val schema = runCatchingCancellable {
             withTimeoutOrNull(3_000) {
                 withContext(Dispatchers.IO) {
                     val req = okhttp3.Request.Builder().url("$base/info").build()

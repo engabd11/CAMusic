@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.screens.settings
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
@@ -612,7 +613,7 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
  */
 @SuppressLint("MissingPermission")
 private suspend fun bondedDevices(context: android.content.Context): List<Pair<String, String>> =
-    runCatching {
+    runCatchingCancellable {
         val manager = context.getSystemService(android.bluetooth.BluetoothManager::class.java)
         manager?.adapter?.bondedDevices.orEmpty()
             .map { it.address to (it.name ?: it.address) }

@@ -1,5 +1,6 @@
 package com.engabd.sendpin.hue
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.BeatGrid
 import com.engabd.sendpin.audio.LocalTrack
@@ -201,7 +202,7 @@ class ScanFrameSource(
         }?.let { return it.toLocalTrack() }
 
         val source = musicSource() ?: return null
-        val hits = runCatching { source.search("${now.title} ${now.artist}", limit = 10) }
+        val hits = runCatchingCancellable { source.search("${now.title} ${now.artist}", limit = 10) }
             .getOrNull()?.tracks
             ?: return null
         val hit = hits.firstOrNull {

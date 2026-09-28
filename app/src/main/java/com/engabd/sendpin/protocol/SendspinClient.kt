@@ -486,8 +486,24 @@ class SendspinClient(
     private fun openSocket() {
         lastDialAtMs = android.os.SystemClock.elapsedRealtime()
         val ep = endpoints[endpointIndex.coerceIn(0, endpoints.size - 1)]
-        webSocket = httpClient.newWebSocket(Request.Builder().url(ep.url).build(), listener)
+        val gen = ++socketGeneration
+        webSocket = httpClient.newWebSocket(Request.Builder().url(ep.url).build(), listener(gen))
     }
+
+    /**
+     * Which dial is the live one. Each socket's listener is handed the number it was
+     * opened under and ignores itself once a newer dial exists.
+     *
+     * Ported from `MaApiClient`'s stale-socket guard, for the same failure: a socket
+     * this client has already replaced still reports its own `onClosed` or
+     * `onFailure`, and acting on that stopped the *new* session's jobs, queued a
+     * disconnect into its inbox and scheduled one more reconnect — tearing down a
+     * healthy connection to open another. A generation rather than comparing against
+     * [webSocket], because several paths here null that field on purpose and then rely
+     * on their own socket's `onClosed` to reconnect (an unpair, a protocol error), and
+     * because OkHttp can fail a dial before `newWebSocket` has even returned it.
+     */
+    @Volatile private var socketGeneration = 0L
 
     /** Reconnect with capped backoff after an unexpected drop (keeps the MA player available). */
     private fun scheduleReconnect() {
@@ -710,8 +726,11 @@ class SendspinClient(
 
     // --- Socket callbacks ----------------------------------------------------------
 
-    private val listener = object : WebSocketListener() {
+    private fun listener(gen: Long) = object : WebSocketListener() {
+        private val stale get() = gen != socketGeneration
+
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (stale) { webSocket.close(1000, null); return }
             // Bind the field to the just-opened socket: onOpen can race ahead of the
             // `webSocket = newWebSocket(...)` assignment in connect(), which would make
             // the field-based send() a silent no-op. Send the first frame via the param.
@@ -735,6 +754,7 @@ class SendspinClient(
             // exists locally, and measuring it after a parse or a coroutine hop
             // biases the clock offset low, which makes the player play late.
             val rxUs = MonotonicClock.nowUs()
+            if (stale) return
             when (phase) {
                 Phase.AUTH -> onAuthReply(webSocket, text)
                 Phase.INIT -> handshakeStep { onServerInit(webSocket, text) }
@@ -749,6 +769,7 @@ class SendspinClient(
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             val rxUs = MonotonicClock.nowUs()
+            if (stale) return
             if (encryption == Encryption.LEGACY) {
                 offer(Inbound.Audio(bytes.toByteArray()))
                 return
@@ -776,7 +797,8 @@ class SendspinClient(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            dbg("ws CLOSED $code '$reason'")
+            dbg("ws CLOSED $code '$reason'${if (stale) " (superseded, ignored)" else ""}")
+            if (stale) return
             stopSessionJobs()
             // Queued rather than applied here, so the engine is torn down *after* any
             // frames still ahead of it in the inbox rather than in the middle of them.
@@ -790,7 +812,8 @@ class SendspinClient(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            dbg("ws FAILURE (http ${response?.code}): ${t.message}")
+            dbg("ws FAILURE (http ${response?.code}): ${t.message}${if (stale) " (superseded, ignored)" else ""}")
+            if (stale) return
             stopSessionJobs()
             offer(Inbound.Disconnected)
             _state.value = State.ERROR

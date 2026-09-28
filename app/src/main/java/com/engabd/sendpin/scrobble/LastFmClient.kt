@@ -1,5 +1,6 @@
 package com.engabd.sendpin.scrobble
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.data.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -83,7 +84,7 @@ class LastFmClient(
             throw ScrobbleException("Last.fm unreachable: ${e.message}", retry = true)
         }
         resp.use {
-            val obj = runCatching { Json.parseToJsonElement(it.body?.string().orEmpty()).jsonObject }.getOrNull()
+            val obj = runCatchingCancellable { Json.parseToJsonElement(it.body?.string().orEmpty()).jsonObject }.getOrNull()
             val error = obj?.get("error")?.jsonPrimitive?.intOrNull
             if (error != null) {
                 val message = obj["message"]?.jsonPrimitive?.contentOrNull ?: "error $error"

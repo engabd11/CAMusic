@@ -1,5 +1,6 @@
 package com.engabd.sendpin.service
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.data.AppSettings
@@ -86,7 +87,7 @@ class PlaybackReporter(private val app: SendpinApp) {
         val active = settings.activeServer.first()
         val candidates = listOfNotNull(active) + settings.servers.first().filter { it.id != active?.id }
         for (config in candidates) {
-            val source = runCatching { MusicSources.create(app, config) }.getOrNull() ?: continue
+            val source = runCatchingCancellable { MusicSources.create(app, config) }.getOrNull() ?: continue
             if (source.providerId == provider) {
                 built[provider] = source
                 return source
@@ -132,7 +133,7 @@ class PlaybackReporter(private val app: SendpinApp) {
             // anchor a follower of the session gets, and by the time it is sent a
             // gapless transition is already a few hundred milliseconds in.
             val startPosition = compensated(player.livePositionMs(), playing = player.playing.value)
-            timed { runCatching { sink.scrobble(songId, completed = false, positionMs = startPosition) } }
+            timed { runCatchingCancellable { sink.scrobble(songId, completed = false, positionMs = startPosition) } }
             reportedSession = sink to songId
             reportedPositionMs = 0L
             reportedDurationMs = player.durationMs.value
@@ -210,7 +211,7 @@ class PlaybackReporter(private val app: SendpinApp) {
                 reportedDurationMs = player.durationMs.value
                 lastSendAt = android.os.SystemClock.elapsedRealtime()
                 timed {
-                    runCatching {
+                    runCatchingCancellable {
                         sink.reportProgress(
                             id = id,
                             positionMs = compensated(live, playing),
@@ -254,7 +255,7 @@ class PlaybackReporter(private val app: SendpinApp) {
         val (sink, id) = reportedSession ?: return
         if (onlyId != null && onlyId != id) return
         reportedSession = null
-        runCatching { sink.reportStopped(id, reportedPositionMs, reportedDurationMs) }
+        runCatchingCancellable { sink.reportStopped(id, reportedPositionMs, reportedDurationMs) }
     }
 
     /**
@@ -319,7 +320,7 @@ class PlaybackReporter(private val app: SendpinApp) {
     }
 
     private suspend fun recordHistory(track: LocalTrack) {
-        runCatching {
+        runCatchingCancellable {
             val scan = if (settings.listeningDna.first()) app.trackScans.peek(track) else null
             val source = if (track.localPath != null && track.streamUrl == null) "Offline"
             else settings.activeServer.first()?.displayName ?: "This phone"
@@ -364,7 +365,7 @@ class PlaybackReporter(private val app: SendpinApp) {
                 val ids = player.queue.value.filter { it.scrobbleProvider == track.scrobbleProvider }
                     .mapNotNull { it.scrobbleId }
                 if (ids.isEmpty()) return@collect
-                runCatching { sink.saveQueue(songIds = ids, currentId = track.scrobbleId, positionMs = player.positionMs.value) }
+                runCatchingCancellable { sink.saveQueue(songIds = ids, currentId = track.scrobbleId, positionMs = player.positionMs.value) }
             }
     }
 

@@ -1,5 +1,6 @@
 package com.engabd.sendpin.hue
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.BeatGrid
 import com.engabd.sendpin.audio.LocalPlayer
@@ -282,8 +283,8 @@ class MpdScanFrameSource(
         // lights never came up. A resolution with nothing fetchable behind it is
         // worse than none, because "no match" is at least true and the Light Sync
         // screen says it out loud.
-        for (source in runCatching { libraries() }.getOrDefault(emptyList())) {
-            val hits = runCatching { source.search("${track.title} ${track.artist}", limit = 10) }
+        for (source in runCatchingCancellable { libraries() }.getOrDefault(emptyList())) {
+            val hits = runCatchingCancellable { source.search("${track.title} ${track.artist}", limit = 10) }
                 .getOrNull()?.tracks
                 ?: continue
             val hit = hits.firstOrNull {

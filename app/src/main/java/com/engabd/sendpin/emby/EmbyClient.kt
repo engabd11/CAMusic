@@ -1,5 +1,6 @@
 package com.engabd.sendpin.emby
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.library.fetchAllPages
 import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.ma.MaAudioFormat
@@ -467,7 +468,7 @@ class EmbyClient(
 
     suspend fun favorites(): MaSearchResults {
         val all = fetchAllPages(PAGE) { offset, limit -> items(filters = "IsFavorite", limit = limit, offset = offset) }
-        val favouritePlaylists = runCatching {
+        val favouritePlaylists = runCatchingCancellable {
             items(types = "Playlist", filters = "IsFavorite", ignoreLibrary = true)
         }.getOrDefault(emptyList())
         return MaSearchResults(
@@ -617,7 +618,7 @@ class EmbyClient(
         reportPlayback(id, completed = true, positionMs = positionMs)
         countedId = null
         if (counted && (durationMs <= 0 || positionMs < durationMs * PLAYED_MARK)) {
-            runCatching { post("/Users/$userId/PlayedItems/$id") }
+            runCatchingCancellable { post("/Users/$userId/PlayedItems/$id") }
         }
     }
 

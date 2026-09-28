@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.viewmodel
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -244,7 +245,7 @@ class ArtistDetailViewModel(
      * should still show a discography, so this never throws.
      */
     private suspend fun loadTopTracksInternal(): Load<List<MaItem>> {
-        val tracks = runCatching {
+        val tracks = runCatchingCancellable {
             if (isLocal) {
                 // Keyed by artist *name* rather than id — the one Subsonic endpoint
                 // that is, and the shape the interface kept.
@@ -275,7 +276,7 @@ class ArtistDetailViewModel(
      */
     private suspend fun navidromeBiographyFor(artistName: String): String? {
         if (artistName.isBlank()) return null
-        return runCatching {
+        return runCatchingCancellable {
             val url = settings.navUrl.first().trim()
             if (url.isBlank()) return null
             // Deliberately a Navidrome client and not [source]: the point of this

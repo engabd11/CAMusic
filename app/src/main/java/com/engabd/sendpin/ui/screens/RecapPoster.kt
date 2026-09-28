@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.screens
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -207,4 +208,4 @@ fun shareRecap(context: Context, bitmap: Bitmap): String? = try {
 
 /** The recorded layer as a bitmap, or null if it has not been drawn yet. */
 suspend fun GraphicsLayer.toShareableBitmap(): Bitmap? =
-    runCatching { toImageBitmap().asAndroidBitmap() }.getOrNull()
+    runCatchingCancellable { toImageBitmap().asAndroidBitmap() }.getOrNull()

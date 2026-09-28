@@ -1,5 +1,6 @@
 package com.engabd.sendpin.audio
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -146,7 +147,7 @@ object TrackScanner {
             // decode stops early and its frame count then describes the analysis, not
             // the track. See [TrackScan.analysedS]. Read up front so progress can be
             // reported against it.
-            val fullDurationUs = runCatching {
+            val fullDurationUs = runCatchingCancellable {
                 if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
                     inputFormat.getLong(MediaFormat.KEY_DURATION)
                 } else 0L

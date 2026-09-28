@@ -1,5 +1,6 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import com.engabd.sendpin.data.AppSettings
 import kotlinx.coroutines.Dispatchers
@@ -68,7 +69,7 @@ class CompanionLibraries(
         val out = LinkedHashMap<String, MusicSource>()
         active()?.takeIf { canServeFiles(it) }?.let { out[keyOf(it)] = it }
 
-        val configs = runCatching { settings.servers.first() }.getOrDefault(emptyList())
+        val configs = runCatchingCancellable { settings.servers.first() }.getOrDefault(emptyList())
         for (config in configs) {
             if (!config.kind.supported || config.kind in CANNOT_SERVE) continue
             if (config.id in writtenOff) continue
@@ -91,7 +92,7 @@ class CompanionLibraries(
         // `Dispatchers.Default`, whose threads are sized for CPU work rather than
         // for sitting on a socket.
         val made = withContext(Dispatchers.IO) {
-            runCatching {
+            runCatchingCancellable {
                 MusicSources.create(context, config)?.also { MusicSources.prepare(it, config) }
             }.getOrNull()
         }

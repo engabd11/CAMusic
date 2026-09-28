@@ -1,5 +1,6 @@
 package com.engabd.sendpin.scrobble
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.BuildConfig
 import com.engabd.sendpin.data.Http
 import kotlinx.coroutines.Dispatchers
@@ -50,7 +51,7 @@ class ListenBrainzClient(
         val req = Request.Builder().url("$base/1/validate-token").header("Authorization", "Token $token").get().build()
         http.newCall(req).execute().use { resp ->
             val body = resp.body?.string().orEmpty()
-            val obj = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@use null
+            val obj = runCatchingCancellable { Json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return@use null
             if (obj["valid"]?.jsonPrimitive?.booleanOrNull == true) obj["user_name"]?.jsonPrimitive?.contentOrNull else null
         }
     }

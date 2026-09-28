@@ -1,5 +1,6 @@
 package com.engabd.sendpin.hue
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -74,14 +75,14 @@ class LightSyncHealer(
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) { kicks.trySend("a network appeared") }
         }
-        runCatching { cm?.registerDefaultNetworkCallback(callback) }
+        runCatchingCancellable { cm?.registerDefaultNetworkCallback(callback) }
 
         // The bridge announcing itself, possibly somewhere new.
         val discovery = HueBridgeClient(context)
         launch {
             val pairedId = settings.hueBridgeId.first()
             if (pairedId.isBlank()) return@launch   // paired by address only: nothing to match on
-            runCatching { discovery.startDiscovery() }
+            runCatchingCancellable { discovery.startDiscovery() }
             discovery.discovered.collect { bridges ->
                 val known = settings.hueBridgeIp.first()
                 when (val move = bridgeMove(pairedId, known, bridges.map { it.bridgeId to it.host })) {
