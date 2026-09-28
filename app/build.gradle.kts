@@ -339,6 +339,9 @@ dependencies {
     // step away from any future edit, and 1.11.1 is the release that fixes it.
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.session)
+    // Streams go through the app's OkHttp client, so they get its LAN-only
+    // cleartext guard on every redirect hop (see Http.stream).
+    implementation(libs.media3.datasource.okhttp)
 
     // The embedded Spotify client (experimental direct Spotify source). The
     // coordinates are the ones librespot-android proves work on Android: the

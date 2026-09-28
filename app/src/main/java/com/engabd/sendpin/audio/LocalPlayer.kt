@@ -15,7 +15,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -886,11 +886,10 @@ class LocalPlayer(private val context: Context) {
         // static file, and a reverse-proxied server routinely redirects http↔https on
         // the way. Refusing that is an immediate load error, which the error handler
         // turns into a skip, which becomes a whole album flicking past.
-        val httpFactory = DefaultHttpDataSource.Factory()
+        // The app's own client (see Http.stream): redirects are followed, including
+        // http <-> https, but never a downgrade to cleartext on a public host.
+        val httpFactory = OkHttpDataSource.Factory(com.engabd.sendpin.data.Http.stream())
             .setUserAgent(USER_AGENT)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(30_000)
         val mediaSourceFactory = DefaultMediaSourceFactory(
             // StreamSchemeResolver rewrites only uris whose scheme a streaming source
             // registered (see [StreamSchemes]); https/file/content pass through

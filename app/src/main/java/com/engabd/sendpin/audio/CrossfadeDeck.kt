@@ -11,7 +11,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
@@ -387,11 +387,10 @@ class CrossfadeDeck(
                 /* bufferForPlaybackAfterRebufferMs = */ 500,
             )
             .build()
-        val httpFactory = DefaultHttpDataSource.Factory()
+        // The app's own client (see Http.stream): redirects are followed, including
+        // http <-> https, but never a downgrade to cleartext on a public host.
+        val httpFactory = OkHttpDataSource.Factory(com.engabd.sendpin.data.Http.stream())
             .setUserAgent(USER_AGENT)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(30_000)
         return ExoPlayer.Builder(context)
             .setLoadControl(loadControl)
             .setMediaSourceFactory(
