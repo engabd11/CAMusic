@@ -106,6 +106,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val playbackOwner: PlaybackOwner by lazy { PlaybackOwner(localPlayer, playback) }
 
+    /** The sleep timer — process-scoped so it fires with no screen open. See the class. */
+    val sleepTimer: com.engabd.sendpin.service.SleepTimer by lazy { com.engabd.sendpin.service.SleepTimer(this) }
+
     /**
      * What's playing right now, as one snapshot spanning [localPlayer], the Sendspin
      * path, and a remote MA speaker — the display-side counterpart to [playbackOwner].
