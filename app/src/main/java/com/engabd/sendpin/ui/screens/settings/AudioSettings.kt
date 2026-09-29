@@ -471,6 +471,7 @@ internal fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Cor
     val fade by settings.navFadeSeconds.collectAsStateWithLifecycle(initialValue = 0)
     val beatMatched by settings.beatMatchedCrossfade.collectAsStateWithLifecycle(initialValue = false)
     val overlap by settings.navCrossfadeOverlap.collectAsStateWithLifecycle(initialValue = false)
+    val spread by settings.spreadShuffle.collectAsStateWithLifecycle(initialValue = true)
 
     SettingsCard(
         title = "Between tracks",
@@ -538,6 +539,12 @@ internal fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Cor
                     "of your queue.",
             )
         }
+        ToggleRow(
+            title = "Spread out artists when shuffling",
+            subtitle = "No artist twice in a row, and their albums take turns",
+            checked = spread,
+            accent = accent,
+        ) { on -> scope.launch { settings.setSpreadShuffle(on) } }
         Note(
             "What happens when the queue runs out is on Now Playing.",
             title = "End of the queue",

@@ -508,6 +508,7 @@ class LocalPlayer(private val context: Context) {
         scope.launch { settings.beatMatchedCrossfade.collect { beatMatchedFade = it } }
         scope.launch { settings.navCrossfadeOverlap.collect { overlapFades = it } }
         scope.launch { settings.djRadioSmartFade.collect { djSmartFade = it } }
+        scope.launch { settings.spreadShuffle.collect { spreadShuffle = it } }
         scope.launch {
             settings.replayGainMode.collect { mode ->
                 replayGainMode = mode
@@ -1298,6 +1299,7 @@ class LocalPlayer(private val context: Context) {
         // The whole list goes to ExoPlayer at once — that is what lets it buffer
         // across a track boundary, and so what makes the transition gapless.
         player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
+        if (player.shuffleModeEnabled) applySpreadOrder()
         player.prepare()
         startOutput()
     }
@@ -1913,7 +1915,31 @@ class LocalPlayer(private val context: Context) {
         }
         // ExoPlayer shuffles the *play order* and leaves the list alone, which is
         // what the queue UI wants: the list stays as the user built it.
+        if (on) applySpreadOrder()
         player.shuffleModeEnabled = on
+    }
+
+    /**
+     * Spread artists and albums through the shuffle — see [SpreadShuffle]. On by
+     * default; off leaves ExoPlayer's own uniform shuffle.
+     */
+    @Volatile
+    var spreadShuffle: Boolean = true
+
+    /**
+     * Hand ExoPlayer a spread play order for the queue as it stands, starting from
+     * the playing track. Called when shuffle is switched on and when a new queue
+     * arrives with it on; not on every insert, where ExoPlayer's own placement of
+     * the new tracks is what keeps the rest of the order from jumping about.
+     */
+    private fun applySpreadOrder() {
+        if (!spreadShuffle || remote != null) return
+        val q = _queue.value
+        if (q.size < 3 || player.mediaItemCount != q.size) return
+        val order = SpreadShuffle.order(q.map { it.artist to it.album }, player.currentMediaItemIndex)
+        player.setShuffleOrder(
+            androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder(order, System.nanoTime()),
+        )
     }
 
     fun cycleRepeat() = setRepeatMode(

@@ -193,6 +193,7 @@ class AppSettings(private val context: Context) {
         private val LASTFM_API_ROOT = stringPreferencesKey("lastfm_api_root")
         private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
         private val NAV_CROSSFADE_OVERLAP = booleanPreferencesKey("nav_crossfade_overlap")
+        private val SPREAD_SHUFFLE = booleanPreferencesKey("spread_shuffle")
         private val BEAT_MATCHED_CROSSFADE = booleanPreferencesKey("beat_matched_crossfade") // time the fade to land on a beat
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val CLOCK_OFFSET_US = stringPreferencesKey("sendspin_clock_offset_us") // persisted clock offset for fast reconnect
@@ -1385,6 +1386,11 @@ class AppSettings(private val context: Context) {
     val navCrossfadeOverlap: Flow<Boolean> = pref { it[NAV_CROSSFADE_OVERLAP] ?: false }
 
     suspend fun setNavCrossfadeOverlap(on: Boolean) = context.dataStore.edit { it[NAV_CROSSFADE_OVERLAP] = on }
+
+    /** Shuffle spreads each artist and album across the queue — see `SpreadShuffle`. */
+    val spreadShuffle: Flow<Boolean> = pref { it[SPREAD_SHUFFLE] ?: true }
+
+    suspend fun setSpreadShuffle(on: Boolean) = context.dataStore.edit { it[SPREAD_SHUFFLE] = on }
 
     suspend fun setNavFadeSeconds(value: Int) = context.dataStore.edit {
         it[NAV_FADE_SECONDS] = value.coerceIn(0, 12).toString()
