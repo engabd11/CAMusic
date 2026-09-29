@@ -499,7 +499,10 @@ private fun LazyListScope.sectionItems(
                 DownloadsSection(libraryViewModel, settings, accent, scope, onOpenDownloads)
             }
             SYS_BACKUP_ROUTE -> card("sys_backup") { BackupSection(settings, accent, scope) }
-            SYS_DIAGNOSTICS_ROUTE -> card("sys_diagnostics") { DiagnosticsCard(accent) }
+            SYS_DIAGNOSTICS_ROUTE -> {
+                card("sys_diagnostics") { DiagnosticsCard(accent) }
+                card("sys_usb_dac") { UsbDacReportCard(accent) }
+            }
             // Statistics used to be the second card here. It is a top-level row on
             // the index now — see [settingsIndex] — so this page is the one subject
             // its name always claimed.
