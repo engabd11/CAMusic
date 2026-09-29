@@ -94,6 +94,23 @@ class UsbAudioSession private constructor(
 ) : AutoCloseable {
 
     private val claimed = mutableListOf<UsbInterface>()
+
+    /** The kernel's name for the device, to match against attach/detach broadcasts. */
+    val deviceName: String get() = device.deviceName
+
+    /** Set when the DAC was unplugged: nothing more will reach it. */
+    @Volatile
+    var lost = false
+        private set
+
+    fun markLost() { lost = true }
+
+    /**
+     * Whether the stream has died under us — the transfers stopped without being asked
+     * to (an unplug the broadcast has not reported yet, or a kernel error).
+     */
+    val streamDied: Boolean
+        get() = lost || (stream != 0L && !suspended && stats()?.running == false)
     private var stream = 0L
     var confirmedRate: Int? = null
         private set
@@ -260,6 +277,7 @@ class UsbAudioSession private constructor(
     }
 
     private fun releaseAll() {
+        lastReleaseAtMs = android.os.SystemClock.elapsedRealtime()
         format?.let { alt -> iface(alt.interfaceNumber, 0)?.let { conn.setInterface(it) } }
         val fd = conn.fileDescriptor
         for (i in claimed.reversed()) {
@@ -295,6 +313,14 @@ class UsbAudioSession private constructor(
          */
         @Volatile
         var current: UsbAudioSession? = null
+            private set
+
+        /**
+         * When CAMusic last handed a DAC back to Android. Android sees that as the DAC
+         * arriving; the connect notice uses this to tell it from a real plug-in.
+         */
+        @Volatile
+        var lastReleaseAtMs = 0L
             private set
 
         /** Open [device], which must already have USB permission. Null if it is not a USB audio device. */

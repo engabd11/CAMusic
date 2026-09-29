@@ -34,6 +34,17 @@ object UsbDacProbe {
     private const val REQ_RANGE = 0x02
     private const val CS_SAM_FREQ_CONTROL = 0x01
 
+    /**
+     * A permission request whose answer nobody waits for — for asking on plug-in, where
+     * the grant only has to be in place by the next track.
+     */
+    fun permissionIntent(context: Context): PendingIntent {
+        val app = context.applicationContext
+        return PendingIntent.getBroadcast(
+            app, 1, Intent(ACTION_PERMISSION).setPackage(app.packageName), PendingIntent.FLAG_MUTABLE,
+        )
+    }
+
     /** Attached devices with an audio-class interface. */
     fun audioDevices(context: Context): List<UsbDevice> {
         val usb = context.getSystemService(UsbManager::class.java) ?: return emptyList()

@@ -143,6 +143,8 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * is: the connect it exists to notice can happen before any screen opens.
      */
     val usbDacMonitor: UsbDacMonitor by lazy { UsbDacMonitor(this) }
+    /** USB bit-perfect's plug/unplug handling — see [com.engabd.sendpin.usb.UsbDacWatcher]. */
+    val usbDacWatcher by lazy { com.engabd.sendpin.usb.UsbDacWatcher(this) }
 
     /**
      * Pauses playback for a ringing/answered call. Opt-in — see
@@ -598,6 +600,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // screen opens.
             drivingMode
             usbDacMonitor.start()
+            usbDacWatcher.start()
+            appScope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { usbDacWatcher.recoverOrphans() } }
+            appScope.launch {
+                AppSettings(this@SendpinApp).usbBitperfect.collect { usbDacWatcher.bitperfectSelected = it }
+            }
+            // The DAC CAMusic was playing through was unplugged: pause, as for unplugged
+            // headphones, rather than play on into nothing (or out of the speaker).
+            appScope.launch {
+                usbDacWatcher.lost.collect { if (localPlayer.playing.value) localPlayer.pause() }
+            }
             // Opt-in, unlike the two above: only starts if a previous run already had
             // both the setting on and the permission granted. `CallPauseObserver.start`
             // itself no-ops without the permission, so this is safe to call blind — and
