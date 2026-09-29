@@ -10,6 +10,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.AuxEffectInfo
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.audio.AudioSink
@@ -75,14 +76,23 @@ class AaudioBitperfectOutput(
             }
         }
 
-        /** PCM encoding this sink can hand straight to AAudio. */
-        fun supportsFormat(format: Format): Boolean = when (format.pcmEncoding) {
-            C.ENCODING_PCM_16BIT,
-            C.ENCODING_PCM_24BIT,
-            C.ENCODING_PCM_32BIT,
-            C.ENCODING_PCM_FLOAT -> true
-            else -> false
-        }
+        /**
+         * PCM encoding this sink can hand straight to AAudio.
+         *
+         * Decoded PCM only. A compressed format can carry a pcmEncoding too — media3's
+         * FLAC extractor fills it in from the stream's bit depth — and answering yes to
+         * `audio/flac` told MediaCodecAudioRenderer this sink played FLAC natively, so
+         * it skipped the decoder and handed over compressed frames, which came out of
+         * the DAC as full-scale noise.
+         */
+        fun supportsFormat(format: Format): Boolean =
+            format.sampleMimeType == MimeTypes.AUDIO_RAW && when (format.pcmEncoding) {
+                C.ENCODING_PCM_16BIT,
+                C.ENCODING_PCM_24BIT,
+                C.ENCODING_PCM_32BIT,
+                C.ENCODING_PCM_FLOAT -> true
+                else -> false
+            }
 
         /** Bytes per sample for a supported encoding. */
         private fun bytesPerSample(encoding: Int): Int = when (encoding) {
@@ -124,12 +134,25 @@ class AaudioBitperfectOutput(
 
     private var streamPtr: Long = 0L
     private var framesWrittenTotal = 0L
+
+    /**
+     * Media time of the first frame written since configure() or flush(), which is what
+     * the position is counted from. ExoPlayer reads the sink's position on the track's
+     * own timeline — renderer offset included, as DefaultAudioSink reports it — and this
+     * sink used to report time since the stream opened, from zero. That put the
+     * player's clock nowhere near the audio it had handed over, and ExoPlayer paused
+     * the stream about 100 ms after every start: Direct to DAC never played a note.
+     */
+    private var startMediaTimeUs = C.TIME_UNSET
     private var endOfStreamRequested = false
 
     /** The device the open stream was built for; 0 is "wherever Android routes to". */
     private var openedDeviceId = 0
 
     private var scratch = ByteArray(0)
+
+    /** Bytes of a partial frame held at the front of [scratch] for the next block. */
+    private var carryBytes = 0
     private var firstWriteLogged = false
 
     override fun setListener(listener: AudioSink.Listener) {
@@ -163,6 +186,8 @@ class AaudioBitperfectOutput(
         pcmEncoding = format.pcmEncoding
         bytesPerFrame = channelCount * bytesPerSample(pcmEncoding)
         framesWrittenTotal = 0L
+        startMediaTimeUs = C.TIME_UNSET
+        carryBytes = 0
         endOfStreamRequested = false
         firstWriteLogged = false
         configuredFormat = format
@@ -179,6 +204,7 @@ class AaudioBitperfectOutput(
         }
         streamPtr = opened
         openedDeviceId = preferred
+        nativeSetVolume(opened, volume)
         Log.i(TAG, "configured ${sampleRate}Hz/${channelCount}ch/enc=${pcmEncoding} device=$preferred")
     }
 
@@ -191,21 +217,29 @@ class AaudioBitperfectOutput(
         if (remaining <= 0) return true
         val p = streamPtr
         if (p == 0L) return false
+        // Backpressure. The native queue takes whatever it is given, so without this
+        // ExoPlayer would decode the whole track into it as fast as the codec can go.
+        if (nativeBufferedFrames(p) * 1_000_000L >= RING_BUFFER_US * sampleRate) return false
+        if (startMediaTimeUs == C.TIME_UNSET) startMediaTimeUs = presentationTimeUs
 
-        if (scratch.size < remaining) scratch = ByteArray(remaining)
-        val startPosition = buffer.position()
-        buffer.get(scratch, 0, remaining)
+        // Blocks from the decoder are not always a whole number of frames: ExoPlayer
+        // handed this sink 958 bytes of 16-bit stereo, 239 frames and 2 bytes over.
+        // Writing only the whole frames and reporting the rest unconsumed left a
+        // 2-byte tail that could never make a frame on its own, so ExoPlayer offered
+        // it forever and the track sat at 0:00. Take every byte instead, and carry a
+        // partial frame over to the front of the next block, so the byte stream stays whole.
+        val total = carryBytes + remaining
+        if (scratch.size < total) scratch = scratch.copyOf(total)
+        buffer.get(scratch, carryBytes, remaining)
+        val whole = total - total % bytesPerFrame
 
         lead.mediaTimeUs = presentationTimeUs
-        val writtenFrames = nativeWrite(p, scratch, 0, remaining)
-        val bytesAccepted = (writtenFrames * bytesPerFrame).coerceIn(0L, remaining.toLong()).toInt()
-
-        if (bytesAccepted < remaining) {
-            buffer.position(startPosition + bytesAccepted)
-        }
+        val writtenFrames = if (whole > 0) nativeWrite(p, scratch, 0, whole) else 0L
+        carryBytes = total - whole
+        if (carryBytes > 0) System.arraycopy(scratch, whole, scratch, 0, carryBytes)
         framesWrittenTotal += writtenFrames
         logFirstWrite(writtenFrames, remaining)
-        return bytesAccepted >= remaining
+        return true
     }
 
     private fun logFirstWrite(frames: Long, offeredBytes: Int) {
@@ -218,17 +252,28 @@ class AaudioBitperfectOutput(
         )
     }
 
+    // Every native call below is skipped while no stream is open. ExoPlayer calls
+    // flush(), setVolume() and friends before the first configure(), and until then
+    // the native library may not even be loaded: that is the only thing that ever
+    // touches [libraryLoaded], and calling into it first threw UnsatisfiedLinkError
+    // on the playback thread. A non-zero [streamPtr] implies the library is loaded.
+
     override fun play() {
-        nativeResume(streamPtr)
+        val p = streamPtr
+        if (p != 0L) nativeResume(p)
     }
 
     override fun pause() {
-        nativePause(streamPtr)
+        val p = streamPtr
+        if (p != 0L) nativePause(p)
     }
 
     override fun flush() {
-        nativeFlush(streamPtr)
+        val p = streamPtr
+        if (p != 0L) nativeFlush(p)
         framesWrittenTotal = 0L
+        startMediaTimeUs = C.TIME_UNSET
+        carryBytes = 0
         endOfStreamRequested = false
         lead.leadUs = AudioLead.UNKNOWN
         lead.mediaTimeUs = AudioLead.UNKNOWN
@@ -238,6 +283,8 @@ class AaudioBitperfectOutput(
         closeStream()
         configuredFormat = null
         framesWrittenTotal = 0L
+        startMediaTimeUs = C.TIME_UNSET
+        carryBytes = 0
         endOfStreamRequested = false
         lead.leadUs = AudioLead.UNKNOWN
         lead.mediaTimeUs = AudioLead.UNKNOWN
@@ -245,20 +292,28 @@ class AaudioBitperfectOutput(
 
     override fun playToEndOfStream() {
         endOfStreamRequested = true
+        val p = streamPtr
+        if (p != 0L) nativeEndOfStream(p)
     }
 
     override fun isEnded(): Boolean =
-        endOfStreamRequested && nativeBufferedFrames(streamPtr) <= 0
+        endOfStreamRequested && bufferedFrames() <= 0
 
     override fun hasPendingData(): Boolean =
-        nativeBufferedFrames(streamPtr) > 0
+        bufferedFrames() > 0
+
+    private fun bufferedFrames(): Long {
+        val p = streamPtr
+        return if (p == 0L) 0L else nativeBufferedFrames(p)
+    }
 
     override fun getCurrentPositionUs(sourceEnded: Boolean): Long {
         val p = streamPtr
-        if (p == 0L || sampleRate <= 0) return 0L
+        val start = startMediaTimeUs
+        if (p == 0L || sampleRate <= 0 || start == C.TIME_UNSET) return AudioSink.CURRENT_POSITION_NOT_SET
         val buffered = nativeBufferedFrames(p)
         val played = (framesWrittenTotal - buffered).coerceAtLeast(0)
-        return played * 1_000_000L / sampleRate
+        return start + played * 1_000_000L / sampleRate
     }
 
     override fun getPlaybackParameters(): PlaybackParameters = playbackParameters
@@ -328,8 +383,13 @@ class AaudioBitperfectOutput(
     override fun enableTunnelingV21() { /* No tunneling on AAudio direct path. */ }
     override fun disableTunneling() { /* No tunneling on AAudio direct path. */ }
 
+    /** Kept so a volume set before the stream opens, or across a reopen, still applies. */
+    private var volume = 1f
+
     override fun setVolume(volume: Float) {
-        nativeSetVolume(streamPtr, volume)
+        this.volume = volume
+        val p = streamPtr
+        if (p != 0L) nativeSetVolume(p, volume)
     }
 
     override fun handleDiscontinuity() {
@@ -368,6 +428,7 @@ class AaudioBitperfectOutput(
     private external fun nativeClose(ptr: Long)
     private external fun nativeWrite(ptr: Long, pcm: ByteArray, offset: Int, length: Int): Long
     private external fun nativeFlush(ptr: Long)
+    private external fun nativeEndOfStream(ptr: Long)
     private external fun nativePause(ptr: Long)
     private external fun nativeResume(ptr: Long)
     private external fun nativeBufferedFrames(ptr: Long): Long

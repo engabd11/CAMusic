@@ -601,6 +601,10 @@ playing. `LocalDsp` sits ahead of the tap so the show reacts to what you actuall
 
 ## Recent releases
 
+**v0.14.1**: **Direct to DAC** plays for the first time on real hardware (it crashed, stalled or
+paused itself before), and 16-bit FLAC no longer plays as noise in High resolution, Pure and
+Direct to DAC on Samsung phones, whose FLAC decoder mislabels its output.
+
 **v0.14.0**: a full audit and the work that came out of it, and the first release signed
 with the dedicated release key:
 **lyrics** from embedded tags, sidecar `.lrc` and optionally LRCLIB, with tap-to-seek and a

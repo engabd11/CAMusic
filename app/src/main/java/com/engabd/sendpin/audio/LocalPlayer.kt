@@ -877,6 +877,8 @@ class LocalPlayer(private val context: Context) {
             exclusive = exclusive,
             aaudioBitperfect = useAaudioBitperfect,
         ).setEnableAudioFloatOutput(bitPerfect || exclusive) as TapRenderersFactory
+        // A vendor decoder can claim float and deliver 16-bit; see FloatSafeCodecSelector.
+        if (bitPerfect || exclusive) renderers.setMediaCodecSelector(FloatSafeCodecSelector)
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
         // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is
