@@ -261,6 +261,9 @@ internal fun SafetyCard(settings: AppSettings, accent: Color, scope: CoroutineSc
 @Composable
 private fun PauseForCallsRow(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     val context = LocalContext.current
+    // Nothing to pause *for* on a device that takes no calls - a car's head unit or a
+    // Wi-Fi tablet - so the row is not offered rather than offered and inert.
+    if (!com.engabd.sendpin.service.CallPauseObserver.available(context)) return
     val enabled by settings.pauseForCalls.collectAsState(initial = false)
     // Re-read on every recomposition, not remembered — see the identical BLUETOOTH_CONNECT
     // comment above: this is granted in a system dialog, not by this screen.
