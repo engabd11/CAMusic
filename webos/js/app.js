@@ -26,7 +26,11 @@
     const KEYS = {
         ENTER: 13,
         BACK: 461,
-        EXIT: 412,
+        // 412 and 417 are the remote's rewind and fast-forward. 412 used to be named
+        // EXIT here and treated as one, so Rewind during the full-screen light show
+        // left it. The remote's own Exit key goes to the system, never to an app.
+        REWIND: 412,
+        FAST_FORWARD: 417,
         LEFT: 37,
         RIGHT: 39,
         UP: 38,
@@ -106,15 +110,18 @@
         }
 
         _authParams() {
-            // Subsonic auth: salt + MD5(password+salt) token
+            // Subsonic token auth: a random salt and t = md5(password + salt), so the
+            // password itself never goes into a URL. It used to: `p=<password>` on
+            // every API call, stream and cover request, readable in any proxy or server
+            // access log. One salt for the client's life keeps stream and cover URLs
+            // stable, which the TV's HTTP cache needs; see js/md5.js for why MD5.
             if (!this.salt) {
-                const arr = new Uint8Array(16);
+                const arr = new Uint8Array(8);
                 crypto.getRandomValues(arr);
                 this.salt = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-                // MD5 not available via Web Crypto (only SHA), use hex of password+salt
-                // Navidrome supports both plain (p=) and token (t=+s=) auth
+                this.token = CAMusicMd5(this.password + this.salt);
             }
-            return `u=${encodeURIComponent(this.username)}&p=${encodeURIComponent(this.password)}&v=${this.apiVersion}&c=${this.clientName}&f=json`;
+            return `u=${encodeURIComponent(this.username)}&t=${this.token}&s=${this.salt}&v=${this.apiVersion}&c=${this.clientName}&f=json`;
         }
 
         async _api(endpoint, params = '') {
@@ -599,8 +606,21 @@
                 // Full screen owns the D-pad while it is up: there is nothing behind
                 // it to navigate, and letting focus move under an opaque overlay is
                 // how a viewer ends up pressing OK on something they cannot see.
+                // The remote's transport keys mean the same thing on every screen.
+                if (e.keyCode === KEYS.REWIND || e.keyCode === KEYS.FAST_FORWARD) {
+                    if (state.currentTrack) {
+                        const step = e.keyCode === KEYS.REWIND ? -10000 : 10000;
+                        state.audio.seek(Math.max(0, state.audio.position + step));
+                    }
+                    return;
+                }
+                if (e.keyCode === KEYS.PAUSE) {
+                    state.audio.pause();
+                    return;
+                }
+
                 if (state.lightFullscreen) {
-                    if (e.keyCode === KEYS.BACK || e.keyCode === KEYS.EXIT) {
+                    if (e.keyCode === KEYS.BACK) {
                         App.exitLightFullscreen();
                     } else if (e.keyCode === KEYS.LEFT) {
                         this._cycleLightScene(-1);
