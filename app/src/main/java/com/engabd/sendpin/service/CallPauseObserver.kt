@@ -27,7 +27,8 @@ import com.engabd.sendpin.SendpinApp
  */
 class CallPauseObserver(private val context: Context) {
 
-    private val telephonyManager get() = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+    private val telephonyManager get() = context.getSystemService(TelephonyManager::class.java)
+
 
     /** Only set when *this* observer is the reason playback paused — never resumed automatically, only used to decide whether the "paused for a call" notification is warranted. */
     @Volatile private var pausedByCall = false
@@ -54,17 +55,18 @@ class CallPauseObserver(private val context: Context) {
 
     /** No-op, silently, unless the permission is already granted — the caller decides whether to ask for it first. */
     fun start() {
+        if (!available(context)) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) !=
             PackageManager.PERMISSION_GRANTED
         ) {
             return
         }
         createChannel()
-        telephonyManager.registerTelephonyCallback(context.mainExecutor, callback)
+        runCatching { telephonyManager?.registerTelephonyCallback(context.mainExecutor, callback) }
     }
 
     fun stop() {
-        runCatching { telephonyManager.unregisterTelephonyCallback(callback) }
+        runCatching { telephonyManager?.unregisterTelephonyCallback(callback) }
     }
 
     private fun notifyPausedForCall() {
@@ -98,5 +100,14 @@ class CallPauseObserver(private val context: Context) {
     companion object {
         private const val CHANNEL_ID = "call_pause"
         private const val NOTIFICATION_ID = 4822
+
+        /**
+         * Whether this device takes phone calls at all. A Wi-Fi tablet, and an Android
+         * Automotive head unit (the car's phone calls belong to the phone paired with
+         * it), have no call state to watch — the setting has nothing to do there.
+         */
+        fun available(context: Context): Boolean =
+            context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY) &&
+                context.getSystemService(TelephonyManager::class.java) != null
     }
 }
