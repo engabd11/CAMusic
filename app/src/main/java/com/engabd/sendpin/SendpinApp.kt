@@ -900,17 +900,33 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 }
         }
 
+        // One media notification per app. Music Assistant's goes the moment the local
+        // player owns the session, rather than idling for a minute beside it: Samsung
+        // shows one media card per app, and when the idle one finally retired it took
+        // CAMusic's card with it - the paused local player vanished from the shade and
+        // the headset buttons fell to another app. Idling is for MA's own pauses.
         appScope.launch {
-            maNowPlaying.now
-                .map { it != null && it.title.isNotBlank() }
+            combine(
+                maNowPlaying.now.map { it != null && it.title.isNotBlank() },
+                playbackOwner.state.map { it.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.LOCAL },
+            ) { maActive, localOwns ->
+                when {
+                    maActive -> MaMedia.START
+                    localOwns -> MaMedia.STOP
+                    else -> MaMedia.IDLE
+                }
+            }
                 .distinctUntilChanged()
-                .collect { active ->
+                .collect { what ->
                     // Starting a foreground service from the background is restricted
                     // on Android 12+. SendspinConnectionService is normally already up
                     // and exempts this, but a refusal must not take the process down.
                     runCatching {
-                        if (active) SendspinService.startMedia(this@SendpinApp)
-                        else SendspinService.idleMedia(this@SendpinApp)
+                        when (what) {
+                            MaMedia.START -> SendspinService.startMedia(this@SendpinApp)
+                            MaMedia.STOP -> SendspinService.stopMedia(this@SendpinApp)
+                            MaMedia.IDLE -> SendspinService.idleMedia(this@SendpinApp)
+                        }
                     }
                 }
         }
@@ -1121,3 +1137,6 @@ class SendpinApp : Application(), ImageLoaderFactory {
         private const val ART_MAX_AGE_SEC = 7 * 24 * 60 * 60
     }
 }
+
+/** What Music Assistant's media notification should do; see the collector in [SendpinApp.onCreate]. */
+private enum class MaMedia { START, IDLE, STOP }

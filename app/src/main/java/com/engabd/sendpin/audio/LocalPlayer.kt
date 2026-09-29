@@ -558,8 +558,8 @@ class LocalPlayer(private val context: Context) {
         // would restart the track twice.
         scope.launch {
             combine(
-                settings.bitPerfect24Bit, settings.exclusiveOutput, settings.bitPerfectAaudio,
-            ) { f, e, a -> OutputMode.of(f, e, a) }
+                settings.bitPerfect24Bit, settings.exclusiveOutput, settings.bitPerfectAaudio, settings.usbBitperfect,
+            ) { f, e, a, u -> OutputMode.of(f, e, a, u) }
                 .distinctUntilChanged()
                 .debounce(OUTPUT_MODE_SETTLE_MS.milliseconds)
                 .collect { applyOutputMode(it) }
@@ -844,9 +844,10 @@ class LocalPlayer(private val context: Context) {
         val settings = AppSettings(context)
         val bitPerfect = settings.bootBitPerfect
         val aaudioBitperfect = settings.bootBitPerfectAaudio
+        val usbBitperfect = settings.bootUsbBitperfect
         val exclusive = settings.bootExclusiveOutput
         exclusiveOutput = exclusive
-        builtMode = OutputMode.of(bitPerfect, exclusive, aaudioBitperfect)
+        builtMode = OutputMode.of(bitPerfect, exclusive, aaudioBitperfect, usbBitperfect)
 
         // The Light Sync audio analysis tap is injected via TapRenderersFactory,
         // which overrides buildAudioSink to install the tap in the audio sink's
@@ -875,7 +876,8 @@ class LocalPlayer(private val context: Context) {
             oldRadio = if (exclusive) null else oldRadio,
             airPlay = if (exclusive) null else airPlayProcessor,
             exclusive = exclusive,
-            aaudioBitperfect = useAaudioBitperfect,
+            aaudioBitperfect = useAaudioBitperfect && !usbBitperfect,
+            usbBitperfect = usbBitperfect && exclusive,
         ).setEnableAudioFloatOutput(bitPerfect || exclusive) as TapRenderersFactory
         // A vendor decoder can claim float and deliver 16-bit; see FloatSafeCodecSelector.
         if (bitPerfect || exclusive) renderers.setMediaCodecSelector(FloatSafeCodecSelector)
