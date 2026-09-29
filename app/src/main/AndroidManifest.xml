@@ -430,5 +430,25 @@
                 android:resource="@xml/shared_files" />
         </provider>
 
+        <!--
+          USB bit-perfect: offered by Android for a USB audio device, so "always open
+          CAMusic" can make the USB permission stick across unplugging. Disabled here and
+          enabled at runtime only while USB bit-perfect is the selected output, so plugging
+          a DAC in never involves CAMusic otherwise. Shows nothing. See UsbDacWatcher.
+        -->
+        <activity
+            android:name=".usb.UsbAttachActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_audio_devices" />
+        </activity>
     </application>
 </manifest>

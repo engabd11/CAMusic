@@ -122,7 +122,33 @@ class UsbBitperfectOutput(
     override fun getFormatSupport(format: Format): Int =
         if (isRawPcm(format)) AudioSink.SINK_FORMAT_SUPPORTED_DIRECTLY else fallback.getFormatSupport(format)
 
+    /** The last configure(), so a DAC lost mid-track can hand the track to [fallback]. */
+    private var lastFormat: Format? = null
+    private var lastBufferSize = 0
+    private var lastOutputChannels: IntArray? = null
+
+    /**
+     * The DAC went away mid-track (unplugged): hand the rest of the track to [fallback],
+     * configured as the DAC was. The player has already been paused by the unplug; when
+     * play is pressed again the music carries on through the phone, not into nothing.
+     * Returns false if there was nothing to fail over to.
+     */
+    private fun failOverIfLost(): Boolean {
+        val s = session ?: return false
+        if (!usbActive || !s.streamDied) return false
+        val format = lastFormat ?: return false
+        Log.i(TAG, "the DAC is gone: carrying on through Android")
+        toFallback("the DAC was disconnected")
+        runCatching { fallback.configure(format, lastBufferSize, lastOutputChannels) }
+            .onFailure { Log.w(TAG, "fallback could not take over", it) }
+        if (playing) fallback.play()
+        return true
+    }
+
     override fun configure(format: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
+        lastFormat = format
+        lastBufferSize = specifiedBufferSize
+        lastOutputChannels = outputChannels
         SignalPath.onDecoderOutput(format)
         val target = if (isRawPcm(format)) pick(format) else null
         val s = session
@@ -211,6 +237,7 @@ class UsbBitperfectOutput(
     }
 
     override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
+        failOverIfLost()
         if (!usbActive) return fallback.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
         val s = session ?: return false
         if (!buffer.hasRemaining()) return true
@@ -252,6 +279,7 @@ class UsbBitperfectOutput(
         val wasPlaying = playing
         playing = true
         handler?.removeCallbacks(handBack)
+        failOverIfLost()
         if (!usbActive) return fallback.play()
         val s = session ?: return
         if (s.suspended && !s.resumeFromAndroid()) {
@@ -297,7 +325,10 @@ class UsbBitperfectOutput(
         if (!usbActive) fallback.isEnded() else endOfStream && (session?.pendingFrames() ?: 0L) <= 0L
 
     override fun hasPendingData(): Boolean =
-        if (!usbActive) fallback.hasPendingData() else (session?.pendingFrames() ?: 0L) > 0L
+        if (!usbActive) fallback.hasPendingData()
+        // A dead stream has nothing pending; claiming otherwise would stall the player.
+        else if (session?.streamDied == true) false
+        else (session?.pendingFrames() ?: 0L) > 0L
 
     override fun getCurrentPositionUs(sourceEnded: Boolean): Long {
         if (!usbActive) return fallback.getCurrentPositionUs(sourceEnded)

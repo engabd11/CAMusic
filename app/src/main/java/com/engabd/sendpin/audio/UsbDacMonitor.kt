@@ -33,11 +33,20 @@ class UsbDacMonitor(private val context: Context) {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
             val newUsb = addedDevices.filter { it.type in USB_TYPES && it.id !in known }
             known = known + addedDevices.map { it.id }
+            // Not a plug-in: CAMusic's own USB driver giving the DAC back to Android
+            // looks exactly like one, and would post this again after every pause.
+            if (handedBackJustNow()) return
             newUsb.forEach(::notifyConnected)
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
             known = known - removedDevices.map { it.id }.toSet()
+            // Withdraw "connected" once the DAC has really gone. Android also removes it
+            // while CAMusic's driver holds it; the USB device is still attached then,
+            // so the notice stays.
+            if (removedDevices.any { it.type in USB_TYPES } && !usbAudioAttached()) {
+                (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
+            }
         }
     }
 
@@ -52,6 +61,15 @@ class UsbDacMonitor(private val context: Context) {
     }
 
     fun stop() = am.unregisterAudioDeviceCallback(callback)
+
+    private fun handedBackJustNow(): Boolean =
+        android.os.SystemClock.elapsedRealtime() - com.engabd.sendpin.usb.UsbAudioSession.lastReleaseAtMs < HANDBACK_QUIET_MS
+
+    private fun usbAudioAttached(): Boolean = runCatching {
+        context.getSystemService(android.hardware.usb.UsbManager::class.java).deviceList.values.any { dev ->
+            (0 until dev.interfaceCount).any { dev.getInterface(it).interfaceClass == android.hardware.usb.UsbConstants.USB_CLASS_AUDIO }
+        }
+    }.getOrDefault(false)
 
     private fun notifyConnected(device: AudioDeviceInfo) {
         val route = DeviceCapabilities.activeRoute(am, preferredId = device.id.toString())
@@ -90,6 +108,8 @@ class UsbDacMonitor(private val context: Context) {
     companion object {
         private const val CHANNEL_ID = "usb_dac"
         private const val NOTIFICATION_ID = 4821
+        /** How long after CAMusic hands a DAC back its reappearance is not a plug-in. */
+        private const val HANDBACK_QUIET_MS = 10_000L
 
         private val USB_TYPES = setOf(
             AudioDeviceInfo.TYPE_USB_DEVICE,
