@@ -27,7 +27,7 @@ it into part of the listening.
 
 | | |
 |---|---|
-|  **A player** | Navidrome, Subsonic-compatible (Gonic, Airsonic, Ampache, Funkwhale, epoupon's LMS), Jellyfin, Emby, Plex, MPD (moOde, Volumio, piCorePlayer and Mopidy are all MPD underneath), Music Assistant and on-device files — plus Spotify, Qobuz and Tidal accounts and foobar2000 over its Beefweb plugin (experimental). Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
+|  **A player** | Navidrome, Subsonic-compatible (Gonic, Airsonic, Ampache, Funkwhale, epoupon's LMS), Jellyfin, Emby, Plex, MPD (moOde, Volumio, piCorePlayer and Mopidy are all MPD underneath), Music Assistant and on-device files — plus Spotify, Qobuz and Tidal accounts and foobar2000 over its Beefweb plugin (experimental). Gapless playback, a real crossfade on any queue, a ten band equaliser, high resolution output, ReplayGain, synced lyrics, scrobbling and offline downloads. |
 |  **A light show** | Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. |
 |  **An atmosphere** | Ambience shows with their own sound, ready whenever you want the room without the music. |
 |  **A speaker** | Music Assistant can stream to this phone as a clock synced player, so it joins a grouped, multi-room setup. And what the phone plays itself can go out over **AirPlay** to an Apple TV or HomePod, from the top-left of Now Playing. |
@@ -142,8 +142,38 @@ right now — rather than this phone's, and Light Sync runs from an offline scan
 does for any other server driving a speaker in another room.
 
 **Continue listening** leads the library with the albums and songs you were last in the
-middle of, including Jellyfin's own resume shelf. Anything can be taken offline for the train,
-with a storage cap and a Wi-Fi only option, and downloads browse as a library of their own.
+middle of, including Jellyfin's own resume shelf.
+
+**Search all libraries** (Settings → Libraries, off by default) asks every library you have
+set up at once and groups the answers by library; a slow server costs only its own row, and a
+chip in the search bar switches between *All* and *This library* for one search. Android Auto
+voice search always looks everywhere.
+
+**Playlists are yours to edit** — remove, reorder and rename — on Navidrome and the Subsonic
+family, Jellyfin, Emby, MPD (stored playlists, written over the protocol) and Downloads. A
+library that cannot keep playlists of its own, Plex among them, gets app-kept ones instead, so
+"Add to playlist" works everywhere. **Ratings** go back to the server where it has them (Subsonic
+stars, Plex, MPD's `rating` sticker). Long libraries arrive whole: Jellyfin, Emby and Plex are
+paged to the end rather than stopping at the server's first 200 or 500.
+
+**This device** is a library like the others: scanned off the main thread, rescanned when
+files change, with embedded or folder art, genres from the tags, and `.m3u` playlists.
+
+**Downloads you can trust.** Anything can be taken offline for the train, with a storage cap
+and a Wi-Fi only option, and downloads browse as a library of their own. Files are keyed by
+server as well as track, so two servers' track 42 never collide; a download resumes where it
+stopped, survives the app being closed, and is offered only for libraries that actually hand a
+file over. A playlist downloads as a playlist and stays one in Downloads.
+
+**A stream format for mobile data** sits beside the Wi-Fi one on each server's page, so the
+phone can pull a smaller transcode away from home and the original on the sofa.
+
+**Artful pages, if you want them.** Settings → Appearance → Album & artist pages (and Library
+look, beside it) adds a *Gallery* hero (the
+record sliding out of its sleeve, an artist banner in duotone), gallery tiles that glow in
+their cover's colour, and optional shelves — the sleeve's colours, your listening, the latest
+release, the discography along a timeline. Every one is painted from the cover's palette and
+every one is off until you switch it on; the pages as they were remain the default.
 
 ---
 
@@ -223,10 +253,23 @@ Playback is built to be worth good headphones and a good DAC.
 - **The real signal path**, reported a stage at a time: what the file declares, what the
   decoder handed over, what the sink was configured with, and whether the high resolution
   float path is engaged. Where resolution is being lost, the card says so in a sentence.
-- **High resolution output**, ReplayGain (track or album), and a quality badge that reads
-  `FLAC • 96/24 • 3 Mb/s` with a detail card behind it.
-- **Gapless playback**, smooth transitions from one to twelve seconds, and beat matched
-  crossfades that align to the beat grid of both tracks when scan data is available.
+- **High resolution output** and a quality badge that reads `FLAC • 96/24 • 3 Mb/s` with a
+  detail card behind it.
+- **ReplayGain that can lift as well as cut** (track or album). A quiet master is raised by up
+  to +6 dB through a limiter, so it never clips, and files with no tag at all can be turned
+  down 3, 6 or 9 dB to sit beside the levelled ones.
+- **Gapless playback**, and on any queue — not just DJ Radio — a **real overlap crossfade**
+  where the next song starts under the last one, with beat matched fades that align to the beat
+  grid of both tracks when scan data is available.
+- **Shuffle that spreads things out**: no artist twice in a row, and an artist's albums take
+  turns (Settings → Audio → Between tracks).
+- **A sleep timer that lives with the player**, not the screen: it keeps counting with the app
+  closed, fades the player's own volume rather than the phone's (so the phone is never left
+  turned down), and offers **End of this song**.
+- **Playback that survives the real world.** A dropped connection pauses and picks up where it
+  was when the network returns, instead of skipping through the whole queue; the queue is
+  saved, so Bluetooth play after a reboot, the system's resume card and Android Auto's
+  "recent" all carry on where you left off.
 - **Sound modes** recolour whatever is playing, ahead of the equaliser. Vinyl decorrelates
   its crackle, pop and rumble left from right and adds a band-limited surface hiss. Lo-fi
   applies a persistent vari-speed slowdown, speed and pitch together, with wow-and-flutter
@@ -262,6 +305,17 @@ Playback is built to be worth good headphones and a good DAC.
 
 ---
 
+## Lyrics
+
+Synced lyrics come from wherever they are: the server's own, lyrics embedded in the file, or a
+sidecar `.lrc` beside it — for local files and downloads too. **Find lyrics online**
+(Settings → Audio → Playback behaviour, off by default) asks [LRCLIB](https://lrclib.net)
+when none of those has any, sending only the artist and title. Tap a line to seek to it, and
+nudge the timing per song when a file's lyrics run early or late; the nudge is remembered for
+that song.
+
+---
+
 ## Light Sync
 
 Two paths, chosen in Settings.
@@ -287,7 +341,14 @@ The one to use. CAMusic opens its own DTLS entertainment stream to the Hue bridg
   nearly continuous show.
 - **Saved shows.** A dinner is not a party is not a film score. Each show stores intensity,
   palette, brightness and every feature toggle as one preset. Tap a chip to apply it, and tie a
-  show to a genre so the room picks it up on its own.
+  show to a genre so the room picks it up on its own. **Share a show** as a `camusic://show/…`
+  link through any chat: it opens in the app (or paste it on the Lights tab) as a new show
+  beside the listener's own, carrying the look and nothing about the sender's bridge or room.
+- **Self-healing.** When the stream drops, it comes back on its own — when the network returns,
+  when the bridge re-announces itself (even at a new IP address), and when the app comes to
+  the front — instead of waiting for a settings change.
+- **Easy on the battery.** Sixty frames a second while music plays; paused or idle, it falls to
+  keepalive frames and lets go of the wake and Wi-Fi locks after a grace period.
 - **Creative layers**: Music DNA, Emotional Arc, Phantom Stage with on-device stem separation,
   and Phone as Conductor. See [docs/creative-light-shows.md](docs/creative-light-shows.md).
 - **Flash safety** on a WCAG derived budget, with a 12.5 Hz per channel ceiling that matches
@@ -394,6 +455,12 @@ The key and the tempo on it are the same ones that drive the light show. Behind 
 charts: a listening clock, a tempo and energy scatter, dominant keys and a BPM sweet spot, artist
 variety, streaks, lossless share, and where your music actually came from.
 
+**Scrobbling** to **ListenBrainz** (or a self-hosted ListenBrainz-compatible server) and
+**Last.fm**, from every library the phone plays and from downloads. Listens are queued on the
+phone and sent when the network allows, so a flight's worth of offline plays still counts, and
+plays keep being counted — along with server play reports and your stats — after the app is
+swiped away and throughout an Android Auto drive.
+
 ---
 
 ## Everywhere you listen
@@ -413,17 +480,23 @@ variety, streaks, lossless share, and where your music actually came from.
   side by side, sized and inset for a driver's glance rather than a phone screen.
 - **Android TV.** A dedicated `tv` flavour with a D-pad Now Playing, Library, Queue, Light Sync,
   onboarding and Settings, compiled from the same business logic as the phone app.
-- **LG webOS.** A native webOS television app with a ten-foot UI, multi-library playback and a
-  Node.js JS Service that streams Hue Entertainment over UDP straight from the TV. See
-  [webos/README.md](webos/README.md).
+- **LG webOS.** A native webOS television app with a ten-foot UI and multi-library playback,
+  and the panel itself as the lamp: scenes, the Hue colour schemes and a luminance clamp for a
+  dark room. Hue Entertainment from the TV is **not available yet** — the bridge only takes
+  DTLS, which the webOS service does not have — and the Hue tab says so rather than pretending
+  to connect. See [webos/README.md](webos/README.md).
 - **Driving mode.** Large targets, swipe anywhere, and GPS speed-limit awareness from an offline
   geohashed database of 471,569 zones that ships inside the app. Picture-in-Picture is the
   permission-free default, with a full-width overlay behind it, triggered by the car's Bluetooth.
   The speed alert shares that trigger: it watches only while the phone is connected to the car
   you nominate — GPS at a fix a second is far too expensive to run on "audio is playing" — and
   warns with a sound, a buzz and an on-screen notification at once.
+- **"Hey Google, play … on CAMusic"** plays the search result rather than just opening the app.
 - **Home-screen widget** with artwork and transport controls.
 - **Tablets and foldables** get an adaptive grid layout.
+- **Everyday touches.** An optional mini player above the tabs while you browse (Settings →
+  Appearance → Now Playing & seek bar), swipe a song off the queue with an **Undo**, and
+  TalkBack that can read and move the sliders, toggles and seek bars and reorder the queue.
 
 ---
 
@@ -441,8 +514,10 @@ account — a Hue bridge with an entertainment area for Light Sync, a Music Assi
 multi-room grouping, and an AirPlay receiver for casting. Each one is optional and independent
 of the others.
 
-Settings, servers and credentials can be exported as a password-encrypted file and imported on
-another device, where the credentials are re-encrypted under that device's Keystore.
+Settings, servers and credentials can be exported as a password-encrypted file (a passphrase of
+at least ten characters, entered twice, stretched with 600,000 rounds of PBKDF2) and imported
+on another device, where the credentials are re-encrypted under that device's Keystore. Older
+exports still import.
 
 ### On Android TV
 
@@ -526,6 +601,23 @@ playing. `LocalDsp` sits ahead of the tap so the show reacts to what you actuall
 
 ## Recent releases
 
+**On master, not yet released** — a full audit and the work that came out of it:
+**lyrics** from embedded tags, sidecar `.lrc` and optionally LRCLIB, with tap-to-seek and a
+per-song timing nudge; **scrobbling** to ListenBrainz and Last.fm with an offline queue;
+**playlist editing** (remove, reorder, rename) and **ratings**; **search all libraries** as a
+toggle; a real **crossfade on any queue**, **artist-spread shuffle**, a **sleep timer** that
+fades the player and can stop at the end of the song, and **ReplayGain** that lifts quiet
+masters through a limiter; a separate **mobile-data stream format**; **This device** rebuilt
+(background scan, rescan on change, art, genres, `.m3u`); **downloads** that resume and never
+collide across servers; **queue resumption** after a reboot or in the car; optional **Gallery**
+album and artist pages; **shareable light shows**, a **self-healing, battery-aware Light Sync**;
+a **mini player** on the tab layout and **swipe-to-remove with undo** on the queue; TalkBack
+support for the custom controls; a TV APK down from 83 MB to 15 MB; and a long list of fixes —
+among them a launch crash, Driving mode's Picture-in-Picture that never opened, credentials in
+the debug file, a network drop that skipped through the whole queue, long Jellyfin, Emby and
+Plex lists cut short, media keys captured by a paused queue, and TV notification taps that did
+nothing.
+
 **v0.13.0**: **playlists download as playlists** and stay playlists in Downloads, in order,
 instead of scattering into their albums; **five looks for the library's category buttons**
 (cards, chips, list, icon grid, artwork) with size, corners and a say in which appear at all;
@@ -600,8 +692,14 @@ Full history: [docs/release-history.md](docs/release-history.md).
   unsigned. For a phone that needs to move the other way, use the app's own signed latency trim.
 - **Releases are signed with a stable local key** that has been in use since v0.1.0, so updates
   install cleanly over each other. A build from another source needs an uninstall first.
-- **The speed-limit database adds about 39 MB to the APK**, which is the cost of offline
-  speed-limit awareness and is stated here so it is never a surprise.
+- **The speed-limit database adds about 39 MB to the phone APK**, which is the cost of offline
+  speed-limit awareness and is stated here so it is never a surprise. The TV build carries
+  neither it nor the ambience recordings, and is about 15 MB.
+- **Your credentials stay yours.** Every server secret, including streaming-service tokens, is
+  encrypted under the Keystore; the debug file you might attach to an issue has credentials
+  redacted from its log; Android's cloud backup leaves out the library database, downloads and
+  the speed database; and media streams obey the same LAN-only rule for plain HTTP as
+  everything else, redirects included.
 
 ---
 
@@ -612,8 +710,12 @@ git clone https://github.com/engabd11/CAMusic.git
 cd CAMusic
 ./gradlew assembleMobileDebug          # phone and tablet
 ./gradlew assembleTvDebug              # Android TV
-./gradlew testMobileDebugUnitTest      # ~1,600 unit tests
+./gradlew testMobileDebugUnitTest      # the unit tests
 ```
+
+CI runs both flavours' unit tests, `lintMobileDebug` and `lintTvDebug`, and builds the debug
+and R8-minified release APKs, so a release-only failure shows up on the pull request. Actions
+are pinned by commit SHA and kept current by Dependabot.
 
 Requires JDK 17 or newer and the Android SDK with the NDK. The native audio engine and the
 AirPlay sender build through CMake as part of the normal Gradle build; the AirPlay build fetches
