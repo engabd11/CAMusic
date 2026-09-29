@@ -121,6 +121,12 @@ class TapRenderersFactory(
      * stream is created and fed by [AaudioBitperfectOutput].
      */
     private val aaudioBitperfect: Boolean = false,
+    /**
+     * USB bit-perfect: CAMusic's own USB driver takes the DAC, through
+     * [com.engabd.sendpin.usb.UsbBitperfectOutput]. The sink built here is its fallback
+     * for tracks the DAC cannot take as they are, so it gets the same bare chain.
+     */
+    private val usbBitperfect: Boolean = false,
 ) : DefaultRenderersFactory(context) {
 
     companion object {
@@ -160,13 +166,14 @@ class TapRenderersFactory(
         enableFloatOutput: Boolean,
         enableAudioOutputPlaybackParams: Boolean,
     ): AudioSink {
-        val sonic = (if (exclusive || aaudioBitperfect) null else OutputRate.hz.takeIf { it > 0 })?.let { rate ->
+        val bypass = aaudioBitperfect || usbBitperfect
+        val sonic = (if (exclusive || bypass) null else OutputRate.hz.takeIf { it > 0 })?.let { rate ->
             androidx.media3.common.audio.SonicAudioProcessor()
                 .apply { setOutputSampleRateHz(rate) }
         }
         val sink = DefaultAudioSink.Builder(context)
             .setAudioProcessors(
-                orderedProcessors(aaudioBitperfect, dsp, wowFlutter, loFi, vinylNoise, oldRadio, tap, airPlay, sonic)
+                orderedProcessors(bypass, dsp, wowFlutter, loFi, vinylNoise, oldRadio, tap, airPlay, sonic)
                     .toTypedArray(),
             )
             .setEnableFloatOutput(enableFloatOutput)
@@ -175,7 +182,9 @@ class TapRenderersFactory(
         SignalPath.onFloatOutput(enableFloatOutput)
         SignalPath.onExclusive(exclusive)
         SignalPath.onAaudioBitperfect(aaudioBitperfect)
-        return if (aaudioBitperfect) {
+        return if (usbBitperfect) {
+            com.engabd.sendpin.usb.UsbBitperfectOutput(context, sink, lead)
+        } else if (aaudioBitperfect) {
             AaudioBitperfectOutput(context, sink, lead)
         } else {
             AudioLeadProbe(sink, lead)

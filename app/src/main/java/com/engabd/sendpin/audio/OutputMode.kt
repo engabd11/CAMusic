@@ -60,6 +60,16 @@ enum class OutputMode(
     DIRECT(
         "Direct to DAC",
         "Bypasses media3 with AAudio, straight to a USB DAC.",
+    ),
+
+    /**
+     * CAMusic drives the USB DAC itself (com.engabd.sendpin.usb), past Android's audio
+     * stack altogether: the only rung where the DAC receives the file's own samples at
+     * the file's own rate. docs/plan/usb-bitperfect-driver.md.
+     */
+    USB_BITPERFECT(
+        "USB bit-perfect",
+        "CAMusic drives the USB DAC itself: the file's own samples, rate and depth.",
     );
 
     /** Whether media3's float output path is used. [PURE] and above force it. */
@@ -70,6 +80,9 @@ enum class OutputMode(
 
     /** Whether playback leaves media3 entirely for the AAudio path. */
     val aaudio: Boolean get() = this == DIRECT
+
+    /** Whether CAMusic's own USB driver takes the DAC. */
+    val usb: Boolean get() = this == USB_BITPERFECT
 
     /**
      * Whether this rung stops the equaliser, the Light Sync tap and the sound modes.
@@ -91,20 +104,26 @@ enum class OutputMode(
          * reachable and did nothing, and resolves here to whatever the flags
          * beneath it actually achieved.
          */
-        fun of(floatPath: Boolean, exclusive: Boolean, aaudio: Boolean): OutputMode = when {
+        fun of(floatPath: Boolean, exclusive: Boolean, aaudio: Boolean, usb: Boolean = false): OutputMode = when {
+            exclusive && usb -> USB_BITPERFECT
             exclusive && aaudio -> DIRECT
             exclusive -> PURE
             floatPath -> HIGH_RESOLUTION
             else -> STANDARD
         }
 
-        /** The rungs on offer, shallowest first. [advanced] adds [PURE] and [DIRECT]. */
+        /**
+         * The rungs on offer, shallowest first. [advanced] adds [USB_BITPERFECT].
+         *
+         * [PURE] and [DIRECT] are no longer offered (2026-09-29): USB bit-perfect does
+         * properly what both were reaching for, and three rungs read as a choice where
+         * five read as a puzzle. They still work for anyone already on one.
+         */
         fun offered(advanced: Boolean, current: OutputMode): List<OutputMode> {
-            val base = if (advanced) entries else listOf(STANDARD, HIGH_RESOLUTION)
-            // Never hide the rung the user is standing on. Someone who set Pure while
-            // advanced was on, then turned advanced off, must still be able to see
-            // where they are and step back down.
-            return if (current in base) base.toList() else entries.take(current.ordinal + 1)
+            val base = if (advanced) listOf(STANDARD, HIGH_RESOLUTION, USB_BITPERFECT) else listOf(STANDARD, HIGH_RESOLUTION)
+            // Never hide the rung the user is standing on: someone on Pure, or on USB
+            // with advanced since turned off, must still see where they are and step back.
+            return if (current in base) base else (base + current).sortedBy { it.ordinal }
         }
     }
 }

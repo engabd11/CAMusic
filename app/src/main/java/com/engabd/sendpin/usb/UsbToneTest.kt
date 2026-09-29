@@ -16,6 +16,10 @@ object UsbToneTest {
     private const val CHUNK_FRAMES = 1024
 
     suspend fun run(context: Context, onProgress: (String) -> Unit = {}): String {
+        if (UsbAudioSession.current != null) {
+            return "The player is using the DAC. Stop the music (or switch Output mode away from " +
+                "USB bit-perfect) and try again."
+        }
         val device = UsbDacProbe.audioDevices(context).firstOrNull() ?: return "No USB audio device is connected."
         if (!UsbDacProbe.requestPermission(context, device)) return "USB permission was not granted."
         return withContext(Dispatchers.IO) {

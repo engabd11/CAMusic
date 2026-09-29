@@ -171,6 +171,7 @@ class AppSettings(private val context: Context) {
         private val NAV_STREAM_FORMAT_MOBILE = stringPreferencesKey("nav_stream_format_mobile") // the same on metered; "" = as above
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
         private val BIT_PERFECT_AAUDIO = booleanPreferencesKey("bit_perfect_aaudio") // AAudio direct I24/float exclusive path
+        private val USB_BITPERFECT = booleanPreferencesKey("usb_bitperfect") // CAMusic's own USB driver
         private val EXCLUSIVE_OUTPUT = booleanPreferencesKey("exclusive_output")  // no processors, no in-app volume — the source's own bits
         // "sendspin_exoplayer" and "sendspin_oboe" were here and are deliberately
         // not replaced. The native Oboe engine is the only MA engine now, so a
@@ -967,6 +968,7 @@ class AppSettings(private val context: Context) {
             .putBoolean("bit_perfect", prefs[BIT_PERFECT] ?: false)
             .putBoolean("exclusive_output", prefs[EXCLUSIVE_OUTPUT] ?: false)
             .putBoolean("bit_perfect_aaudio", prefs[BIT_PERFECT_AAUDIO] ?: false)
+            .putBoolean("usb_bitperfect", prefs[USB_BITPERFECT] ?: false)
             .putString("preferred_audio_device_id", prefs[PREFERRED_AUDIO_DEVICE_ID] ?: "")
             .putBoolean(HAS_LIBRARY, storedServers(prefs).any { it.id != DOWNLOADS_SERVER_ID })
             .apply()
@@ -1822,7 +1824,18 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[EXCLUSIVE_OUTPUT] = value }
         // AAudio bit-perfect is only meaningful with exclusive output; clear it when
         // exclusive goes off so the UI does not imply a working path that isn't there.
-        if (!value) context.dataStore.edit { it[BIT_PERFECT_AAUDIO] = false }
+        if (!value) context.dataStore.edit {
+            it[BIT_PERFECT_AAUDIO] = false
+            it[USB_BITPERFECT] = false
+        }
+    }
+
+    val usbBitperfect: Flow<Boolean> = pref { it[USB_BITPERFECT] ?: false }
+
+    /** CAMusic's own USB driver (com.engabd.sendpin.usb). Requires [exclusiveOutput]. */
+    suspend fun setUsbBitperfect(value: Boolean) {
+        bootPrefs.edit().putBoolean("usb_bitperfect", value).apply()
+        context.dataStore.edit { it[USB_BITPERFECT] = value }
     }
 
     val bitPerfectAaudio: Flow<Boolean> = pref { it[BIT_PERFECT_AAUDIO] ?: false }
@@ -1888,6 +1901,9 @@ class AppSettings(private val context: Context) {
 
     /** AAudio bit-perfect output, readable without a coroutine — see [bootBitPerfect] for why. */
     val bootBitPerfectAaudio: Boolean get() = bootPrefs.getBoolean("bit_perfect_aaudio", false)
+
+    /** USB bit-perfect output, readable without a coroutine — see [bootBitPerfect] for why. */
+    val bootUsbBitperfect: Boolean get() = bootPrefs.getBoolean("usb_bitperfect", false)
 
     /**
      * Preferred audio device id, readable without a coroutine — [LocalPlayer] and the

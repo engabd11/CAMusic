@@ -58,6 +58,7 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
     val bitPerfect by settings.bitPerfect24Bit.collectAsStateWithLifecycle(initialValue = false)
     val exclusiveOutput by settings.exclusiveOutput.collectAsStateWithLifecycle(initialValue = false)
     val bitPerfectAaudio by settings.bitPerfectAaudio.collectAsStateWithLifecycle(initialValue = false)
+    val usbBitperfect by settings.usbBitperfect.collectAsStateWithLifecycle(initialValue = false)
 
     val route = remember(pinned) { DeviceCapabilities.activeRoute(am, pinned) }
     val mixerRate = remember { DeviceCapabilities.mixerRateHz() }
@@ -238,7 +239,7 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
 
         // One dial, not three switches. See [OutputMode] for why these were never
         // independent settings and what each rung is named after.
-        val mode = OutputMode.of(bitPerfect, exclusiveOutput, bitPerfectAaudio)
+        val mode = OutputMode.of(bitPerfect, exclusiveOutput, bitPerfectAaudio, usbBitperfect)
         val rungs = OutputMode.offered(advanced, mode)
         // Wrapping chips rather than one segmented row: the rungs' own titles —
         // "High resolution", "Direct to DAC" — are the longest strings in this
@@ -258,6 +259,13 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                         settings.setBitPerfect24Bit(rung.floatPath)
                         settings.setExclusiveOutput(rung.exclusive)
                         settings.setBitPerfectAaudio(rung.aaudio)
+                        settings.setUsbBitperfect(rung.usb)
+                        // The driver opens the DAC at play time and cannot show a dialog
+                        // then, so ask for USB permission now, while the user is here.
+                        if (rung.usb) {
+                            com.engabd.sendpin.usb.UsbDacProbe.audioDevices(context).firstOrNull()
+                                ?.let { com.engabd.sendpin.usb.UsbDacProbe.requestPermission(context, it) }
+                        }
                         // Exclusive output through the phone's own speaker is nothing to ask
                         // for, so stepping onto a rung that removes this app's processing
                         // pins a USB output if one is attached and nothing is pinned yet.
@@ -276,9 +284,9 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
         Note(
             mode.summary,
             title = "Output mode",
-            info = "Four rungs of the same ladder: each one is everything the one before " +
-                "it does, plus one more stage taken out of the way. There is no " +
-                "combination to work out — pick how far down you want to go.\n\n" +
+            info = "Rungs of the same ladder: each one is everything the one before " +
+                "it does, plus more taken out of the way. There is no combination " +
+                "to work out — pick how far down you want to go.\n\n" +
                 "**Standard.** Every stage this app offers is in the chain, and the " +
                 "output is 16-bit. This is the right answer unless you can hear a " +
                 "reason it is not.\n\n" +
@@ -296,26 +304,21 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                 "audio processors at all — the equaliser and the Light Sync analysis " +
                 "go quiet, not because of a setting but because of how media3's float " +
                 "path works. The Signal path panel says when that is happening.\n\n" +
-                "**Pure.** Removes every stage this app puts between the decoder and " +
-                "the DAC, deliberately and always, and asks the platform to carry the " +
-                "source's own rate and depth.\n\nTurns off: " +
+                "**USB bit-perfect** (experimental). Both rungs above go through " +
+                "Android, which on many phones runs a USB DAC at a fixed 48 kHz / 16-bit " +
+                "and converts every file to that. This rung is CAMusic's own USB audio " +
+                "driver: it takes the DAC from Android while music plays and sends the " +
+                "file's own samples at the file's own rate. A 16-bit file reaches a 24-bit " +
+                "DAC as the same number with zeros below it. Android asks once for " +
+                "permission to use the DAC. While CAMusic holds it, other apps, " +
+                "notifications and calls cannot use it; after 30 seconds paused it is " +
+                "handed back. A track at a rate the DAC does not offer plays through " +
+                "Android instead.\n\nWith nothing of this app's in the way, it turns off: " +
                 ExclusiveOutput.disables.joinToString(", ") { it.title } + ".\n\n" +
-                ExclusiveOutput.disables.joinToString("\n\n") { "**${it.title}.** ${it.reason}" } +
-                "\n\n" + ExclusiveOutput.VOLUME_NOTE +
-                "\n\n" + ExclusiveOutput.ANDROID_CEILING_NOTE + "\n\n" +
-                "**Direct to DAC.** Uses Android's low-latency AAudio API directly " +
-                "with a 24-bit or 32-bit float stream, so the file reaches the DAC " +
-                "without being resampled or requantised by the normal mixer. Only " +
-                "works on the library this phone decodes itself; Music Assistant " +
-                "playback stays 16-bit, because the native Sendspin engine is int16. " +
-                "Wants a USB DAC — this is not something to ask of the phone's own " +
-                "speaker.\n\nA change applies straight away: the player is rebuilt " +
-                "for the new rung and picks the track up where it was, so expect a " +
-                "brief gap rather than a restart. The Signal path panel above shows " +
-                "the new chain as soon as it is playing.\n\nTip: if you hear distortion " +
-                "on 44.1 kHz material on a phone whose mixer runs at 48, step back to " +
-                "Standard — that combination has been known to misbehave, and " +
-                "dropping down fixes it immediately.",
+                ExclusiveOutput.VOLUME_NOTE + "\n\n" +
+                "A change applies straight away: the player is rebuilt for the new rung " +
+                "and picks the track up where it was, so expect a brief gap rather than " +
+                "a restart.",
         )
 
         if (mode.alwaysBypassesProcessors) {
@@ -326,7 +329,7 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
             )
         }
 
-        if (mode == OutputMode.DIRECT && route?.isUsb != true) {
+        if ((mode == OutputMode.DIRECT || mode == OutputMode.USB_BITPERFECT) && route?.isUsb != true) {
             Note(
                 "No USB DAC is attached, so this falls back to the ordinary path. Pin one " +
                     "under Output device above once it is plugged in.",

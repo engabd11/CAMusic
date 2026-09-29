@@ -56,6 +56,17 @@ struct Stream {
     std::atomic<int> inFlight{0};
     std::thread thread;
 
+    // Paused: keep the DAC clocked with silence but leave the queue alone.
+    std::atomic<bool> paused{false};
+    // Bumped by a flush, so frames still in flight from before it are not counted as
+    // played audio of the new position.
+    std::atomic<int> epoch{0};
+    std::vector<int> urbRealFrames = std::vector<int>(kNumUrbs, 0);
+    std::vector<int> urbEpoch = std::vector<int>(kNumUrbs, 0);
+    // Real (non-padding) frames the DAC has taken, and those submitted but not yet back.
+    std::atomic<int64_t> playedFrames{0};
+    std::atomic<int64_t> inFlightRealFrames{0};
+
     std::atomic<int64_t> urbsCompleted{0};
     std::atomic<int64_t> packetErrors{0};
     std::atomic<int64_t> silentFrames{0};
@@ -63,8 +74,13 @@ struct Stream {
     std::atomic<int> lastError{0};
 
     // Take up to `frames` whole frames from the ring into dst; pad the rest with silence.
-    void fill(uint8_t* dst, int frames) {
+    // Returns how many were real audio.
+    int fill(uint8_t* dst, int frames) {
         const size_t want = static_cast<size_t>(frames) * bytesPerFrame;
+        if (paused.load()) {
+            std::memset(dst, 0, want);
+            return 0;
+        }
         size_t got = 0;
         {
             std::lock_guard<std::mutex> lock(mutex);
@@ -81,12 +97,14 @@ struct Stream {
             silentFrames += static_cast<int64_t>((want - got) / bytesPerFrame);
         }
         framesSent += frames;
+        return static_cast<int>(got / bytesPerFrame);
     }
 
     bool submit(int index) {
         usbdevfs_urb* urb = urbs[index];
         uint8_t* buf = buffers[index].data();
         int offset = 0;
+        int real = 0;
         for (int p = 0; p < kPacketsPerUrb; ++p) {
             owed += static_cast<uint64_t>(rate);
             int frames = static_cast<int>(owed / packetsPerSecond);
@@ -98,7 +116,7 @@ struct Stream {
                 frames = maxPacket / bytesPerFrame;
                 bytes = frames * bytesPerFrame;
             }
-            fill(buf + offset, frames);
+            real += fill(buf + offset, frames);
             urb->iso_frame_desc[p].length = static_cast<unsigned int>(bytes);
             urb->iso_frame_desc[p].actual_length = 0;
             urb->iso_frame_desc[p].status = 0;
@@ -116,11 +134,14 @@ struct Stream {
         urb->error_count = 0;
         urb->signr = 0;
         urb->usercontext = reinterpret_cast<void*>(static_cast<intptr_t>(index));
+        urbRealFrames[index] = real;
+        urbEpoch[index] = epoch.load();
         if (ioctl(fd, USBDEVFS_SUBMITURB, urb) < 0) {
             lastError = errno;
             LOGW("SUBMITURB failed: %s", strerror(errno));
             return false;
         }
+        inFlightRealFrames += real;
         inFlight++;
         return true;
     }
@@ -139,6 +160,11 @@ struct Stream {
             }
             inFlight--;
             if (done == nullptr) continue;
+            const int doneIndex = static_cast<int>(reinterpret_cast<intptr_t>(done->usercontext));
+            if (urbEpoch[doneIndex] == epoch.load()) {
+                inFlightRealFrames -= urbRealFrames[doneIndex];
+                if (done->status == 0) playedFrames += urbRealFrames[doneIndex];
+            }
             if (done->status == 0) {
                 urbsCompleted++;
             } else if (done->status != -ENOENT && done->status != -ECONNRESET) {
@@ -148,8 +174,7 @@ struct Stream {
                 if (done->iso_frame_desc[p].status != 0) packetErrors++;
             }
             if (running.load()) {
-                const int index = static_cast<int>(reinterpret_cast<intptr_t>(done->usercontext));
-                if (!submit(index)) running = false;
+                if (!submit(doneIndex)) running = false;
             }
         }
         running = false;
@@ -159,6 +184,23 @@ struct Stream {
         running = false;
         for (auto* urb : urbs) ioctl(fd, USBDEVFS_DISCARDURB, urb);  // In flight or not; EINVAL is fine.
         if (thread.joinable()) thread.join();
+        // Whatever was discarded was not played; it is not in flight any more either.
+        inFlightRealFrames = 0;
+    }
+
+    void begin() {
+        owed = 0;
+        running = true;
+        thread = std::thread([this] { run(); });
+    }
+
+    // Drop everything queued; frames already on the wire play out but no longer count.
+    void flush() {
+        std::lock_guard<std::mutex> lock(mutex);
+        ringHead = 0;
+        ringSize = 0;
+        epoch++;
+        inFlightRealFrames = 0;
     }
 
     ~Stream() {
@@ -193,8 +235,7 @@ Java_com_engabd_sendpin_usb_UsbAudioNative_nativeStart(
         s->urbs.push_back(static_cast<usbdevfs_urb*>(std::calloc(1, urbBytes)));
         s->buffers.emplace_back(static_cast<size_t>(maxPacket) * kPacketsPerUrb);
     }
-    s->running = true;
-    s->thread = std::thread([s] { s->run(); });
+    s->begin();
     LOGI("streaming ep=0x%02x rate=%d frame=%dB maxPacket=%d pps=%d", endpoint, rate, bytesPerFrame, maxPacket,
          packetsPerSecond);
     return reinterpret_cast<jlong>(s);
@@ -245,6 +286,44 @@ Java_com_engabd_sendpin_usb_UsbAudioNative_nativeStop(JNIEnv*, jobject, jlong pt
     auto* s = reinterpret_cast<Stream*>(ptr);
     s->stop();
     delete s;
+}
+
+JNIEXPORT void JNICALL
+Java_com_engabd_sendpin_usb_UsbAudioNative_nativeSetPaused(JNIEnv*, jobject, jlong ptr, jboolean paused) {
+    if (ptr != 0) reinterpret_cast<Stream*>(ptr)->paused = paused == JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_engabd_sendpin_usb_UsbAudioNative_nativeFlush(JNIEnv*, jobject, jlong ptr) {
+    if (ptr != 0) reinterpret_cast<Stream*>(ptr)->flush();
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_engabd_sendpin_usb_UsbAudioNative_nativePlayedFrames(JNIEnv*, jobject, jlong ptr) {
+    return ptr == 0 ? 0 : reinterpret_cast<Stream*>(ptr)->playedFrames.load();
+}
+
+// Real frames not yet played: queued in the ring plus submitted and not back.
+JNIEXPORT jlong JNICALL
+Java_com_engabd_sendpin_usb_UsbAudioNative_nativePendingFrames(JNIEnv*, jobject, jlong ptr) {
+    if (ptr == 0) return 0;
+    auto* s = reinterpret_cast<Stream*>(ptr);
+    std::lock_guard<std::mutex> lock(s->mutex);
+    return static_cast<jlong>(s->ringSize / s->bytesPerFrame) + s->inFlightRealFrames.load();
+}
+
+// Stop the transfers but keep the queue, so the DAC can go back to Android for a while
+// and the music resumes where it was.
+JNIEXPORT void JNICALL
+Java_com_engabd_sendpin_usb_UsbAudioNative_nativeHalt(JNIEnv*, jobject, jlong ptr) {
+    if (ptr != 0) reinterpret_cast<Stream*>(ptr)->stop();
+}
+
+JNIEXPORT void JNICALL
+Java_com_engabd_sendpin_usb_UsbAudioNative_nativeRestart(JNIEnv*, jobject, jlong ptr) {
+    if (ptr == 0) return;
+    auto* s = reinterpret_cast<Stream*>(ptr);
+    if (!s->running.load() && !s->thread.joinable()) s->begin();
 }
 
 // Hand an interface back to the kernel's driver after it has been released, so

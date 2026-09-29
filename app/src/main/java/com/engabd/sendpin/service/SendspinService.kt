@@ -132,6 +132,11 @@ class SendspinService : Service() {
         /** Retire the media notification now (an explicit stop, or a disconnect). */
         fun stopMedia(context: android.content.Context) {
             context.stopService(Intent(context, SendspinService::class.java))
+            // Stopping the service does not take a notification it had already detached
+            // from the foreground (the idle path does that on purpose, to keep a paused
+            // card up). Left behind, that card outlived its session: Samsung showed it as
+            // CAMusic's player, then dropped it - and with it the local player's card.
+            context.getSystemService(android.app.NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
         }
 
         private const val ART_PX = 512

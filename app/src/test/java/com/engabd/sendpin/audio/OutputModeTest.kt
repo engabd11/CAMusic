@@ -16,11 +16,11 @@ import kotlin.test.assertTrue
 class OutputModeTest {
 
     @Test
-    fun `each rung round-trips through the three stored flags`() {
+    fun `each rung round-trips through the stored flags`() {
         for (mode in OutputMode.entries) {
             assertEquals(
                 mode,
-                OutputMode.of(mode.floatPath, mode.exclusive, mode.aaudio),
+                OutputMode.of(mode.floatPath, mode.exclusive, mode.aaudio, mode.usb),
                 "round trip for $mode",
             )
         }
@@ -49,8 +49,23 @@ class OutputModeTest {
     }
 
     @Test
-    fun `only the deepest rung uses aaudio`() {
+    fun `only direct uses aaudio, and only usb bit-perfect uses the usb driver`() {
         assertEquals(listOf(OutputMode.DIRECT), OutputMode.entries.filter { it.aaudio })
+        assertEquals(listOf(OutputMode.USB_BITPERFECT), OutputMode.entries.filter { it.usb })
+    }
+
+    @Test
+    fun `usb bit-perfect is the deepest rung and removes everything`() {
+        assertEquals(OutputMode.USB_BITPERFECT, OutputMode.entries.last())
+        assertTrue(OutputMode.USB_BITPERFECT.floatPath)
+        assertTrue(OutputMode.USB_BITPERFECT.exclusive)
+        assertTrue(OutputMode.USB_BITPERFECT.alwaysBypassesProcessors)
+    }
+
+    /** Like aaudio: the usb flag with no exclusive under it did nothing, and resolves to what played. */
+    @Test
+    fun `usb without exclusive resolves to what it actually did`() {
+        assertEquals(OutputMode.HIGH_RESOLUTION, OutputMode.of(floatPath = true, exclusive = false, aaudio = false, usb = true))
     }
 
     /**
@@ -81,15 +96,24 @@ class OutputModeTest {
     }
 
     @Test
-    fun `plain mode offers two rungs and advanced offers all four`() {
+    fun `plain mode offers two rungs and advanced offers them all`() {
         assertEquals(
             listOf(OutputMode.STANDARD, OutputMode.HIGH_RESOLUTION),
             OutputMode.offered(advanced = false, current = OutputMode.STANDARD),
         )
         assertEquals(
-            OutputMode.entries.toList(),
+            listOf(OutputMode.STANDARD, OutputMode.HIGH_RESOLUTION, OutputMode.USB_BITPERFECT),
             OutputMode.offered(advanced = true, current = OutputMode.STANDARD),
         )
+    }
+
+    @Test
+    fun `pure and direct are not offered, but stay visible to someone standing on them`() {
+        val offered = OutputMode.offered(advanced = true, current = OutputMode.STANDARD)
+        assertFalse(OutputMode.PURE in offered)
+        assertFalse(OutputMode.DIRECT in offered)
+        val onPure = OutputMode.offered(advanced = true, current = OutputMode.PURE)
+        assertEquals(listOf(OutputMode.STANDARD, OutputMode.HIGH_RESOLUTION, OutputMode.PURE, OutputMode.USB_BITPERFECT), onPure)
     }
 
     @Test

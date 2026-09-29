@@ -21,6 +21,12 @@ internal object UsbAudioNative {
     external fun nativeStats(ptr: Long): LongArray
     external fun nativeStop(ptr: Long)
     external fun nativeReattach(fd: Int, ifno: Int): Boolean
+    external fun nativeSetPaused(ptr: Long, paused: Boolean)
+    external fun nativeFlush(ptr: Long)
+    external fun nativePlayedFrames(ptr: Long): Long
+    external fun nativePendingFrames(ptr: Long): Long
+    external fun nativeHalt(ptr: Long)
+    external fun nativeRestart(ptr: Long)
 }
 
 /**
@@ -123,13 +129,37 @@ class UsbAudioSession private constructor(
         }
         val streaming = iface(alt.interfaceNumber, alt.alternateSetting)
             ?: return fail("alternate setting ${alt.alternateSetting} not found")
+        val keptVolume = readHardwareVolume()
+        // Zero bandwidth first, then the format. Taken from Android mid-stream, a DAC can
+        // already be on this alternate setting; selecting it again is then no change at
+        // all to some firmware, and a Sennheiser BTD 700 left that way took the audio
+        // and played none of it. Going through alt 0 makes every take a clean start.
+        iface(alt.interfaceNumber, 0)?.let { conn.setInterface(it) }
+        Thread.sleep(STREAM_RESTART_MS)
         if (!conn.setInterface(streaming)) return fail("could not select alternate setting ${alt.alternateSetting}")
 
         val ep = alt.endpoint ?: return fail("no playback endpoint")
         confirmedRate = if (info.uacVersion >= 0x0200) setUac2Rate(rate) else setUac1Rate(ep.address, rate)
         if (confirmedRate == null) return fail("the DAC did not accept $rate Hz")
         format = alt
+        // A new stream can reset the DAC's own volume (a BTD 700 re-negotiates its
+        // Bluetooth codec on a rate change); put back what it was a moment ago.
+        keptVolume?.let { writeHardwareVolume(it) }
         return true
+    }
+
+    /** The playback feature unit's master volume, in 1/256 dB, or null if it has none or will not say. */
+    private fun readHardwareVolume(): Int? {
+        val unit = info.volumeUnits.firstOrNull { it.playback && it.masterVolume } ?: return null
+        val b = ByteArray(2)
+        val n = conn.controlTransfer(0xA1, 0x81, 0x0200, (unit.id shl 8) or info.controlInterface, b, 2, 1000)
+        return if (n == 2) ((b[0].toInt() and 0xFF) or (b[1].toInt() shl 8)) else null
+    }
+
+    private fun writeHardwareVolume(value: Int) {
+        val unit = info.volumeUnits.firstOrNull { it.playback && it.masterVolume } ?: return
+        val b = byteArrayOf((value and 0xFF).toByte(), (value shr 8 and 0xFF).toByte())
+        conn.controlTransfer(0x21, 0x01, 0x0200, (unit.id shl 8) or info.controlInterface, b, 2, 1000)
     }
 
     private fun setUac1Rate(endpoint: Int, rate: Int): Int? {
@@ -188,6 +218,57 @@ class UsbAudioSession private constructor(
         Stats(it[0], it[1], it[2], it[3], it[4], it[5] != 0L)
     }
 
+    fun setPaused(paused: Boolean) { if (stream != 0L) UsbAudioNative.nativeSetPaused(stream, paused) }
+
+    /** Drop queued audio (a seek). */
+    fun flush() { if (stream != 0L) UsbAudioNative.nativeFlush(stream) }
+
+    /** Real frames the DAC has taken since the stream started. */
+    fun playedFrames(): Long = if (stream == 0L) 0L else UsbAudioNative.nativePlayedFrames(stream)
+
+    /** Real frames written and not yet played: queued plus on the wire. */
+    fun pendingFrames(): Long = if (stream == 0L) 0L else UsbAudioNative.nativePendingFrames(stream)
+
+    /** Whether the DAC is currently handed back to Android by [suspendForAndroid]. */
+    var suspended = false
+        private set
+
+    /**
+     * Give the DAC back to Android without losing the queued audio: stop the transfers,
+     * return to zero bandwidth, release and re-attach. [resumeFromAndroid] takes it back.
+     */
+    fun suspendForAndroid() {
+        if (suspended || stream == 0L) return
+        UsbAudioNative.nativeHalt(stream)
+        releaseAll()
+        suspended = true
+    }
+
+    /** Take the DAC back from Android at the same format and carry on with the queue. */
+    fun resumeFromAndroid(): Boolean {
+        if (!suspended) return true
+        val alt = format ?: return fail("not configured")
+        val rate = confirmedRate ?: return fail("no rate")
+        val keep = stream
+        stream = 0L  // configure() would otherwise stop and free it.
+        val ok = configure(alt, rate)
+        stream = keep
+        if (!ok) return false
+        UsbAudioNative.nativeRestart(stream)
+        suspended = false
+        return true
+    }
+
+    private fun releaseAll() {
+        format?.let { alt -> iface(alt.interfaceNumber, 0)?.let { conn.setInterface(it) } }
+        val fd = conn.fileDescriptor
+        for (i in claimed.reversed()) {
+            conn.releaseInterface(i)
+            if (!UsbAudioNative.nativeReattach(fd, i.id)) Log.w(TAG, "Android did not take interface ${i.id} back")
+        }
+        claimed.clear()
+    }
+
     fun stopStream() {
         if (stream != 0L) {
             UsbAudioNative.nativeStop(stream)
@@ -198,18 +279,23 @@ class UsbAudioSession private constructor(
     /** Stop, return the streaming interface to zero bandwidth, and give the DAC back to Android. */
     override fun close() {
         stopStream()
-        format?.let { alt -> iface(alt.interfaceNumber, 0)?.let { conn.setInterface(it) } }
-        val fd = conn.fileDescriptor
-        for (i in claimed.reversed()) {
-            conn.releaseInterface(i)
-            if (!UsbAudioNative.nativeReattach(fd, i.id)) Log.w(TAG, "Android did not take interface ${i.id} back")
-        }
-        claimed.clear()
+        if (!suspended) releaseAll()
         conn.close()
+        synchronized(Companion) { if (current === this) current = null }
     }
 
     companion object {
         private const val TAG = "UsbAudioSession"
+        private const val STREAM_RESTART_MS = 50L
+
+        /**
+         * The session holding the DAC, if any. Two connections claiming the same DAC —
+         * the player's, paused, and the test tone's — was one of the ways sound went
+         * missing; the tone test checks this and steps aside.
+         */
+        @Volatile
+        var current: UsbAudioSession? = null
+            private set
 
         /** Open [device], which must already have USB permission. Null if it is not a USB audio device. */
         fun open(context: Context, device: UsbDevice): UsbAudioSession? {
@@ -220,6 +306,7 @@ class UsbAudioSession private constructor(
                 return null
             }
             return UsbAudioSession(device, conn, info, UsbAudioNative.nativeSpeed(conn.fileDescriptor))
+                .also { synchronized(Companion) { current = it } }
         }
     }
 }
