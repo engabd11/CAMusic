@@ -901,7 +901,11 @@ class AppSettings(private val context: Context) {
             }
             put(SERVERS_EXPORT_KEY, JsonPrimitive(serverJson.encodeToString(ListSerializer(ServerConfig.serializer()), storedServers(prefs))))
         }
-        return PortableCrypto.encrypt(obj.toString(), password)
+        // Off the caller's thread: 600,000 rounds of PBKDF2 is most of a second on
+        // a phone, and the caller is a click handler.
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            PortableCrypto.encrypt(obj.toString(), password)
+        }
     }
 
     /**
@@ -915,7 +919,9 @@ class AppSettings(private val context: Context) {
      *   one of these exports at all.
      */
     suspend fun importSettings(blob: String, password: String): Boolean {
-        val json = PortableCrypto.decrypt(blob, password) ?: return false
+        val json = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            PortableCrypto.decrypt(blob, password)
+        } ?: return false
         val obj = try {
             Json.parseToJsonElement(json) as? JsonObject ?: return false
         } catch (e: Exception) {
