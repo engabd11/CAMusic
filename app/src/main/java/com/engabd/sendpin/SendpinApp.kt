@@ -634,6 +634,36 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // catching the headset buttons — goes at once rather than after the grace,
         // because Music Assistant's is already up and playing.
         playbackOwner.attachRemotePlaying(maNowPlaying.selectedPlaying)
+        // The media card, and the play button on it and on the headphones, belong to the
+        // player last used. After a restart only Music Assistant had a live session - the
+        // local queue was on disk - so MA's paused queue took the card, and pressing play
+        // there resumed Music Assistant instead of the Navidrome album that had been
+        // playing. So: remember who last played, and if it was the local player, load its
+        // saved queue so its card is the one that comes up. Prepared, not just loaded:
+        // an unprepared player's session reports no state at all rather than paused, and
+        // Samsung ranked that card behind another app's paused one.
+        val bootSettings = AppSettings(this)
+        appScope.launch {
+            playbackOwner.state
+                .map { it.soundOwner }
+                .distinctUntilChanged()
+                .collect { who ->
+                    when (who) {
+                        com.engabd.sendpin.service.PlaybackOwner.Who.LOCAL -> bootSettings.bootLastPlayer = "local"
+                        com.engabd.sendpin.service.PlaybackOwner.Who.SENDSPIN -> bootSettings.bootLastPlayer = "ma"
+                        else -> {}
+                    }
+                }
+        }
+        // A Music Assistant speaker elsewhere, played from here, counts as MA too.
+        appScope.launch {
+            maNowPlaying.selectedPlaying.collect { if (it) bootSettings.bootLastPlayer = "ma" }
+        }
+        val lastWasLocal = bootSettings.bootLastPlayer == "local"
+        if (lastWasLocal) {
+            runCatching { localPlayer.restoreSaved() }
+                .onFailure { android.util.Log.w("SendpinApp", "could not restore the last queue", it) }
+        }
         appScope.launch {
             var retire: Job? = null
             playbackOwner.state

@@ -1906,6 +1906,15 @@ class AppSettings(private val context: Context) {
     val bootUsbBitperfect: Boolean get() = bootPrefs.getBoolean("usb_bitperfect", false)
 
     /**
+     * Which player last actually played: "local" (this phone's library player) or "ma"
+     * (Music Assistant). Synchronous because the app reads it in onCreate to decide whose
+     * media card to put up after a restart — see SendpinApp.
+     */
+    var bootLastPlayer: String
+        get() = bootPrefs.getString("last_player", "") ?: ""
+        set(value) { bootPrefs.edit().putString("last_player", value).apply() }
+
+    /**
      * Preferred audio device id, readable without a coroutine — [LocalPlayer] and the
      * AAudio bit-perfect sink need it synchronously when they build the output path.
      */
