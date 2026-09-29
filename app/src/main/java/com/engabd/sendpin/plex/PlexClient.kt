@@ -1,5 +1,6 @@
 package com.engabd.sendpin.plex
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.library.fetchAllPages
 import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.ma.MaAudioFormat
@@ -307,7 +308,7 @@ class PlexClient(
             ),
         ).mapNotNull(::item)
 
-    suspend fun recentlyPlayed(limit: Int = 200): List<MaItem> = runCatching {
+    suspend fun recentlyPlayed(limit: Int = 200): List<MaItem> = runCatchingCancellable {
         entries(
             container(
                 "/library/sections/$librarySectionKey/all",
@@ -316,7 +317,7 @@ class PlexClient(
         ).mapNotNull(::item)
     }.getOrDefault(emptyList())
 
-    suspend fun mostPlayed(limit: Int = 200): List<MaItem> = runCatching {
+    suspend fun mostPlayed(limit: Int = 200): List<MaItem> = runCatchingCancellable {
         entries(
             container(
                 "/library/sections/$librarySectionKey/all",
@@ -370,7 +371,7 @@ class PlexClient(
      * which Plex answers with either the unfiltered section or a 400 depending on its
      * version; the `runCatching` below turned both into an empty shelf.
      */
-    suspend fun genres(): List<MaItem> = runCatching {
+    suspend fun genres(): List<MaItem> = runCatchingCancellable {
         container("/library/sections/$librarySectionKey/genre", mapOf("type" to TYPE_ARTIST))["Directory"]
             ?.jsonArray.orEmpty()
             .mapNotNull { it as? JsonObject }
@@ -398,7 +399,7 @@ class PlexClient(
         return (fromQuery ?: raw.substringAfterLast('/')).takeIf { it.isNotBlank() }
     }
 
-    suspend fun songsByGenre(genre: String, count: Int = 300, offset: Int = 0): List<MaItem> = runCatching {
+    suspend fun songsByGenre(genre: String, count: Int = 300, offset: Int = 0): List<MaItem> = runCatchingCancellable {
         entries(
             container(
                 "/library/sections/$librarySectionKey/all",
@@ -410,7 +411,7 @@ class PlexClient(
         ).mapNotNull(::item)
     }.getOrDefault(emptyList())
 
-    suspend fun search(query: String, limit: Int = 30): MaSearchResults = runCatching {
+    suspend fun search(query: String, limit: Int = 30): MaSearchResults = runCatchingCancellable {
         val hubs = container("/hubs/search", mapOf("query" to query, "limit" to (limit * 4).toString()))["Hub"]
             ?.jsonArray.orEmpty().mapNotNull { it as? JsonObject }
         fun hub(type: String) = hubs.firstOrNull { it.str("type") == type }
@@ -446,7 +447,7 @@ class PlexClient(
      * failures are swallowed rather than surfaced.
      */
     suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) {
-        runCatching {
+        runCatchingCancellable {
             get(
                 "/:/timeline",
                 mapOf(
@@ -466,7 +467,7 @@ class PlexClient(
      */
     suspend fun reportPlayback(id: String, completed: Boolean, positionMs: Long = 0) {
         if (completed) {
-            runCatching { get("/:/scrobble", mapOf("key" to id, "identifier" to "com.plexapp.plugins.library")) }
+            runCatchingCancellable { get("/:/scrobble", mapOf("key" to id, "identifier" to "com.plexapp.plugins.library")) }
         } else {
             reportProgress(id, positionMs, paused = false)
         }

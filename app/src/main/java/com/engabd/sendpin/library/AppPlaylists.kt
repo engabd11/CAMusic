@@ -1,5 +1,6 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import com.engabd.sendpin.ma.MaItem
 import kotlinx.serialization.Serializable
@@ -190,7 +191,7 @@ class WithAppPlaylists(
         // The server's own first, when it has any; an error there must not take the
         // app's playlists down with it.
         val server = if (Capability.PLAYLIST_READ in inner.capabilities) {
-            runCatching { inner.playlists() }.getOrDefault(emptyList())
+            runCatchingCancellable { inner.playlists() }.getOrDefault(emptyList())
         } else emptyList()
         return server + own()
     }

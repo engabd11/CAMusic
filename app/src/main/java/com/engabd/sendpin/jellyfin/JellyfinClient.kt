@@ -1,5 +1,6 @@
 package com.engabd.sendpin.jellyfin
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.library.fetchAllPages
 import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.ma.MaAudioFormat
@@ -660,7 +661,7 @@ class JellyfinClient(
         // do not live under the music library — the same reason [playlists] asks
         // separately and with `ignoreLibrary`. Best-effort: a server that refuses the
         // query still has favourite artists, albums and tracks worth showing.
-        val favouritePlaylists = runCatching {
+        val favouritePlaylists = runCatchingCancellable {
             items(types = "Playlist", filters = "IsFavorite", ignoreLibrary = true)
         }.getOrDefault(emptyList())
         return MaSearchResults(
@@ -807,7 +808,7 @@ class JellyfinClient(
         reportPlayback(id, completed = true, positionMs = positionMs)
         countedId = null
         if (counted && (durationMs <= 0 || positionMs < durationMs * PLAYED_MARK)) {
-            runCatching { post("/Users/$userId/PlayedItems/$id") }
+            runCatchingCancellable { post("/Users/$userId/PlayedItems/$id") }
         }
     }
 

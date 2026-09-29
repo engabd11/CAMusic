@@ -1,5 +1,6 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaSearchResults
 import kotlinx.coroutines.async
@@ -33,7 +34,7 @@ object LibrarySearch {
     ): List<Hit> = coroutineScope {
         configs.map { config ->
             async {
-                runCatching { withTimeoutOrNull(timeoutMs) { searchOne(config) } }
+                runCatchingCancellable { withTimeoutOrNull(timeoutMs) { searchOne(config) } }
                     .getOrNull()
                     ?.let { Hit(config, it) }
             }

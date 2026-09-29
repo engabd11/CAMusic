@@ -1,5 +1,6 @@
 package com.engabd.sendpin.local
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.download.DownloadedTrack
 import com.engabd.sendpin.library.Capability
@@ -134,7 +135,7 @@ class DownloadsSource(
     }
 
     override suspend fun recentlyAdded(limit: Int): List<MaItem> =
-        DownloadsIndex.recentlyAdded(all(), { runCatching { File(it.filePath).lastModified() }.getOrDefault(0L) }, limit)
+        DownloadsIndex.recentlyAdded(all(), { runCatchingCancellable { File(it.filePath).lastModified() }.getOrDefault(0L) }, limit)
 
     override suspend fun favorites(): MaSearchResults =
         MaSearchResults(emptyList(), emptyList(), emptyList(), emptyList())

@@ -1,5 +1,6 @@
 package com.engabd.sendpin.hue
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.animation.ValueAnimator
 import android.content.Context
 import android.util.Log
@@ -1156,7 +1157,7 @@ class DirectLightSync(
         // path rather than calling into a session that is being torn down.
         ambience = null
         _ambienceRunning.value = null
-        runCatching { session.stop() }
+        runCatchingCancellable { session.stop() }
         rateLimiter.reset()
         safety?.reset()
         // A queue still holding frames from before the effect would replay them into

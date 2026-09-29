@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.viewmodel
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -226,14 +227,14 @@ class AlbumDetailViewModel(
             val artistId = album?.parentId ?: return null
             val similar = source?.artistInfo(artistId, similarCount = 6)?.similar.orEmpty()
             return similar.take(4).flatMap {
-                runCatching { source?.artistDetail(it.itemId)?.second.orEmpty() }.getOrDefault(emptyList())
+                runCatchingCancellable { source?.artistDetail(it.itemId)?.second.orEmpty() }.getOrDefault(emptyList())
             }
         }
         val name = album?.subtitle?.substringBefore(",")?.trim() ?: return null
         val artist = maRepo.search(name).artists.firstOrNull { it.name.equals(name, ignoreCase = true) }
             ?: return null
         return maRepo.similarArtists(artist).take(4)
-            .flatMap { runCatching { maRepo.artistAlbums(it) }.getOrDefault(emptyList()) }
+            .flatMap { runCatchingCancellable { maRepo.artistAlbums(it) }.getOrDefault(emptyList()) }
     }
 
     /** Anything in the same genre — the weakest claim, and better than nothing. */

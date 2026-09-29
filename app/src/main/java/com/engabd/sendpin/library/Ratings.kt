@@ -1,5 +1,6 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.ma.MaItem
 import java.util.concurrent.ConcurrentHashMap
 
@@ -30,7 +31,7 @@ object Ratings {
 
     /** 0 = unrated. Never throws: an unreadable rating is shown as none. */
     suspend fun current(source: MusicSource, item: MaItem): Int =
-        made[key(item)] ?: (runCatching { source.rating(item) }.getOrNull() ?: 0)
+        made[key(item)] ?: (runCatchingCancellable { source.rating(item) }.getOrNull() ?: 0)
 
     /** Throws what the server said, so the caller can show it. */
     suspend fun set(source: MusicSource, item: MaItem, stars: Int) {

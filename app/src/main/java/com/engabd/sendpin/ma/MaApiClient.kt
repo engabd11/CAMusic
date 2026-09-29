@@ -57,7 +57,9 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         private set
 
     private val http = Http.socket(pingSeconds = 30)
-    private var ws: WebSocket? = null
+    // Volatile: written by dial/disconnect on the caller's thread and read by every
+    // OkHttp callback thread for the stale-socket check below.
+    @Volatile private var ws: WebSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _state = MutableStateFlow(State.DISCONNECTED)

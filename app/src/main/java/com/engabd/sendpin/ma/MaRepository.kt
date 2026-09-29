@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ma
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
@@ -599,7 +600,7 @@ class MaRepository(
         val now = System.currentTimeMillis()
         if (queueIdServer != serverUrl) { queueIdCache.clear(); queueIdServer = serverUrl }
         queueIdCache[playerId]?.let { (id, at) -> if (now - at < QUEUE_ID_TTL_MS) return id }
-        val res = runCatching {
+        val res = runCatchingCancellable {
             api.sendCommand("player_queues/get_active_queue", buildJsonObject { put("player_id", playerId) })
         }.getOrNull()?.jsonObject
         val id = res?.get("queue_id")?.jsonPrimitive?.contentOrNull ?: playerId
@@ -617,7 +618,7 @@ class MaRepository(
 
     /** A single player's state, or null when the server doesn't know it. */
     suspend fun getPlayer(playerId: String): MaPlayer? {
-        val res = runCatching {
+        val res = runCatchingCancellable {
             api.sendCommand("players/get", buildJsonObject {
                 put("player_id", playerId); put("raise_unavailable", false)
             })
@@ -769,7 +770,7 @@ class MaRepository(
     private suspend fun describePlayFailure(e: MaApiException, uris: List<String>): Exception {
         if (e.code != ERR_MEDIA_NOT_FOUND || e.isTransport) return e
         val uri = uris.firstOrNull() ?: return e
-        val found = runCatching {
+        val found = runCatchingCancellable {
             api.sendCommand("music/item_by_uri", buildJsonObject { put("uri", uri) }, timeoutMs = 10_000)
         }.getOrNull() != null
         return playFailure(e, found)
@@ -1556,7 +1557,7 @@ class MaRepository(
 
     /** All user-defined DSP presets. */
     suspend fun getDspPresets(): List<DspPreset> {
-        val res = runCatching {
+        val res = runCatchingCancellable {
             api.sendCommand("config/dsp_presets/get")
         }.getOrNull() ?: return emptyList()
         val arr = res as? kotlinx.serialization.json.JsonArray ?: return emptyList()
@@ -1565,7 +1566,7 @@ class MaRepository(
 
     /** Create or update a preset. Returns the saved preset with its id. */
     suspend fun saveDspPreset(preset: DspPreset): DspPreset? {
-        val res = runCatching {
+        val res = runCatchingCancellable {
             api.sendCommand("config/dsp_presets/save", buildJsonObject {
                 put("preset", DspParse.presetToJson(preset))
             })
@@ -1575,7 +1576,7 @@ class MaRepository(
 
     /** Remove a preset by id. */
     suspend fun removeDspPreset(presetId: String) {
-        runCatching {
+        runCatchingCancellable {
             api.sendCommand("config/dsp_presets/remove", buildJsonObject {
                 put("preset_id", presetId)
             })

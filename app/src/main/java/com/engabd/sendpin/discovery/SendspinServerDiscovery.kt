@@ -1,5 +1,6 @@
 package com.engabd.sendpin.discovery
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -26,7 +27,7 @@ class SendspinServerDiscovery(context: Context) {
 
     /** The advertised endpoint of the Sendspin server at [host], or null if none answered within [timeoutMs]. */
     suspend fun resolve(host: String, timeoutMs: Long = DEFAULT_TIMEOUT_MS): String? {
-        val wanted = runCatching { InetAddress.getByName(host) }.getOrNull()
+        val wanted = runCatchingCancellable { InetAddress.getByName(host) }.getOrNull()
         val result = CompletableDeferred<String?>()
         val listener = object : NsdManager.DiscoveryListener {
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) { result.complete(null) }

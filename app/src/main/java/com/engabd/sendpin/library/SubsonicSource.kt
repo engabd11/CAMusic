@@ -1,5 +1,6 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaSearchResults
@@ -87,7 +88,7 @@ class SubsonicSource(
      * and plain Subsonic servers will return 404 or 405, which we treat as "no extensions".
      */
     suspend fun probeCapabilities() {
-        extensions = runCatching { client.openSubsonicExtensions().keys }.getOrElse {
+        extensions = runCatchingCancellable { client.openSubsonicExtensions().keys }.getOrElse {
             // Server doesn't support getOpenSubsonicExtensions (404/405) - use baseline capabilities
             emptySet()
         }

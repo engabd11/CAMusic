@@ -1,5 +1,6 @@
 package com.engabd.sendpin.download
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -215,7 +216,7 @@ class DownloadManager(
         if (legacy.isNotEmpty()) {
             dao.insertAll(legacy.map { it.toEntity() })
         }
-        runCatching { indexFile.delete() }
+        runCatchingCancellable { indexFile.delete() }
     }
 
     /**
@@ -251,7 +252,7 @@ class DownloadManager(
             }
         }
         cm.registerDefaultNetworkCallback(cb)
-        try { ready.await() } finally { runCatching { cm.unregisterNetworkCallback(cb) } }
+        try { ready.await() } finally { runCatchingCancellable { cm.unregisterNetworkCallback(cb) } }
     }
 
     /**
@@ -287,15 +288,15 @@ class DownloadManager(
         // Nor anything in a downloaded playlist. Taking a playlist offline is the one
         // download that says "keep these together"; evicting its oldest members first
         // (they were fetched in one go, so they *are* the oldest) quietly hollowed it out.
-        val inPlaylists = runCatching { playlistDao.allTrackIds().toSet() }.getOrDefault(emptySet())
+        val inPlaylists = runCatchingCancellable { playlistDao.allTrackIds().toSet() }.getOrDefault(emptySet())
         // Each file is measured once. This used to re-stat every file on every pass of
         // the loop — quadratic in the size of the library, on a cap that exists because
         // the library is large.
-        val sizes = _downloads.value.associateWith { runCatching { File(it.filePath).length() }.getOrDefault(0L) }
+        val sizes = _downloads.value.associateWith { runCatchingCancellable { File(it.filePath).length() }.getOrDefault(0L) }
         var used = sizes.values.sum()
         val candidates = sizes.keys
             .filterNot { it.id == playing || it.id in inPlaylists }
-            .sortedBy { runCatching { File(it.filePath).lastModified() }.getOrDefault(Long.MAX_VALUE) }
+            .sortedBy { runCatchingCancellable { File(it.filePath).lastModified() }.getOrDefault(Long.MAX_VALUE) }
         for (victim in candidates) {
             if (used <= capBytes) break
             delete(victim.id, victim.sourceProvider)
@@ -677,11 +678,11 @@ class DownloadManager(
      */
     suspend fun delete(id: String, provider: String? = null): Unit = withContext(Dispatchers.IO) {
         val entry = get(id, provider) ?: return@withContext
-        runCatching { File(entry.filePath).delete() }
-        runCatching { com.engabd.sendpin.lyrics.LocalLyrics.sidecarFor(File(entry.filePath)).delete() }
+        runCatchingCancellable { File(entry.filePath).delete() }
+        runCatchingCancellable { com.engabd.sendpin.lyrics.LocalLyrics.sidecarFor(File(entry.filePath)).delete() }
         // The cover is shared across an album — only bin it once the last track goes.
         entry.coverPath?.let { path ->
-            if (_downloads.value.none { it !== entry && it.coverPath == path }) runCatching { File(path).delete() }
+            if (_downloads.value.none { it !== entry && it.coverPath == path }) runCatchingCancellable { File(path).delete() }
         }
         dao.delete(id, entry.sourceProvider.orEmpty())
         // Playlist rows name a track by id alone; keep them while another library's
@@ -691,19 +692,19 @@ class DownloadManager(
         // a membership row whose file is gone is already invisible. Left alone it
         // would sit in the table for the life of the install, and the storage-cap
         // eviction loop deletes enough tracks over time for that to add up.
-        runCatching { playlistDao.forgetTrack(id) }
+        runCatchingCancellable { playlistDao.forgetTrack(id) }
     }
 
     suspend fun deleteAll(): Unit = withContext(Dispatchers.IO) {
         _downloads.value.forEach {
-            runCatching { File(it.filePath).delete() }
-            runCatching { com.engabd.sendpin.lyrics.LocalLyrics.sidecarFor(File(it.filePath)).delete() }
+            runCatchingCancellable { File(it.filePath).delete() }
+            runCatchingCancellable { com.engabd.sendpin.lyrics.LocalLyrics.sidecarFor(File(it.filePath)).delete() }
         }
-        runCatching { coverDir.listFiles()?.forEach { it.delete() } }
+        runCatchingCancellable { coverDir.listFiles()?.forEach { it.delete() } }
         dao.deleteAll()
         // The playlists go with the files. Keeping them would leave a Downloads
         // library full of empty playlists after "delete everything", which reads as
         // the delete having failed.
-        runCatching { playlistDao.removeAll() }
+        runCatchingCancellable { playlistDao.removeAll() }
     }
 }

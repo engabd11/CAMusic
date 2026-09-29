@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ma
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.app.Application
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
@@ -1244,9 +1245,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun adoptServerQueue(src: MusicSource) {
         if (src.remotePlayback() == null) return
         if (localPlayer.queue.value.isNotEmpty()) return
-        val items = runCatching { src.serverQueue() }.getOrNull().orEmpty()
+        val items = runCatchingCancellable { src.serverQueue() }.getOrNull().orEmpty()
         if (items.isEmpty()) return
-        val at = runCatching { src.serverQueueIndex() }.getOrNull() ?: 0
+        val at = runCatchingCancellable { src.serverQueueIndex() }.getOrNull() ?: 0
         localPlayer.adoptRemoteQueue(items.map { localTrack(it) }, at)
     }
 
@@ -2110,7 +2111,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         val landed = tracks.filter { downloadManager.isDownloaded(it) }.map { it.itemId }
         if (landed.isEmpty()) return
-        runCatching {
+        runCatchingCancellable {
             downloadedPlaylists.record(
                 provider = sc.providerId,
                 sourceId = container.itemId,
@@ -2428,7 +2429,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun loadSavedQueue() {
         val sc = source ?: return
-        val saved = runCatching { sc.savedQueue() }.getOrNull() ?: return
+        val saved = runCatchingCancellable { sc.savedQueue() }.getOrNull() ?: return
         val currentId = localPlayer.current.value?.scrobbleId
         val savedId = saved.tracks.getOrNull(saved.index)?.itemId
         if (savedId != null && savedId == currentId) return
@@ -2641,7 +2642,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val fromLibrary = if (_offline.value || src == null) {
             emptyList<MaItem>()
         } else {
-            runCatching { src.randomSongs(DJ_SEED_POOL) }.getOrDefault(emptyList())
+            runCatchingCancellable { src.randomSongs(DJ_SEED_POOL) }.getOrDefault(emptyList())
         }
         return fromLibrary.ifEmpty { downloads.value.map { downloadItem(it) } }
             .filter { it.itemId.isNotBlank() }
@@ -2785,7 +2786,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val fromLibrary = if (_offline.value || src == null) {
             emptyList<MaItem>()
         } else {
-            runCatching { src.randomSongs(want) }.getOrDefault(emptyList())
+            runCatchingCancellable { src.randomSongs(want) }.getOrDefault(emptyList())
         }
         val page = fromLibrary.ifEmpty { downloads.value.map { downloadItem(it) } }
             .filter { it.itemId.isNotBlank() }
@@ -4105,7 +4106,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** [downloadItems] with any kept playlists in front of it. See [openCategory]. */
     private suspend fun downloadNodeItems(): List<MaItem> =
-        runCatching { downloadedPlaylists.all() }.getOrDefault(emptyList()) +
+        runCatchingCancellable { downloadedPlaylists.all() }.getOrDefault(emptyList()) +
             downloadItems(downloads.value)
 
     /**

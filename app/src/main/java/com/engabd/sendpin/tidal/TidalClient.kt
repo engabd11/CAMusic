@@ -1,5 +1,6 @@
 package com.engabd.sendpin.tidal
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaSearchResults
@@ -342,8 +343,8 @@ class TidalClient(
      */
     suspend fun account(): com.engabd.sendpin.library.ProviderAccount? {
         if (userId.isBlank()) return null
-        val user = runCatching { get("users/$userId") }.getOrNull()
-        val sub = runCatching { get("users/$userId/subscription") }.getOrNull()
+        val user = runCatchingCancellable { get("users/$userId") }.getOrNull()
+        val sub = runCatchingCancellable { get("users/$userId/subscription") }.getOrNull()
         return parseAccount(user, sub)
     }
 

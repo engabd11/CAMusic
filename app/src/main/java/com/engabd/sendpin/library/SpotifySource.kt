@@ -1,5 +1,6 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.audio.RemotePlayback
 import com.engabd.sendpin.audio.StreamSchemes
 import com.engabd.sendpin.ma.MaItem
@@ -104,7 +105,7 @@ class SpotifySource(
     /** The artist's own metadata plus their album list, two round-trips. */
     override suspend fun artistDetail(id: String): Pair<MaItem?, List<MaItem>> {
         val api = api()
-        val artist = withContext_IO { runCatching { api.artist(id) }.getOrNull() }
+        val artist = withContext_IO { runCatchingCancellable { api.artist(id) }.getOrNull() }
         val albums = withContext_IO { api.artistAlbums(id) }
         return artist to albums
     }

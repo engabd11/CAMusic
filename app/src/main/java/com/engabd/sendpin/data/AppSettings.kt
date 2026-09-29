@@ -1,5 +1,6 @@
 package com.engabd.sendpin.data
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.Preferences
@@ -1617,7 +1618,7 @@ class AppSettings(private val context: Context) {
      * pairing. Opaque to the app — see `AirPlayOutput.onCredentials`.
      */
     val airPlayCredentials: Flow<Map<String, String>> = pref {
-        runCatching {
+        runCatchingCancellable {
             kotlinx.serialization.json.Json.parseToJsonElement(it[AIRPLAY_CREDENTIALS] ?: "{}")
                 .let { el -> (el as? kotlinx.serialization.json.JsonObject).orEmpty() }
                 .mapValues { (_, v) -> (v as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty() }
@@ -1626,7 +1627,7 @@ class AppSettings(private val context: Context) {
 
     suspend fun setAirPlayCredentials(deviceId: String, credentialsJson: String) {
         context.dataStore.edit { prefs ->
-            val current = runCatching {
+            val current = runCatchingCancellable {
                 kotlinx.serialization.json.Json.parseToJsonElement(prefs[AIRPLAY_CREDENTIALS] ?: "{}")
                     .let { el -> (el as? kotlinx.serialization.json.JsonObject).orEmpty() }
                     .mapValues { (_, v) -> (v as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty() }

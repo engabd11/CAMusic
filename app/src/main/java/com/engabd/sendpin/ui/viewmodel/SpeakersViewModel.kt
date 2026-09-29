@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.viewmodel
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -243,7 +244,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
             // every 5-second poll for ever.
             if (p.playerId in askedSyncDelay) continue
             askedSyncDelay += p.playerId
-            runCatching { repo.getSyncDelay(p.playerId) }.getOrNull()?.let { delays[p.playerId] = it }
+            runCatchingCancellable { repo.getSyncDelay(p.playerId) }.getOrNull()?.let { delays[p.playerId] = it }
         }
         // A player that has left the group gets a clean slate, so rejoining asks the
         // server again rather than trusting a cached "no".

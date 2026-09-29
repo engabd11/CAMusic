@@ -1,5 +1,6 @@
 package com.engabd.sendpin.audio
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.ma.MaItem
 
@@ -82,7 +83,7 @@ class AlbumContinuation(
         // A track's parentId is its album id. Without one there is no "rest of the
         // record" to speak of, and guessing by title would be worse than declining.
         val albumId = seed?.parentId?.takeIf { it.isNotBlank() } ?: return emptyList()
-        val (album, tracks) = runCatching { walk.album(albumId) }.getOrNull() ?: return emptyList()
+        val (album, tracks) = runCatchingCancellable { walk.album(albumId) }.getOrNull() ?: return emptyList()
 
         // Keyed rather than a plain list, and filtered **as it fills** rather than at
         // the end. Filtering afterwards looks equivalent and is not: the loop below
@@ -122,7 +123,7 @@ class AlbumContinuation(
         // An album's parentId is its *artist* id, which is what makes a discography
         // reachable from a track in one hop.
         album.parentId?.takeIf { it.isNotBlank() }?.let { artistId ->
-            val discography = runCatching { walk.artistAlbums(artistId) }.getOrDefault(emptyList())
+            val discography = runCatchingCancellable { walk.artistAlbums(artistId) }.getOrDefault(emptyList())
             val i = discography.indexOfFirst { it.itemId == album.itemId }
             if (i >= 0) discography.getOrNull(i + 1)?.let { return it }
         }
@@ -140,7 +141,7 @@ class AlbumContinuation(
         val seen = mutableSetOf<String>()
         var offset = 0
         while (all.size < albumLimit) {
-            val page = runCatching { walk.albumsPage(offset, pageSize) }.getOrDefault(emptyList())
+            val page = runCatchingCancellable { walk.albumsPage(offset, pageSize) }.getOrDefault(emptyList())
             if (page.isEmpty()) break
             val fresh = page.filterNot { it.itemId in seen }
             fresh.forEach { seen += it.itemId }

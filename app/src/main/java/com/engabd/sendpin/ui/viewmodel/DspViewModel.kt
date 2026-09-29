@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.viewmodel
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -192,7 +193,7 @@ class DspViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun loadPresets() {
-        runCatching { repo.getDspPresets() }
+        runCatchingCancellable { repo.getDspPresets() }
             .onSuccess { _presets.value = it }
             .onFailure { /* presets are optional, silent failure */ }
     }
@@ -205,7 +206,7 @@ class DspViewModel(app: Application) : AndroidViewModel(app) {
      * MA only reports DSP state against a current item.
      */
     private suspend fun loadDspState(playerId: String, leaderId: String) {
-        _dspDetails.value = runCatching { repo.queues() }.getOrNull()
+        _dspDetails.value = runCatchingCancellable { repo.queues() }.getOrNull()
             ?.firstOrNull { it.queueId == leaderId }
             ?.dspFor(playerId = playerId, leaderId = leaderId)
     }

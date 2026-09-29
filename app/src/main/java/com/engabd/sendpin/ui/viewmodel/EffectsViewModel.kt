@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.viewmodel
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
@@ -246,9 +247,9 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
                 app.playbackOwner.state.value.anyPlaying
             if (!shareOutput) {
                 // 1. Say the output is changing hands, so the loser knows it was us.
-                runCatching { app.playbackOwner.noteTakingOutput() }
+                runCatchingCancellable { app.playbackOwner.noteTakingOutput() }
                 // 2. Stop the music properly rather than letting focus loss do it.
-                runCatching { app.playbackOwner.pause() }
+                runCatchingCancellable { app.playbackOwner.pause() }
             }
 
             val mode = settings.effectsSoundMode.first()

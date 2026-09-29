@@ -1,5 +1,6 @@
 package com.engabd.sendpin.widget
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -182,7 +183,7 @@ class NowPlayingWidget : GlanceAppWidget() {
          * to look broken.
          */
         suspend fun refresh(context: Context) {
-            runCatching {
+            runCatchingCancellable {
                 NowPlayingWidget().updateAll(context)
             }
         }

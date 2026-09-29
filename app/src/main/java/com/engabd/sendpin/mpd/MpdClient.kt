@@ -1,5 +1,6 @@
 package com.engabd.sendpin.mpd
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaSearchResults
@@ -909,7 +910,7 @@ class MpdClient(
 
     /** What MPD says its ReplayGain is set to, or null if it wouldn't say. */
     suspend fun replayGainMode(): String? =
-        runCatching { command("replay_gain_status").toMap()["replay_gain_mode"] }.getOrNull()
+        runCatchingCancellable { command("replay_gain_status").toMap()["replay_gain_mode"] }.getOrNull()
 
     /** Stop playback. */
     suspend fun stop() { command("stop") }

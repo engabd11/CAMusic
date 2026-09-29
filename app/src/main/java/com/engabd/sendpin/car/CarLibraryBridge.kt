@@ -1,5 +1,6 @@
 package com.engabd.sendpin.car
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -324,8 +325,8 @@ class CarLibraryBridge(private val app: SendpinApp) {
         return items.map { it.toMediaItem(id.serverId, options) }
     }
 
-    private suspend fun shelfItems(id: CarMediaId.Shelf, options: CarBrowseOptions): List<MaItem> = runCatching {
-        val config = configFor(id.serverId) ?: return@runCatching emptyList<MaItem>()
+    private suspend fun shelfItems(id: CarMediaId.Shelf, options: CarBrowseOptions): List<MaItem> = runCatchingCancellable {
+        val config = configFor(id.serverId) ?: return@runCatchingCancellable emptyList<MaItem>()
         val limit = options.shelfItemLimit
         val trackLimit = options.trackItemLimit
         withTimeoutOrNull(BROWSE_TIMEOUT_MS) {
@@ -359,7 +360,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
 
     private suspend fun itemChildren(id: CarMediaId.Item, options: CarBrowseOptions): List<MaItem> =
         cached(id.encode()) {
-            runCatching {
+            runCatchingCancellable {
                 val placeholder = id.toPlaceholderItem()
                 withTimeoutOrNull(BROWSE_TIMEOUT_MS) {
                     if (MusicSources.isLocalProvider(id.provider)) {
@@ -538,7 +539,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
         // before answering null - five seconds of silence between the tap and the
         // music, for a stop that had nothing to stop.
         if (app.maApi.state.value == MaApiClient.State.CONNECTED) {
-            runCatching { maRepo.stop(PlayerIdentity.getPlayerId(app)) }
+            runCatchingCancellable { maRepo.stop(PlayerIdentity.getPlayerId(app)) }
         }
         app.localPlayer.setQueue(tracks, 0)
     }
@@ -558,7 +559,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
         // surface - would pause the kitchen. Tapping a song in the car is as clear a
         // statement of "play it *here*" as the Speakers screen is of the opposite.
         settings.setTargetPlayer(me)
-        runCatching { maRepo.playOn(me, listOf(uri), "replace", radioMode = false) }
+        runCatchingCancellable { maRepo.playOn(me, listOf(uri), "replace", radioMode = false) }
     }
 
     // ── Shared lookups ───────────────────────────────────────────────────────
@@ -603,7 +604,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
      */
     suspend fun warmUp() {
         val config = settings.servers.first().firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT } ?: return
-        runCatching { maReady(config) }
+        runCatchingCancellable { maReady(config) }
     }
 
     private suspend fun configFor(serverId: String): ServerConfig? =
@@ -644,7 +645,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
         // moment this result reaches it.
         withContext(Dispatchers.IO) {
             for (uri in uris) {
-                runCatching { app.grantUriPermission(target, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                runCatchingCancellable { app.grantUriPermission(target, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             }
         }
     }

@@ -1,5 +1,6 @@
 package com.engabd.sendpin.scrobble
 
+import com.engabd.sendpin.util.runCatchingCancellable
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -84,7 +85,7 @@ class Scrobbler(
     suspend fun listened(play: Play, provider: String?, trackId: String?) {
         if (provider != null && trackId != null) {
             val sink = sinkFor(provider)
-            val ok = sink != null && runCatching {
+            val ok = sink != null && runCatchingCancellable {
                 sink.scrobble(trackId, completed = true, startedAtMs = play.startedAtMs, positionMs = null)
             }.isSuccess
             if (!ok && sink != null) enqueue(PendingScrobble(PendingScrobble.SERVER, play, provider, trackId))
