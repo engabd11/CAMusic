@@ -1,5 +1,8 @@
 package com.engabd.sendpin.ui.screens
 
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.clickable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.Spring
@@ -86,7 +89,11 @@ fun LyricsPane(
 ) {
     val load by viewModel.lyrics.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
-    val offsetMs by viewModel.lyricsOffsetMs.collectAsStateWithLifecycle()
+    val globalOffsetMs by viewModel.lyricsOffsetMs.collectAsStateWithLifecycle()
+    val songOffsetMs by viewModel.songLyricsOffsetMs.collectAsStateWithLifecycle()
+    val online by viewModel.lyricsOnline.collectAsStateWithLifecycle()
+    // The two nudges add: the Settings one for a provider, this song's for itself.
+    val offsetMs = globalOffsetMs + songOffsetMs
 
     // The pane says when it is on screen; the view model decides when to fetch.
     //
@@ -111,17 +118,33 @@ fun LyricsPane(
             Load.Loading ->
                 CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = accent)
 
-            is Load.Failed -> Notice(Icons.Default.CloudOff, l.message)
+            // Nothing from the phone or the library. Offer LRCLIB, unless it was
+            // already asked — by the setting — and had nothing either.
+            is Load.Failed -> Notice(
+                Icons.Default.CloudOff, l.message,
+                action = if (online) null else ("Search LRCLIB" to viewModel::searchLyricsOnline),
+            )
 
             is Load.Ready -> {
                 val lyrics: MaLyrics? = l.value
-                if (lyrics == null || lyrics.lines.none { it.text.isNotBlank() }) {
-                    Notice(Icons.Default.Lyrics, "No lyrics for this track.")
-                } else if (!lyrics.synced && lyrics.text.length < 20 && !lyrics.text.contains(" ")) {
+                val none = lyrics == null || lyrics.lines.none { it.text.isNotBlank() } ||
                     // A single short word is usually an error response, not lyrics.
-                    Notice(Icons.Default.Lyrics, "No lyrics for this track.")
+                    (!lyrics.synced && lyrics.text.length < 20 && !lyrics.text.contains(" "))
+                if (none || lyrics == null) {
+                    Notice(
+                        Icons.Default.Lyrics, "No lyrics for this track.",
+                        action = if (online) null else ("Search LRCLIB" to viewModel::searchLyricsOnline),
+                    )
                 } else {
-                    SyncedLyrics(lyrics, positionMs, accent, offsetMs)
+                    Column(Modifier.fillMaxSize()) {
+                        SyncedLyrics(
+                            lyrics, positionMs, accent, offsetMs,
+                            // Tap a line to go there: seek to where it lights up.
+                            onLine = { atMs -> viewModel.seekTo((atMs - offsetMs).coerceAtLeast(0)) },
+                            modifier = Modifier.weight(1f),
+                        )
+                        LyricsFooter(lyrics, songOffsetMs, accent, viewModel)
+                    }
                 }
             }
         }
@@ -271,12 +294,57 @@ private val LyricScroll: AnimationSpec<Float> = spring(
 private val FocusTravel: AnimationSpec<Float> =
     spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 240f)
 
+/**
+ * Under the words: who they came from when it is not the library, and — for synced
+ * lyrics — this song's own timing nudge. Quiet on purpose; it is a correction you
+ * make once per song, not a control you use while listening.
+ */
+@Composable
+private fun LyricsFooter(lyrics: MaLyrics, songOffsetMs: Int, accent: Color, viewModel: NowPlayingViewModel) {
+    if (!lyrics.synced && lyrics.source == null) return
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            lyrics.source?.let { "Lyrics from $it" }.orEmpty(),
+            color = TextFaint, fontFamily = AppFont, fontSize = 10.sp,
+            modifier = Modifier.weight(1f),
+        )
+        if (lyrics.synced) {
+            FooterButton("Earlier", "Show these lyrics earlier") { viewModel.nudgeLyrics(com.engabd.sendpin.lyrics.LyricsOffsets.STEP_MS) }
+            Text(
+                if (songOffsetMs == 0) "In time" else "%+.2fs".format(songOffsetMs / 1000f),
+                color = if (songOffsetMs == 0) TextFaint else accent,
+                fontFamily = AppFont, fontSize = 11.sp,
+                modifier = Modifier
+                    .clickable(onClickLabel = "Reset this song's lyrics timing") { viewModel.resetLyricsNudge() }
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+            )
+            FooterButton("Later", "Show these lyrics later") { viewModel.nudgeLyrics(-com.engabd.sendpin.lyrics.LyricsOffsets.STEP_MS) }
+        }
+    }
+}
+
+@Composable
+private fun FooterButton(label: String, description: String, onClick: () -> Unit) {
+    Text(
+        label,
+        color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+        modifier = Modifier
+            .clickable(onClickLabel = description, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+    )
+}
+
 @Composable
 private fun SyncedLyrics(
     lyrics: MaLyrics,
     positionMs: Long,
     accent: Color,
     offsetMs: Int,
+    onLine: (Long) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val lines = lyrics.lines
     // The line in force: the last one whose timestamp has passed, read slightly into
@@ -355,7 +423,7 @@ private fun SyncedLyrics(
     }
 
     LazyColumn(
-        Modifier
+        modifier
             .fillMaxSize()
             .onSizeChanged { viewportPx = it.height }
             // The words fade out at the edges rather than being cut by them, so the
@@ -422,6 +490,17 @@ private fun SyncedLyrics(
                     color = lerp(resting, accent, activeness),
                     modifier = Modifier
                         .fillMaxWidth()
+                        // A line is somewhere to go: tap it and the song seeks there. Only
+                        // on synced lyrics, where a line has a time to go to.
+                        .then(
+                            if (lyrics.synced) {
+                                Modifier.clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClickLabel = "Play from this line",
+                                ) { following = true; onLine(line.atMs) }
+                            } else Modifier,
+                        )
                         // graphicsLayer *outside* the padding, so the layer's bounds
                         // include it: a blur is clipped to the layer it is set on, and
                         // a layer measured tight to the glyphs would cut the softness
@@ -505,7 +584,11 @@ private suspend fun LazyListState.centreOn(index: Int, viewportPx: Int, instant:
 }
 
 @Composable
-private fun Notice(icon: androidx.compose.ui.graphics.vector.ImageVector, message: String) {
+private fun Notice(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    message: String,
+    action: Pair<String, () -> Unit>? = null,
+) {
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -516,5 +599,14 @@ private fun Notice(icon: androidx.compose.ui.graphics.vector.ImageVector, messag
             message, color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
             lineHeight = 18.sp, textAlign = TextAlign.Center,
         )
+        action?.let { (label, onClick) ->
+            Spacer(Modifier.height(12.dp))
+            com.engabd.sendpin.ui.design.Pill(label, false) { onClick() }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Sends this song's artist and title to lrclib.net.",
+                color = TextFaint, fontFamily = AppFont, fontSize = 10.sp, textAlign = TextAlign.Center,
+            )
+        }
     }
 }

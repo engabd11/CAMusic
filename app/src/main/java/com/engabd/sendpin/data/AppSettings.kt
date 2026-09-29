@@ -198,6 +198,7 @@ class AppSettings(private val context: Context) {
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
         private val REPLAY_GAIN_UNTAGGED = stringPreferencesKey("replay_gain_untagged") // dB as text; "0" = leave untagged alone
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
+        private val LYRICS_ONLINE = booleanPreferencesKey("lyrics_online")
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
         // Driving mode — a slim always-on-top transport for a phone in a cradle.
@@ -1264,6 +1265,15 @@ class AppSettings(private val context: Context) {
      * no way to know which is right from here. So it is the listener's dial.
      */
     val lyricsOffsetMs: Flow<Int> = pref { it[LYRICS_OFFSET_MS]?.toIntOrNull() ?: 0 }
+
+    /**
+     * Ask LRCLIB when the library has no lyrics. Off by default: it sends the song's
+     * artist and title to a third party, which on a self-hosted setup should be a
+     * choice. The lyrics pane offers a one-off search either way.
+     */
+    val lyricsOnline: Flow<Boolean> = pref { it[LYRICS_ONLINE] ?: false }
+
+    suspend fun setLyricsOnline(on: Boolean) = context.dataStore.edit { it[LYRICS_ONLINE] = on }
 
     suspend fun setLyricsOffsetMs(ms: Int) = context.dataStore.edit {
         it[LYRICS_OFFSET_MS] = ms.coerceIn(-MAX_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS).toString()

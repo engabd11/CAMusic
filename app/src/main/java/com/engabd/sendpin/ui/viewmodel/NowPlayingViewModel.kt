@@ -24,6 +24,9 @@ import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ma.MaLyrics
+import com.engabd.sendpin.lyrics.LocalLyrics
+import com.engabd.sendpin.lyrics.Lrclib
+import com.engabd.sendpin.lyrics.LyricsOffsets
 import com.engabd.sendpin.ma.MaNowPlaying
 import com.engabd.sendpin.ma.MaParse
 import com.engabd.sendpin.ma.MaPlayer
@@ -876,6 +879,44 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     val lyricsOffsetMs: StateFlow<Int> = settings.lyricsOffsetMs
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
+    /**
+     * This song's own nudge, on top of [lyricsOffsetMs] — see [LyricsOffsets]. Keyed
+     * by the song rather than by a server id, and re-read when the song changes.
+     */
+    private val _songLyricsOffsetMs = MutableStateFlow(0)
+    val songLyricsOffsetMs: StateFlow<Int> = _songLyricsOffsetMs
+
+    private fun songKey(): String? =
+        if (isLocal) local.current.value?.let { LyricsOffsets.key(it.artist, it.title) }
+        else currentItem.value?.let { LyricsOffsets.key(it.subtitle, it.name) }
+
+    /** Move this song's lyrics earlier (+) or later (−) by [deltaMs]. */
+    fun nudgeLyrics(deltaMs: Int) {
+        val key = songKey() ?: return
+        val next = (_songLyricsOffsetMs.value + deltaMs).coerceIn(-LyricsOffsets.MAX_MS, LyricsOffsets.MAX_MS)
+        _songLyricsOffsetMs.value = next
+        LyricsOffsets.set(getApplication(), key, next)
+    }
+
+    fun resetLyricsNudge() {
+        val key = songKey() ?: return
+        _songLyricsOffsetMs.value = 0
+        LyricsOffsets.set(getApplication(), key, 0)
+    }
+
+    /** Whether LRCLIB is asked without asking — the Settings switch. */
+    val lyricsOnline: StateFlow<Boolean> = settings.lyricsOnline
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** The listener asked for an online search for this song, once. Cleared per song. */
+    private var searchOnlineOnce = false
+
+    /** Look this song up on LRCLIB now, whatever the setting says. */
+    fun searchLyricsOnline() {
+        searchOnlineOnce = true
+        loadLyrics()
+    }
+
     private val _similar = MutableStateFlow<Load<List<MaSimilarTrack>>>(Load.Idle)
     val similar: StateFlow<Load<List<MaSimilarTrack>>> = _similar
 
@@ -1522,30 +1563,42 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- lyrics ------------------------------------------------------------
 
+    /**
+     * The lyrics for what is playing, from the first place that has them:
+     *  1. the phone — a sidecar `.lrc` beside a download, or the file's own tags
+     *     ([LocalLyrics]); instant and offline;
+     *  2. the library the track came from;
+     *  3. LRCLIB, when the listener allows it or asked for this song ([Lrclib]).
+     * A server that fails is not the end of it: the next step is still tried, and its
+     * error is only shown if nothing turned up.
+     */
     fun loadLyrics() {
-        // When the local player is active (Navidrome/offline), try Subsonic lyrics.
+        songKey()?.let { _songLyricsOffsetMs.value = LyricsOffsets.get(getApplication(), it) }
         if (isLocal) {
             val track = local.current.value
             if (track == null) { _lyrics.value = Load.Failed("Nothing playing"); return }
             _lyrics.value = Load.Loading
             viewModelScope.launch {
-                _lyrics.value = try {
-                    // Asked of the *library this track came from*, not of Navidrome by
-                    // name. This built its own Subsonic client, so on Jellyfin it
-                    // either found nothing or — with both servers configured — sent a
-                    // Jellyfin guid to Navidrome and asked why it had no lyrics.
-                    val id = track.scrobbleId ?: track.id
-                    val lyrics: MaLyrics? = lyricsSource(track)?.lyrics(id)
-                        // The play-original path plays a Navidrome file while Music
-                        // Assistant is the library, so there is no live source to ask
-                        // — but the lyrics are there, and this is where they come from.
-                        ?: subsonicClient()?.takeIf { track.scrobbleProvider == SubsonicClient.PROVIDER }
-                            ?.getLyrics(id)
-                    if (lyrics != null) Load.Ready(lyrics)
-                    else Load.Failed("No lyrics found")
-                } catch (e: Exception) {
-                    Load.Failed(e.message ?: "Couldn't fetch lyrics")
-                }
+                var failure: String? = null
+                val lyrics = LocalLyrics.read(getApplication(), track)
+                    ?: try {
+                        // Asked of the *library this track came from*, not of Navidrome by
+                        // name. This built its own Subsonic client, so on Jellyfin it
+                        // either found nothing or — with both servers configured — sent a
+                        // Jellyfin guid to Navidrome and asked why it had no lyrics.
+                        val id = track.scrobbleId ?: track.id
+                        lyricsSource(track)?.lyrics(id)
+                            // The play-original path plays a Navidrome file while Music
+                            // Assistant is the library, so there is no live source to ask
+                            // — but the lyrics are there, and this is where they come from.
+                            ?: subsonicClient()?.takeIf { track.scrobbleProvider == SubsonicClient.PROVIDER }
+                                ?.getLyrics(id)
+                    } catch (e: Exception) {
+                        failure = e.message ?: "Couldn't fetch lyrics"
+                        null
+                    }
+                    ?: online(track.title, track.artist, track.album, (track.durationMs / 1000).toInt())
+                _lyrics.value = lyrics?.let { Load.Ready(it) } ?: Load.Failed(failure ?: "No lyrics found")
             }
             return
         }
@@ -1555,12 +1608,21 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
         _lyrics.value = Load.Loading
         viewModelScope.launch {
-            _lyrics.value = try {
-                Load.Ready(repo.getLyrics(item))
+            var failure: String? = null
+            val lyrics = try {
+                repo.getLyrics(item)?.takeIf { it.text.isNotBlank() }
             } catch (e: Exception) {
-                Load.Failed(e.message ?: "Couldn't fetch lyrics")
-            }
+                failure = e.message ?: "Couldn't fetch lyrics"
+                null
+            } ?: online(item.name, item.subtitle, item.album, item.duration)
+            _lyrics.value = lyrics?.let { Load.Ready(it) } ?: Load.Failed(failure ?: "No lyrics found")
         }
+    }
+
+    /** LRCLIB, if allowed — the setting, or a search asked for on this song. */
+    private suspend fun online(title: String, artist: String?, album: String?, durationS: Int?): MaLyrics? {
+        if (!searchOnlineOnce && !settings.lyricsOnline.first()) return null
+        return runCatching { Lrclib().find(title, artist, album, durationS) }.getOrNull()?.copy(source = "LRCLIB")
     }
 
     // --- sonic similarity ---------------------------------------------------
@@ -2006,6 +2068,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                     if (key != lastKey || !seeded) {
                         lastKey = key
                         seeded = true
+                        searchOnlineOnce = false
                         _lyrics.value = Load.Idle
                     }
                     // Idle-guarded so closing and reopening the pane on the same track
