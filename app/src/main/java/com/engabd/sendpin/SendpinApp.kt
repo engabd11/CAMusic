@@ -996,6 +996,8 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // carry. See MpdArt.
             .components {
                 add(com.engabd.sendpin.mpd.MpdArtFetcher.Factory())
+                // Covers of files on this phone, from the media provider — see LocalArt.
+                add(com.engabd.sendpin.local.LocalArt.Fetcher.Factory())
                 // Every request, however it was built, keyed without Subsonic's
                 // per-request salt — see ArtUrls.
                 add(com.engabd.sendpin.ui.design.ArtUrls.StableKeys)
