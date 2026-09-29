@@ -27,10 +27,11 @@ object ReplayGain {
      * gain is capped rather than trusted.
      *
      * Anything under +0 dB passes untouched. Real-world positive values are small —
-     * quiet classical and jazz recordings, mostly — so this rarely bites, and when
-     * it does, a slightly-too-quiet track is a far better outcome than a distorted one.
+     * quiet classical and jazz recordings, mostly. A rise is applied in [LocalDsp]
+     * behind a [BoostLimiter], so it cannot clip; the cap is about how hard the
+     * limiter may be asked to work on a master that was quiet on purpose.
      */
-    const val MAX_BOOST_DB = 3f
+    const val MAX_BOOST_DB = 6f
 
     /** Below this the track would be inaudible; treat it as a bad tag and ignore it. */
     const val MIN_DB = -30f
@@ -40,22 +41,33 @@ object ReplayGain {
      *
      * @param mode one of [OFF], [TRACK], [ALBUM].
      */
-    fun factor(quality: StreamQuality?, mode: String): Float {
-        val db = decibels(quality, mode) ?: return 1f
+    fun factor(quality: StreamQuality?, mode: String, untaggedDb: Float = 0f): Float {
+        val db = decibels(quality, mode, untaggedDb) ?: return 1f
         return 10f.toDouble().pow(db / 20.0).toFloat()
     }
 
-    /** The gain that will actually be applied, in dB, or null when none is. */
-    fun decibels(quality: StreamQuality?, mode: String): Float? {
+    /**
+     * The gain that will actually be applied, in dB, or null when none is.
+     *
+     * [untaggedDb] is for a track the library describes but carries no level for.
+     * A tagged track is typically pulled down 6–10 dB to the ReplayGain reference,
+     * and an untagged one used to stay at full level, so shuffling the two made
+     * every untagged song jump out. Off (0) by default; see [UNTAGGED_CHOICES].
+     * Not applied when nothing is known about the track at all.
+     */
+    fun decibels(quality: StreamQuality?, mode: String, untaggedDb: Float = 0f): Float? {
         if (quality == null) return null
+        if (mode != TRACK && mode != ALBUM) return null
         val raw = when (mode) {
             TRACK -> quality.replayGainTrack ?: quality.replayGainAlbum
             // Album gain is the point of the album mode, but a single with only a
             // track tag should still be levelled rather than left alone.
-            ALBUM -> quality.replayGainAlbum ?: quality.replayGainTrack
-            else -> null
-        } ?: return null
+            else -> quality.replayGainAlbum ?: quality.replayGainTrack
+        } ?: return untaggedDb.takeIf { it != 0f && it.isFinite() }?.coerceIn(MIN_DB, 0f)
         if (!raw.isFinite() || raw < MIN_DB) return null
         return raw.coerceAtMost(MAX_BOOST_DB)
     }
+
+    /** What "Untagged files" offers, in dB. */
+    val UNTAGGED_CHOICES = listOf(0f, -3f, -6f, -9f)
 }

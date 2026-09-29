@@ -77,4 +77,17 @@ class ReplayGainTest {
         assertNull(ReplayGain.decibels(q(album = Float.NaN), ReplayGain.ALBUM))
         assertNull(ReplayGain.decibels(q(album = Float.NEGATIVE_INFINITY), ReplayGain.ALBUM))
     }
+
+    @Test
+    fun `untagged tracks take the chosen level only when levelling is on`() {
+        assertEquals(-6f, ReplayGain.decibels(q(), ReplayGain.ALBUM, untaggedDb = -6f))
+        assertEquals(-6f, ReplayGain.decibels(q(), ReplayGain.TRACK, untaggedDb = -6f))
+        assertNull(ReplayGain.decibels(q(), ReplayGain.OFF, untaggedDb = -6f))
+        // A tag always wins over the untagged level.
+        assertEquals(-2f, ReplayGain.decibels(q(album = -2f), ReplayGain.ALBUM, untaggedDb = -9f))
+        // Nothing known about the track at all: leave it alone.
+        assertNull(ReplayGain.decibels(null, ReplayGain.ALBUM, untaggedDb = -6f))
+        // Default is off.
+        assertNull(ReplayGain.decibels(q(), ReplayGain.ALBUM))
+    }
 }

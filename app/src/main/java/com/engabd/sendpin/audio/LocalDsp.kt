@@ -129,6 +129,23 @@ class LocalDsp : BaseAudioProcessor() {
         pending = config
     }
 
+    /**
+     * Gain above unity — ReplayGain's rise for a quiet master — limited so it cannot
+     * clip. See [BoostLimiter]. Safe to call from any thread; 1 for none.
+     *
+     * It lives here rather than on the player's volume because that volume stops at
+     * 1.0. It also means the rise is applied as the audio is *written*, a sink buffer
+     * ahead of what is heard, so at a track change the new level can arrive a
+     * fraction of a second early or late; the change is ramped, and with album gain
+     * (the default) it only happens between records.
+     */
+    fun setBoost(linear: Float) {
+        boost.target = linear
+    }
+
+    private val boost = BoostLimiter()
+    private var frame = FloatArray(2)
+
     /** What is currently applied, for anything that wants to draw the curve. */
     fun currentConfig(): Config = active
 
@@ -167,6 +184,8 @@ class LocalDsp : BaseAudioProcessor() {
             sampleRate = inputAudioFormat.sampleRate
             channelCount = inputAudioFormat.channelCount
             encoding = inputAudioFormat.encoding
+            boost.configure(sampleRate)
+            if (frame.size < channelCount) frame = FloatArray(channelCount)
             // Force a rebuild: the coefficients depend on the sample rate.
             pending = active
             inputAudioFormat
@@ -181,7 +200,7 @@ class LocalDsp : BaseAudioProcessor() {
         if (remaining == 0) return
 
         val out = replaceOutputBuffer(remaining)
-        if (active.isTransparent()) {
+        if (active.isTransparent() && !boost.active) {
             out.put(inputBuffer).flip()
             return
         }
@@ -194,31 +213,35 @@ class LocalDsp : BaseAudioProcessor() {
         out.flip()
     }
 
+    // A frame at a time, not a sample: the limiter is linked across channels, so it
+    // has to see every channel of a frame before it can choose that frame's gain.
+
     private fun processFloat(input: ByteBuffer, out: ByteBuffer, order: ByteOrder) {
         out.order(order)
-        var channel = 0
-        while (input.hasRemaining()) {
-            val y = runChannel(channel, input.float)
+        val n = channelCount
+        val eq = !active.isTransparent()
+        while (input.remaining() >= 4 * n) {
+            for (c in 0 until n) frame[c] = input.float.let { if (eq) runChannel(c, it) else it }
+            if (boost.active) boost.processFrame(frame, n)
             // Float output is not implicitly bounded the way 16-bit is, and a
             // boosted band on already-hot material will exceed 1.0. Clamping is
             // what a listener hears as "loud"; letting it through is what they
             // hear as the sink tearing.
-            out.putFloat(y.coerceIn(-1f, 1f))
-            channel = (channel + 1) % channelCount
+            for (c in 0 until n) out.putFloat(frame[c].coerceIn(-1f, 1f))
         }
+        while (input.hasRemaining()) out.put(input.get())
     }
 
     private fun processShort(input: ByteBuffer, out: ByteBuffer, order: ByteOrder) {
         out.order(order)
-        var channel = 0
-        while (input.remaining() >= 2) {
-            val x = input.short / 32_768f
-            val y = runChannel(channel, x)
-            val clamped = (y.coerceIn(-1f, 1f) * 32_767f)
-            out.putShort(clamped.toInt().toShort())
-            channel = (channel + 1) % channelCount
+        val n = channelCount
+        val eq = !active.isTransparent()
+        while (input.remaining() >= 2 * n) {
+            for (c in 0 until n) frame[c] = (input.short / 32_768f).let { if (eq) runChannel(c, it) else it }
+            if (boost.active) boost.processFrame(frame, n)
+            for (c in 0 until n) out.putShort((frame[c].coerceIn(-1f, 1f) * 32_767f).toInt().toShort())
         }
-        // An odd trailing byte cannot be half a sample; pass it rather than drop it.
+        // A partial trailing frame cannot be processed as one; pass it rather than drop it.
         while (input.hasRemaining()) out.put(input.get())
     }
 
@@ -258,6 +281,7 @@ class LocalDsp : BaseAudioProcessor() {
      */
     override fun onFlush() {
         for (cascade in sections) for (section in cascade) section.reset()
+        boost.reset()
     }
 
     override fun onReset() {

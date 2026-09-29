@@ -203,4 +203,33 @@ class LocalDspTest {
 
         assertEquals(5, p.output.remaining())
     }
+
+    // ── ReplayGain boost ──────────────────────────────────────────────────
+
+    @Test
+    fun `a boost raises the level with the equaliser off`() {
+        val p = dsp(LocalDsp.Config(enabled = false))
+        p.setBoost(1.5f)
+        // The sine is at 0.5; x1.5 is 0.75, under the ceiling, so no limiting.
+        assertEquals(0.75f, run(p, 440f), 0.01f)
+    }
+
+    @Test
+    fun `a boost that would clip is limited below full scale`() {
+        val p = dsp(LocalDsp.Config(enabled = false))
+        p.setBoost(4f)
+        val peak = run(p, 440f)
+        assertTrue("peak $peak", peak <= BoostLimiter.CEILING + 0.001f)
+        assertTrue("peak $peak should still be raised", peak > 0.9f)
+    }
+
+    @Test
+    fun `no boost stays bit-exact`() {
+        val p = dsp(LocalDsp.Config(enabled = false))
+        p.setBoost(1f)
+        val input = sineBuffer(440f, 4_800)
+        val expected = input.duplicate()
+        p.queueInput(input)
+        assertEquals(expected, p.output)
+    }
 }

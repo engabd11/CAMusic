@@ -342,6 +342,10 @@ class LocalPlayer(private val context: Context) {
 
     private var replayGainMode = ReplayGain.ALBUM
 
+    /** See [ReplayGain.decibels]: the level for a track with no tag, 0 for none. */
+    @Volatile
+    private var untaggedGainDb = 0f
+
     private val _queue = MutableStateFlow<List<LocalTrack>>(emptyList())
     val queue: StateFlow<List<LocalTrack>> = _queue
 
@@ -504,6 +508,12 @@ class LocalPlayer(private val context: Context) {
                 // signal this phone isn't carrying — so the preference goes out to it
                 // instead. See RemotePlayback.setReplayGain.
                 remote?.let { r -> remoteCall { r.setReplayGain(mode) } }
+                applyGain()
+            }
+        }
+        scope.launch {
+            settings.replayGainUntaggedDb.collect { db ->
+                untaggedGainDb = db
                 applyGain()
             }
         }
@@ -2002,14 +2012,19 @@ class LocalPlayer(private val context: Context) {
     private fun applyGain() {
         if (airPlayMuted) {
             player.volume = 0f
+            localDsp.setBoost(1f)
             return
         }
         if (exclusiveOutput) {
             player.volume = 1f
+            localDsp.setBoost(1f)
             return
         }
-        val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode)
-        player.volume = (userVolume * factor * fadeFactor * speedGainFactor).coerceIn(0f, 1f)
+        val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode, untaggedGainDb)
+        // A cut rides the player's volume, as it always has; a rise cannot — that
+        // volume stops at 1.0 — so it goes to the DSP's limited boost instead.
+        localDsp.setBoost(factor.coerceAtLeast(1f))
+        player.volume = (userVolume * factor.coerceAtMost(1f) * fadeFactor * speedGainFactor).coerceIn(0f, 1f)
         // The tail is the same listener's volume on a different track: its own
         // ReplayGain, none of this player's fade. Kept in step here rather than at
         // arm time only, so a volume change mid-mix moves both songs at once.
@@ -2259,7 +2274,8 @@ class LocalPlayer(private val context: Context) {
             if (!SmartCrossfade.shouldArm(positionMs, plan, SmartCrossfade.prerollFor(local))) return
             crossfadeFor = track.id
             mixPlan = plan
-            deckReplayGain = ReplayGain.factor(track.sourceQuality, replayGainMode)
+            // Capped at unity: the deck is its own output with no boost stage.
+            deckReplayGain = ReplayGain.factor(track.sourceQuality, replayGainMode, untaggedGainDb).coerceAtMost(1f)
             val gain = (userVolume * deckReplayGain * speedGainFactor).coerceIn(0f, 1f)
             crossfadeArmed = deck.start(source, positionMs, gain, preferredOutput, _speed.value)
             if (!crossfadeArmed) mixPlan = null
