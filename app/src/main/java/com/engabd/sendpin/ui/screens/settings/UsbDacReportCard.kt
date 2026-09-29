@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.usb.UsbDacProbe
+import com.engabd.sendpin.usb.UsbToneTest
 import kotlinx.coroutines.launch
 
 /**
@@ -39,6 +40,8 @@ internal fun UsbDacReportCard(accent: Color) {
     val scope = rememberCoroutineScope()
     var report by remember { mutableStateOf<String?>(null) }
     var reading by remember { mutableStateOf(false) }
+    var toneResult by remember { mutableStateOf<String?>(null) }
+    var toneRunning by remember { mutableStateOf(false) }
 
     SettingsCard(
         title = "USB DAC",
@@ -73,6 +76,31 @@ internal fun UsbDacReportCard(accent: Color) {
                 enabled = text != null && !reading,
                 modifier = Modifier.weight(1f),
             ) { if (text != null) share(context, text) }
+        }
+        CardDivider()
+        Note(
+            "Test tone: a quiet 1 kHz tone played by CAMusic's own USB driver, two seconds in " +
+                "each format the DAC offers. Android cannot use the DAC while it runs.",
+        )
+        OledButton(
+            text = if (toneRunning) (toneResult ?: "Playing…") else "Play test tone",
+            accent = accent,
+            outline = true,
+            enabled = !toneRunning && !reading,
+        ) {
+            scope.launch {
+                toneRunning = true
+                toneResult = null
+                val result = runCatching { UsbToneTest.run(context) { toneResult = it } }
+                    .getOrElse { "Test tone failed: ${it.message}" }
+                toneResult = result
+                toneRunning = false
+            }
+        }
+        if (!toneRunning) toneResult?.let { text ->
+            SelectionContainer {
+                Text(text, color = TextSecondary, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp)
+            }
         }
         report?.let { text ->
             CardDivider()

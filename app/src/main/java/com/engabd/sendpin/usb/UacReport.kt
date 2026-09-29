@@ -33,10 +33,11 @@ object UacReport {
                         },
                 )
             }
-            if (device.volumeUnits.isEmpty()) {
+            val playbackVolumes = device.volumeUnits.filter { it.playback }
+            if (playbackVolumes.isEmpty()) {
                 appendLine("Hardware volume: none (the level is set on the DAC or the headphones)")
             } else {
-                for (v in device.volumeUnits) {
+                for (v in playbackVolumes) {
                     val parts = listOfNotNull(
                         "master".takeIf { v.masterVolume },
                         "per channel".takeIf { v.channelVolume },
