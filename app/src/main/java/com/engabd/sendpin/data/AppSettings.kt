@@ -2438,6 +2438,16 @@ class AppSettings(private val context: Context) {
         listOf(ShowPreset.default()) + stored.filterNot { it.id == ShowPreset.DEFAULT_ID }
     }
 
+    /**
+     * Add a show someone shared, beside the listener's own. A name already taken gets
+     * " (shared)" so the two chips can be told apart; the show itself is not applied.
+     */
+    suspend fun addSharedShow(show: ShowPreset) {
+        val current = showPresets.first()
+        val name = if (current.any { it.name.equals(show.name, ignoreCase = true) }) "${show.name} (shared)" else show.name
+        saveShowPresets(current + show.copy(name = name))
+    }
+
     suspend fun saveShowPresets(list: List<ShowPreset>) {
         // The built-in never goes to disk — see [showPresets].
         val storable = list.filterNot { it.id == ShowPreset.DEFAULT_ID }
