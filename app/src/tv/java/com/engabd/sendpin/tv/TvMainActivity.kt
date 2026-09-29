@@ -17,6 +17,9 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.theme.SendspinTheme
+import com.engabd.sendpin.ui.theme.ThemeChoice
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import com.engabd.sendpin.ui.theme.pageColorFor
 
 /**
@@ -65,7 +68,12 @@ class TvMainActivity : ComponentActivity() {
         }
 
         setContent {
-            SendspinTheme {
+            // The theme the TV's own Settings screen offers. This used to be a bare
+            // SendspinTheme {}, i.e. always OLED black, so choosing Light or Dark in
+            // Settings saved the choice and changed nothing on screen. The boot mirror
+            // seeds the first frame so the window does not flash the default first.
+            val themeKey by settings.theme.collectAsState(initial = settings.bootTheme)
+            SendspinTheme(theme = ThemeChoice.from(themeKey)) {
                 TvApp()
             }
         }
