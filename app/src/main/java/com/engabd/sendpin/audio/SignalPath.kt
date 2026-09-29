@@ -82,6 +82,8 @@ object SignalPath {
         val aaudioBitperfect: Boolean = false,
         /** The rate the device's mixer runs at, or 0 when it could not be read. */
         val mixerRateHz: Int = 0,
+        /** CAMusic's own USB driver is playing this track; null when it is not. */
+        val usb: UsbPath? = null,
     ) {
         /**
          * Whether media3 actually took the float path, mirroring
@@ -254,6 +256,26 @@ object SignalPath {
     /** Whether the player currently in use was built with AAudio bit-perfect direct output. */
     fun onAaudioBitperfect(enabled: Boolean) {
         _state.value = _state.value.copy(aaudioBitperfect = enabled)
+    }
+
+    /** What the USB driver sent, and what the DAC confirmed — or null when a track is not on it. */
+    data class UsbPath(
+        val dacName: String,
+        /** The rate the DAC reported back after it was set. */
+        val confirmedRateHz: Int,
+        /** Bits of audio per sample the DAC was given, and the slot they travel in. */
+        val dacBits: Int,
+        val slotBits: Int,
+        /** True when the samples reaching the DAC are the file's own: no digital volume. */
+        val samplesUntouched: Boolean,
+        /** How the level is being set: "DAC hardware volume", "digital (not bit-perfect)", or "none". */
+        val volume: String,
+        /** Set when the track's rate was above the DAC's and CAMusic divided it down from this. */
+        val convertedFromHz: Int? = null,
+    )
+
+    fun onUsbPath(path: UsbPath?) {
+        _state.value = _state.value.copy(usb = path)
     }
 
     fun onMixerRate(rateHz: Int) {

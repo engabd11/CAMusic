@@ -60,6 +60,14 @@ class UsbBitperfectOutput(
     private var volume = 1f
 
     private var scratch = ByteArray(0)
+
+    /** Set when this track is above the DAC's rates and is being divided down; see [pick]. */
+    private var decimator: UsbDecimator? = null
+    private var convertedFromHz: Int? = null
+    private var decimation = 1
+    private var floatIn = FloatArray(0)
+    private var floatOut = FloatArray(0)
+    private var floatBytes: java.nio.ByteBuffer = java.nio.ByteBuffer.allocate(0)
     private val carry = ByteArray(32)
     private var carryLen = 0
 
@@ -108,6 +116,7 @@ class UsbBitperfectOutput(
     private val handBack = Runnable {
         session?.let {
             Log.i(TAG, "paused ${IDLE_HANDBACK_MS / 1000}s: handing the DAC back to Android")
+            UsbVolume.detach(it)
             it.suspendForAndroid()
         }
     }
@@ -155,15 +164,19 @@ class UsbBitperfectOutput(
         if (target == null || s == null) {
             toFallback("the DAC does not offer ${format.sampleRate} Hz x ${format.channelCount} ch")
             fallback.configure(format, specifiedBufferSize, outputChannels)
+            // Mid-queue, media3 already told this sink to play; the fallback never heard
+            // it. Unstarted, it took no audio and the player stalled at the track change.
+            if (playing) fallback.play()
             return
         }
-        val (alt, wantRate) = target
+        val (alt, wantRate, factor) = target
         val same = usbActive && !s.suspended && s.format == alt && s.confirmedRate == wantRate
         if (!same) {
             drainBeforeSwitch(s)
             if (!s.configure(alt, wantRate) || !s.start()) {
                 toFallback(s.error ?: "the DAC could not be configured")
                 fallback.configure(format, specifiedBufferSize, outputChannels)
+                if (playing) fallback.play()
                 return
             }
             s.setPaused(!playing)
@@ -171,6 +184,12 @@ class UsbBitperfectOutput(
         }
         fallback.reset()
         usbActive = true
+        decimator = if (factor > 1) UsbDecimator(factor, format.channelCount) else null
+        decimation = factor
+        convertedFromHz = if (factor > 1) format.sampleRate else null
+        if (factor > 1) Log.i(TAG, "converting ${format.sampleRate} Hz to $wantRate Hz for the DAC")
+        UsbVolume.attach(s, allowDigital = com.engabd.sendpin.data.AppSettings(context).bootUsbDigitalVolume)
+        publishPath(s, alt)
         inEncoding = format.pcmEncoding
         channels = format.channelCount
         inBytesPerFrame = UsbPcm.bytesPerSample(inEncoding) * channels
@@ -180,21 +199,33 @@ class UsbBitperfectOutput(
         resetCounters()
     }
 
-    /** The DAC format for [format]: its own rate, the deepest bit depth the DAC offers. */
-    private fun pick(format: Format): Pair<StreamingAlt, Int>? {
+    /** Where a track goes: the DAC format, the DAC's rate, and the ratio it was divided by (1 = none). */
+    private data class Target(val alt: StreamingAlt, val dacRate: Int, val factor: Int)
+
+    /**
+     * The DAC format for [format]: its own rate, and the file's own bit depth where the
+     * DAC has it (see [UsbFormatChoice]). The file's depth comes from its own header, via
+     * the signal path; the decoder's output is float and no longer says.
+     *
+     * A rate above everything the DAC takes (192 kHz on a 96 kHz DAC) is divided by 2 or
+     * 4 in CAMusic ([UsbDecimator]) rather than handed to Android, whose own path on many
+     * phones converts everything to 48 kHz. Not bit-perfect, and the signal path says so,
+     * but it keeps the DAC on this driver at the best rate it has. Float input only,
+     * which is what the float path decodes to.
+     */
+    private fun pick(format: Format): Target? {
         val s = session ?: openSession() ?: return null
         val rate = format.sampleRate
-        val alt = s.info.outputs
-            .filter { it.channels == format.channelCount && it.endpoint != null }
-            .filter { a ->
-                rate in a.sampleRates ||
-                    a.sampleRateRange?.contains(rate) == true ||
-                    // UAC2 lists no rates in the descriptors; the clock read-back decides.
-                    (a.sampleRates.isEmpty() && a.sampleRateRange == null)
-            }
-            .maxWithOrNull(compareBy<StreamingAlt>({ it.bitResolution }, { it.subslotBytes }))
-            ?: return null
-        return alt to rate
+        val sourceBits = SignalPath.state.value.source.bitDepth
+        UsbFormatChoice.choose(s.info.outputs, rate, format.channelCount, sourceBits)
+            ?.let { return Target(it, rate, 1) }
+        if (format.pcmEncoding != C.ENCODING_PCM_FLOAT) return null
+        for (factor in listOf(2, 4)) {
+            if (rate % factor != 0) continue
+            val alt = UsbFormatChoice.choose(s.info.outputs, rate / factor, format.channelCount, null) ?: continue
+            return Target(alt, rate / factor, factor)
+        }
+        return null
     }
 
     private fun openSession(): UsbAudioSession? {
@@ -217,13 +248,35 @@ class UsbBitperfectOutput(
         while (s.pendingFrames() > 0 && SystemClock.uptimeMillis() < until) Thread.sleep(5)
     }
 
+    /** Tell the signal path what the DAC was given and confirmed. */
+    private fun publishPath(s: UsbAudioSession, alt: StreamingAlt) {
+        val vol = UsbVolume.state.value
+        SignalPath.onUsbPath(
+            SignalPath.UsbPath(
+                dacName = s.dacName,
+                confirmedRateHz = s.confirmedRate ?: 0,
+                dacBits = alt.bitResolution,
+                slotBits = alt.subslotBytes * 8,
+                samplesUntouched = vol?.digital != true && convertedFromHz == null,
+                convertedFromHz = convertedFromHz,
+                volume = when {
+                    vol == null -> "none on the DAC (set it on the headphones or amp)"
+                    vol.digital -> "digital (not bit-perfect)"
+                    else -> "DAC hardware volume"
+                },
+            ),
+        )
+    }
+
     private fun toFallback(why: String) {
+        SignalPath.onUsbPath(null)
         if (usbActive || session != null) Log.i(TAG, "playing through Android: $why")
         usbActive = false
         closeSession()
     }
 
     private fun closeSession() {
+        session?.let(UsbVolume::detach)
         handler?.removeCallbacks(handBack)
         session?.close()
         session = null
@@ -234,6 +287,7 @@ class UsbBitperfectOutput(
         playedBase = session?.playedFrames() ?: 0L
         endOfStream = false
         carryLen = 0
+        decimator?.reset()
     }
 
     override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
@@ -258,7 +312,7 @@ class UsbBitperfectOutput(
             room--
         }
 
-        val frames = minOf(buffer.remaining() / inBytesPerFrame, room)
+        val frames = minOf(buffer.remaining() / inBytesPerFrame, room * decimation)
         if (frames > 0) writeFrames(s, buffer, frames)
         if (buffer.remaining() in 1 until inBytesPerFrame) {
             while (buffer.hasRemaining()) carry[carryLen++] = buffer.get()
@@ -267,12 +321,39 @@ class UsbBitperfectOutput(
     }
 
     private fun writeFrames(s: UsbAudioSession, src: ByteBuffer, frames: Int) {
+        val d = decimator
+        if (d != null) return writeDecimated(s, d, src, frames)
         val need = frames * channels * slotBytes
         if (scratch.size < need) scratch = ByteArray(need)
-        val n = UsbPcm.convert(src, inEncoding, frames * channels, scratch, 0, slotBytes, bits, volume)
+        // volume is ExoPlayer's (fades, ducking); digitalGain is the opt-in digital volume
+        // for a DAC with none of its own. Both 1 is the file's own samples.
+        val n = UsbPcm.convert(src, inEncoding, frames * channels, scratch, 0, slotBytes, bits, volume * UsbVolume.digitalGain)
         var off = 0
         // Room was checked, so this takes everything; the loop only guards a race with a flush.
         repeat(3) { if (off < n) off += s.write(scratch, off, n - off) }
+    }
+
+    /** Float input divided down by [d], then converted to the DAC's format. */
+    private fun writeDecimated(s: UsbAudioSession, d: UsbDecimator, src: ByteBuffer, frames: Int) {
+        val n = frames * channels
+        if (floatIn.size < n) floatIn = FloatArray(n)
+        val fb = src.order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+        fb.get(floatIn, 0, n)
+        src.position(src.position() + n * 4)
+        val outCap = (frames / 2 + 1) * channels
+        if (floatOut.size < outCap) floatOut = FloatArray(outCap)
+        val outFrames = d.process(floatIn, frames, floatOut)
+        if (outFrames <= 0) return
+        val bytes = outFrames * channels * 4
+        if (floatBytes.capacity() < bytes) floatBytes = java.nio.ByteBuffer.allocate(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        floatBytes.clear()
+        floatBytes.asFloatBuffer().put(floatOut, 0, outFrames * channels)
+        floatBytes.limit(bytes)
+        val need = outFrames * channels * slotBytes
+        if (scratch.size < need) scratch = ByteArray(need)
+        val m = UsbPcm.convert(floatBytes, UsbPcm.PCM_FLOAT, outFrames * channels, scratch, 0, slotBytes, bits, volume * UsbVolume.digitalGain)
+        var off = 0
+        repeat(3) { if (off < m) off += s.write(scratch, off, m - off) }
     }
 
     override fun play() {
@@ -282,8 +363,12 @@ class UsbBitperfectOutput(
         failOverIfLost()
         if (!usbActive) return fallback.play()
         val s = session ?: return
-        if (s.suspended && !s.resumeFromAndroid()) {
-            Log.w(TAG, "could not take the DAC back: ${s.error}")
+        if (s.suspended) {
+            if (s.resumeFromAndroid()) {
+                UsbVolume.attach(s, allowDigital = com.engabd.sendpin.data.AppSettings(context).bootUsbDigitalVolume)
+            } else {
+                Log.w(TAG, "could not take the DAC back: ${s.error}")
+            }
         }
         s.setPaused(false)
         if (!wasPlaying) announcePlaying()
@@ -359,7 +444,42 @@ class UsbBitperfectOutput(
     override fun setPreferredDevice(audioDeviceInfo: AudioDeviceInfo?) = fallback.setPreferredDevice(audioDeviceInfo)
     override fun enableTunnelingV21() = fallback.enableTunnelingV21()
     override fun disableTunneling() = fallback.disableTunneling()
-    override fun handleDiscontinuity() { if (!usbActive) fallback.handleDiscontinuity() }
+    /**
+     * A track boundary in the output (media3 calls this from onProcessedStreamChange).
+     *
+     * Two tracks at the same rate but different bit depths decode to the same float
+     * format, so media3 never calls configure() between them - the second would go out
+     * in the first one's format, and a 24-bit track after a 16-bit one would be cut to
+     * 16 bits. So the format is chosen again here, from the new track's own depth; if it
+     * differs, the previous track plays out and the DAC switches at the boundary.
+     */
+    override fun handleDiscontinuity() {
+        if (!usbActive) return fallback.handleDiscontinuity()
+        val s = session ?: return
+        // A new rate reaches configure() anyway; only a same-rate depth change needs this.
+        val nextRate = SignalPath.state.value.source.sampleRateHz
+        if (nextRate != null && nextRate != rate) return
+        // A converted track's rate differs from the DAC's by design; its end is a rate
+        // change, which configure() handles.
+        if (decimator != null) return
+        val want = UsbFormatChoice.choose(s.info.outputs, rate, channels, SignalPath.state.value.source.bitDepth) ?: return
+        if (want == s.format) return
+        Log.i(TAG, "track boundary: ${s.format?.bitResolution}-bit -> ${want.bitResolution}-bit at $rate Hz")
+        drainBeforeSwitch(s)
+        if (!s.configure(want, rate) || !s.start()) {
+            val format = lastFormat ?: return
+            toFallback(s.error ?: "the DAC could not switch format")
+            fallback.configure(format, lastBufferSize, lastOutputChannels)
+            if (playing) fallback.play()
+            return
+        }
+        s.setPaused(!playing)
+        slotBytes = want.subslotBytes
+        bits = want.bitResolution
+        UsbVolume.attach(s, allowDigital = com.engabd.sendpin.data.AppSettings(context).bootUsbDigitalVolume)
+        publishPath(s, want)
+        resetCounters()
+    }
 
     companion object {
         private const val TAG = "UsbBitperfect"

@@ -9,6 +9,7 @@ import android.provider.Settings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * The phone's own media volume, as a 0..1 fraction.
@@ -26,6 +27,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * like a turned-down phone.
  */
 class DeviceVolume(context: Context) {
+
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main + kotlinx.coroutines.SupervisorJob())
 
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -49,10 +52,22 @@ class DeviceVolume(context: Context) {
                 Settings.System.CONTENT_URI, true, observer,
             )
         }
+        // While USB bit-perfect holds the DAC, Android's media volume moves nothing you
+        // can hear; the level that matters is the DAC's own (UsbVolume). The slider, and
+        // anything else reading this, follows whichever one is live.
+        scope.launch {
+            com.engabd.sendpin.usb.UsbVolume.state.collect { usb ->
+                _level.value = usb?.level ?: read()
+            }
+        }
     }
 
     /** Set the media volume from a 0..1 fraction. */
     fun set(fraction: Float) {
+        if (com.engabd.sendpin.usb.UsbVolume.state.value != null) {
+            com.engabd.sendpin.usb.UsbVolume.set(fraction)
+            return
+        }
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         if (max <= 0) return
         val target = Math.round(fraction.coerceIn(0f, 1f) * max)
@@ -98,6 +113,7 @@ class DeviceVolume(context: Context) {
     }
 
     fun read(): Float {
+        com.engabd.sendpin.usb.UsbVolume.state.value?.let { return it.level }
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         if (max <= 0) return 0f
         return audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max

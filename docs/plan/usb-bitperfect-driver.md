@@ -1,6 +1,8 @@
 # Bit-perfect USB output: CAMusic's own USB Audio Class driver
 
-Status: **planned**, 2026-09-29. It follows v0.14.1, which made Direct to DAC play at all.
+Status (2026-09-29): **M1–M5 done**, tested on a Galaxy S23 with a Sennheiser BTD 700 (#282, #283, #284, #286,
+and the M5 PR). M6 — other DACs, UAC2 and high speed, the feedback endpoint — is what remains, and needs DACs
+other than the BTD 700 to test against. It follows v0.14.1, which made Direct to DAC play at all.
 
 ## Why
 

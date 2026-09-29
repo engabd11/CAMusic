@@ -95,6 +95,9 @@ class UsbAudioSession private constructor(
 
     private val claimed = mutableListOf<UsbInterface>()
 
+    /** The DAC's own name, for the signal path. */
+    val dacName: String get() = listOfNotNull(device.manufacturerName, device.productName).joinToString(" ").ifBlank { "USB DAC" }
+
     /** The kernel's name for the device, to match against attach/detach broadcasts. */
     val deviceName: String get() = device.deviceName
 
@@ -159,10 +162,36 @@ class UsbAudioSession private constructor(
         confirmedRate = if (info.uacVersion >= 0x0200) setUac2Rate(rate) else setUac1Rate(ep.address, rate)
         if (confirmedRate == null) return fail("the DAC did not accept $rate Hz")
         format = alt
+        // Claimed again: whatever the 30 s hand-back left, this session holds the DAC now.
+        suspended = false
         // A new stream can reset the DAC's own volume (a BTD 700 re-negotiates its
         // Bluetooth codec on a rate change); put back what it was a moment ago.
         keptVolume?.let { writeHardwareVolume(it) }
         return true
+    }
+
+    /** The DAC's playback volume range in 1/256 dB (min, max, step), or null when it has no volume control. */
+    fun hardwareVolumeRange(): Triple<Int, Int, Int>? {
+        val unit = info.volumeUnits.firstOrNull { it.playback && it.masterVolume } ?: return null
+        fun get(req: Int): Int? {
+            val b = ByteArray(2)
+            val n = conn.controlTransfer(0xA1, req, 0x0200, (unit.id shl 8) or info.controlInterface, b, 2, 1000)
+            return if (n == 2) ((b[0].toInt() and 0xFF) or (b[1].toInt() shl 8)) else null
+        }
+        val min = get(0x82) ?: return null
+        val max = get(0x83) ?: return null
+        val res = (get(0x84) ?: 256).coerceAtLeast(1)
+        return if (max > min) Triple(min, max, res) else null
+    }
+
+    /** Read the DAC's current playback volume, in 1/256 dB. */
+    fun hardwareVolume(): Int? = readHardwareVolume()
+
+    /** Set the DAC's playback volume, in 1/256 dB, and its mute. */
+    fun setHardwareVolume(value: Int, mute: Boolean) {
+        writeHardwareVolume(value)
+        val unit = info.volumeUnits.firstOrNull { it.playback && it.mute } ?: return
+        conn.controlTransfer(0x21, 0x01, 0x0100, (unit.id shl 8) or info.controlInterface, byteArrayOf(if (mute) 1 else 0), 1, 1000)
     }
 
     /** The playback feature unit's master volume, in 1/256 dB, or null if it has none or will not say. */
@@ -213,11 +242,29 @@ class UsbAudioSession private constructor(
         val alt = format ?: return fail("not configured")
         val rate = confirmedRate ?: return fail("no rate")
         val ep = alt.endpoint ?: return fail("no endpoint")
-        stream = UsbAudioNative.nativeStart(
+        fun launch() = UsbAudioNative.nativeStart(
             conn.fileDescriptor, ep.address, ep.maxPacketBytes * ep.transactionsPerMicroframe,
             alt.channels * alt.subslotBytes, rate, UsbAudioMath.packetsPerSecond(speed, ep.interval),
         )
-        return stream != 0L || fail("the native stream did not start")
+        stream = launch()
+        if (stream == 0L) return fail("the native stream did not start")
+        // Taken straight back from Android, a DAC can refuse the very first transfers
+        // (the endpoint not there yet: ENOENT) - once, and then accept. Seen on a BTD 700
+        // 30 s after a hand-back. Give it one clean retry before calling the DAC gone.
+        Thread.sleep(40)
+        val st = stats()
+        if (st != null && !st.running && st.urbsCompleted == 0L) {
+            Log.w(TAG, "first transfers refused (errno ${st.lastErrno}); selecting the format again")
+            stopStream()
+            iface(alt.interfaceNumber, 0)?.let { conn.setInterface(it) }
+            Thread.sleep(STREAM_RESTART_MS)
+            iface(alt.interfaceNumber, alt.alternateSetting)?.let { conn.setInterface(it) }
+            // Selecting the setting again can reset a UAC1 endpoint's rate.
+            if (info.uacVersion >= 0x0200) setUac2Rate(rate) else setUac1Rate(ep.address, rate)
+            stream = launch()
+            if (stream == 0L) return fail("the native stream did not start")
+        }
+        return true
     }
 
     /** Queue PCM already in the DAC's own format; returns the bytes taken. */
