@@ -601,7 +601,8 @@ playing. `LocalDsp` sits ahead of the tap so the show reacts to what you actuall
 
 ## Recent releases
 
-**On master, not yet released** — a full audit and the work that came out of it:
+**v0.14.0**: a full audit and the work that came out of it, and the first release signed
+with the dedicated release key:
 **lyrics** from embedded tags, sidecar `.lrc` and optionally LRCLIB, with tap-to-seek and a
 per-song timing nudge; **scrobbling** to ListenBrainz and Last.fm with an offline queue;
 **playlist editing** (remove, reorder, rename) and **ratings**; **search all libraries** as a
