@@ -20,3 +20,6 @@ build/
 *.aab
 *.jks
 *.keystore
+*.p12
+release.pass
+lineage.bin
