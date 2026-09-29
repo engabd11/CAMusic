@@ -1427,6 +1427,34 @@ class LocalPlayer(private val context: Context) {
     }
 
     /**
+     * Put [track] back at [position] — the undo of [removeAt]. Whatever is playing
+     * keeps playing; the player's cursor follows its track, not the slot.
+     *
+     * Only for this phone's own player: a player that plays itself (MPD) keeps its
+     * own queue, and the undo is not offered there.
+     */
+    fun insertAt(position: Int, track: LocalTrack) {
+        if (remote != null) return
+        val list = _queue.value
+        if (list.isEmpty()) { setQueue(listOf(track)); return }
+        val at = position.coerceIn(0, list.size)
+        _queue.value = list.toMutableList().apply { add(at, track) }
+        player.addMediaItem(at, mediaItem(track))
+        _index.value = player.currentMediaItemIndex
+    }
+
+    /**
+     * Bring back a queue that was cleared — the undo of [clear]: the same tracks,
+     * the same one current, at the same place in it, playing only if it was.
+     */
+    fun restoreQueue(tracks: List<LocalTrack>, index: Int, positionMs: Long, wasPlaying: Boolean) {
+        if (remote != null || tracks.isEmpty()) return
+        setQueue(tracks, index)
+        player.seekTo(index.coerceIn(0, tracks.lastIndex), positionMs.coerceAtLeast(0))
+        if (!wasPlaying) pause()
+    }
+
+    /**
      * Move the item at [from] by [shift] places. Whatever is playing keeps playing —
      * the play cursor follows the track, not the slot it used to be in.
      */

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -152,3 +153,72 @@ private fun BoxScope.SwipeActionHint(
 
 private const val TRIGGER_DP = 88
 private const val MAX_DRAG_FRACTION = 0.42f
+
+/**
+ * A queue row that can be swiped left to take it out of the queue.
+ *
+ * The same hand-rolled drag as [SwipeToQueueRow], for the same reason it is not
+ * `SwipeToDismissBox`: the queue list keeps its own state and animates removals
+ * itself, so the row only needs to slide off and say so. Past the trigger it
+ * finishes the journey off the edge before [onRemove] runs — the row leaving is
+ * what tells the finger it worked. Short of it, it springs back and nothing
+ * happens. Left only: a right swipe in a list the user reorders by dragging is too
+ * easy to make by accident.
+ */
+@Composable
+fun SwipeToRemoveRow(
+    color: Color,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val offsetX = remember { Animatable(0f) }
+    var widthPx by remember { mutableIntStateOf(0) }
+    val triggerPx = with(density) { TRIGGER_DP.dp.toPx() }
+
+    Box(modifier.fillMaxWidth().onSizeChanged { widthPx = it.width }) {
+        SwipeActionHint(
+            visible = offsetX.value < -1f,
+            weight = (-offsetX.value / triggerPx).coerceIn(0f, 1f),
+            color = color,
+            icon = Icons.Filled.Delete,
+            label = "Remove",
+            alignment = Alignment.CenterEnd,
+        )
+        Box(
+            Modifier
+                .offset { IntOffset(offsetX.value.roundToInt(), 0) }
+                // Keyed on [enabled] and gated inside, rather than a different layout
+                // when disabled: switching structure would rebuild the row, and the
+                // reorder drag that disabled it would lose its gesture mid-flight.
+                .pointerInput(enabled) {
+                    if (!enabled) return@pointerInput
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            scope.launch {
+                                if (offsetX.value <= -triggerPx) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    offsetX.animateTo(-widthPx.toFloat(), tween(Motion.SNAP_BACK_MS))
+                                    onRemove()
+                                    offsetX.snapTo(0f)
+                                } else {
+                                    offsetX.animateTo(0f, tween(Motion.SNAP_BACK_MS))
+                                }
+                            }
+                        },
+                        onDragCancel = { scope.launch { offsetX.animateTo(0f, tween(Motion.SNAP_BACK_MS)) } },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            scope.launch {
+                                offsetX.snapTo((offsetX.value + dragAmount).coerceIn(-widthPx.toFloat(), 0f))
+                            }
+                        },
+                    )
+                },
+        ) { content() }
+    }
+}
