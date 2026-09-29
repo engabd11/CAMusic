@@ -690,8 +690,9 @@ Full history: [docs/release-history.md](docs/release-history.md).
   phone. The toggle says as much.
 - **Per-speaker offsets are positive on the Music Assistant side**, whose config field is
   unsigned. For a phone that needs to move the other way, use the app's own signed latency trim.
-- **Releases are signed with a stable local key** that has been in use since v0.1.0, so updates
-  install cleanly over each other. A build from another source needs an uninstall first.
+- **Releases are signed with a dedicated release key**, rotated in from the key used since
+  v0.1.0, so every existing install updates in place. A build from another source needs an
+  uninstall first. See [docs/signing.md](docs/signing.md) (added in #278).
 - **The speed-limit database adds about 39 MB to the phone APK**, which is the cost of offline
   speed-limit awareness and is stated here so it is never a surprise. The TV build carries
   neither it nor the ambience recordings, and is about 15 MB.
