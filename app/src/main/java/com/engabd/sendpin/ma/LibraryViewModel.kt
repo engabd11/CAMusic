@@ -411,6 +411,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _loading = MutableStateFlow(false); val loading: StateFlow<Boolean> = _loading
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
     private val _search = MutableStateFlow<MaSearchResults?>(null)
+
+    /**
+     * The search scope — see [searchAll]. Declared up here, above `init`, rather than
+     * beside the functions that use it: `init` collects the saved setting into it, and
+     * `viewModelScope` runs on `Main.immediate`, so with a warm DataStore that collector
+     * runs *during* construction. Declared below `init`, the field was still null then
+     * and the app crashed on launch (seen generating the baseline profile).
+     */
+    private val _searchAll = MutableStateFlow(false)
     /**
      * Results are kept while the user drills into one of them, so [searchOpen] —
      * not the results themselves — decides whether the list is on screen.
@@ -817,6 +826,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         ).joinAll()
     }
 
+    /**
+     * Whether anything has been kept as a playlist in Downloads.
+     *
+     * The Downloads library declares `PLAYLIST_READ` because it genuinely can read
+     * playlists now — but almost nobody has one, and a capability alone would put an
+     * always-empty Playlists tile in front of every user who has never used the
+     * feature. That is the exact thing [Capability]'s own note warns against.
+     *
+     * Cached rather than queried because [rootItems] is synchronous.
+     *
+     * Declared above `init` for the same reason as [_searchAll]: its collector can run
+     * during construction, and a field initialiser that ran after it would put it back
+     * to false.
+     */
+    private var hasDownloadedPlaylists = false
+
     init {
         viewModelScope.launch {
             _maUrl.value = settings.maBaseUrl.first(); _maUser.value = settings.maUsername.first(); _maPass.value = settings.maPassword.first()
@@ -969,18 +994,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-
-    /**
-     * Whether anything has been kept as a playlist in Downloads.
-     *
-     * The Downloads library declares `PLAYLIST_READ` because it genuinely can read
-     * playlists now — but almost nobody has one, and a capability alone would put an
-     * always-empty Playlists tile in front of every user who has never used the
-     * feature. That is the exact thing [Capability]'s own note warns against.
-     *
-     * Cached rather than queried because [rootItems] is synchronous.
-     */
-    private var hasDownloadedPlaylists = false
 
     /**
      * The music libraries on the connected Jellyfin server, for the settings picker.
@@ -3276,7 +3289,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         .map { list -> list.count { it.kind != ServerKind.DOWNLOADS } > 1 }
         .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, false)
 
-    private val _searchAll = MutableStateFlow(false)
     /** Whether the search on screen asks every library, or only the active one. */
     val searchAll: StateFlow<Boolean> = _searchAll
 
