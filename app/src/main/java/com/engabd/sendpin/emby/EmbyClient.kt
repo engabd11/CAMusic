@@ -542,6 +542,41 @@ class EmbyClient(
 
     suspend fun deleteItem(id: String) { delete("/Items/$id") }
 
+    // ── Playlist editing ─────────────────────────────────────────────────
+    //
+    // Measured against Emby 4.10 rather than assumed from Jellyfin's copy of the
+    // same API, and the two differ where it matters:
+    //  - Remove (`DELETE …/Items?EntryIds=`) and Move (`POST …/Items/{entry}/Move/{i}`)
+    //    both hold — 90 random edits on playlists with a repeated track, all exact.
+    //  - Rewriting the list (clear, then add in the new order) does **not**: deleted
+    //    entry ids are reused by the add, and the next delete then hits the wrong
+    //    rows or empties the playlist. So a reorder is always a Move, never a rewrite.
+    //  - An edit made in the first seconds after a playlist is created can be undone
+    //    by the server's own refresh of it; see `EmbySource`, which checks and retries.
+    //  - There is no `POST /Playlists/{id}`; a rename is the generic item update,
+    //    which takes the whole item back.
+
+    /** Remove entries by their `PlaylistItemId`s. */
+    suspend fun removeFromPlaylist(playlistId: String, entryIds: List<String>) {
+        if (entryIds.isEmpty()) return
+        delete("/Playlists/$playlistId/Items", mapOf("EntryIds" to entryIds.joinToString(",")))
+    }
+
+    /** Move one entry to [newIndex] (0-based, in the list as it will be). */
+    suspend fun movePlaylistEntry(playlistId: String, entryId: String, newIndex: Int) {
+        postQuery("/Playlists/$playlistId/Items/$entryId/Move/$newIndex", emptyMap())
+    }
+
+    /**
+     * Rename through the generic item update, which wants the item as `GET` returned
+     * it with only the name changed — a partial body clears the fields it leaves out.
+     */
+    suspend fun renamePlaylist(playlistId: String, name: String) {
+        val path = if (userId.isNotBlank()) "/Users/$userId/Items/$playlistId" else "/Items/$playlistId"
+        val full = get(path)
+        post("/Items/$playlistId", JsonObject(full + ("Name" to JsonPrimitive(name))))
+    }
+
     /** The session opened by the last start report, so progress and stop carry the same one. */
     @Volatile private var playSessionId: String = ""
 
@@ -668,6 +703,9 @@ class EmbyClient(
             album = o.str("Album"),
             year = o.int("ProductionYear"),
             genres = o["Genres"]?.jsonArray.orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull },
+            // Sent on a playlist's children (checked against Emby 4.10); the handle
+            // removing or moving one entry needs. Null everywhere else.
+            entryId = o.str("PlaylistItemId"),
         )
     }
 
