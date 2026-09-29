@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+# Actions are pinned by commit, not by tag: a tag can be moved to different code,
+# and these steps run with the repository checked out. Dependabot
+# (.github/dependabot.yml) proposes the bumps, so pinning does not mean going stale.
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,18 +20,18 @@ jobs:
       # lfs: the bundled speed-zone database is an LFS object. Without this the
       # runner checks out its pointer file, and mergeAssets fails trying to
       # gunzip 130 bytes of text: "Not in GZIP format".
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           lfs: true
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
 
       # :app has a "platform" flavor dimension (mobile/tv) - run both explicitly
       # rather than the aggregate task names, so a failure in one flavor is
@@ -44,28 +48,61 @@ jobs:
         run: ./gradlew assembleMobileDebug assembleTvDebug
 
       - name: Upload mobile APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mobile-debug-apk
           path: app/build/outputs/apk/mobile/debug/app-mobile-debug.apk
 
       - name: Upload TV APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: tv-debug-apk
           path: app/build/outputs/apk/tv/debug/app-tv-debug.apk
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: test-results
           path: app/build/reports/tests/
 
       - name: Upload lint results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lint-results
           # lintDebug writes lint-results-debug.{html,xml} as files, not a directory.
           path: app/build/reports/lint-results-*
+
+  # The build that ships. R8 renames and removes what it cannot see being used, and
+  # the failures that causes exist only here: the release-only AirPlay crash was R8
+  # renaming a field JNI looks up by name, and every debug check above passed it.
+  # assembleRelease also runs lint's release-blocking checks (lintVital).
+  #
+  # Signed with the runner's own throwaway debug key, so nothing built here can be
+  # installed over a real release — see release.yml for why releases are cut locally.
+  release-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+
+      - name: Build R8 release APKs
+        run: ./gradlew assembleMobileRelease assembleTvRelease
+
+      - name: Upload R8 mapping
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: r8-mapping
+          path: app/build/outputs/mapping/

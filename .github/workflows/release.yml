@@ -42,18 +42,18 @@ jobs:
       # lfs: the bundled speed-zone database is an LFS object. Without this the
       # runner checks out its pointer file, and mergeAssets fails trying to
       # gunzip 130 bytes of text: "Not in GZIP format".
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           lfs: true
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
 
       # assembleDebug never touches the test sources, so a branch could go green
       # with tests that don't even compile. Run them here too.
@@ -76,7 +76,7 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sendspin-${{ steps.name.outputs.version }}-debug-${{ github.sha }}
           path: dist/*.apk
