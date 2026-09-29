@@ -57,6 +57,15 @@ struct AaudioOutput {
     // Whether the sink is paused, so a stream opened to replace this one on another
     // device does not start playing a player the listener stopped.
     std::atomic<bool> paused{false};
+    // Start-up priming, as AudioTrack does it. A low-latency AAudio stream drains
+    // the queue within a couple of milliseconds, so without a threshold nothing is
+    // ever pending; media3 reads that as the sink having run dry, goes back to
+    // buffering and pauses it, about 100 ms into every start. Until `primeFrames`
+    // are queued (or the end of the stream is signalled) the callback plays
+    // silence and leaves the queue alone; after an underrun it primes again.
+    bool draining = false;
+    std::atomic<bool> endOfStream{false};
+    int64_t primeFrames = 9600;
     std::mutex mutex;
     std::queue<std::vector<uint8_t>> chunks;
     int sampleRate = 48000;
@@ -79,7 +88,11 @@ struct AaudioOutput {
         uint8_t* dst = static_cast<uint8_t*>(audioData);
 
         std::unique_lock<std::mutex> lock(mutex);
-        while (bytesFilled < bytesNeeded && !chunks.empty()) {
+        if (!draining) {
+            const int64_t queued = framesWritten.load() - framesRead.load();
+            draining = queued >= primeFrames || (endOfStream.load() && queued > 0);
+        }
+        while (draining && bytesFilled < bytesNeeded && !chunks.empty()) {
             auto& front = chunks.front();
             const size_t available = front.size();
             const size_t take = std::min(available, bytesNeeded - bytesFilled);
@@ -92,6 +105,13 @@ struct AaudioOutput {
                 front.erase(front.begin(), front.begin() + take);
             }
         }
+        // Only what came out of the queue counts as played. The silence padded in
+        // while it is empty (before the first write, or on an underrun) is not
+        // audio the listener heard, and counting it put the position ahead of the
+        // music and marked newly written frames as already played. Under the lock,
+        // so a flush between here and the unlock cannot be undone by this add.
+        framesRead += static_cast<int64_t>(bytesFilled / static_cast<size_t>(bytesPerFrame));
+        if (chunks.empty()) draining = false;  // Underrun or finished: prime again.
         lock.unlock();
 
         if (bytesFilled < bytesNeeded) {
@@ -106,7 +126,6 @@ struct AaudioOutput {
             for (int i = 0; i < total; ++i) samples[i] *= v;
         }
 
-        framesRead += numFrames;
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 };
@@ -192,6 +211,7 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
     out->channels = channels;
     out->format = format;
     out->bytesPerFrame = channels * bytesPerSampleOf(format);
+    out->primeFrames = std::max<int64_t>(1, sampleRate / 5);  // 200 ms
 
     if (!openStreamFor(out, deviceId)) {
         delete out;
@@ -276,6 +296,21 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeFlush(
     auto* out = reinterpret_cast<AaudioOutput*>(ptr);
     std::lock_guard<std::mutex> lock(out->mutex);
     while (!out->chunks.empty()) out->chunks.pop();
+    // Nothing is buffered any more, so the counters have to agree: without this a
+    // seek left the dropped frames counted as buffered, and hasPendingData() and the
+    // position read them as audio still to come.
+    out->framesRead.store(out->framesWritten.load());
+    out->draining = false;
+    out->endOfStream.store(false);
+}
+
+JNIEXPORT void JNICALL
+Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeEndOfStream(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong ptr) {
+    if (ptr == 0) return;
+    // No more is coming, so whatever is queued plays even if it is under the
+    // priming threshold - a track's last fraction of a second, or a short clip.
+    reinterpret_cast<AaudioOutput*>(ptr)->endOfStream.store(true);
 }
 
 JNIEXPORT void JNICALL
