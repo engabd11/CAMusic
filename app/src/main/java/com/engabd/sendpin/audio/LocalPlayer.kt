@@ -501,6 +501,13 @@ class LocalPlayer(private val context: Context) {
                     }
             }
         }
+        // The transition settings are the player's, not a screen's: pushed from
+        // LibraryViewModel they went stale with the Activity gone, and a queue kept
+        // playing in the car with whatever the last screen had set.
+        scope.launch { settings.navFadeSeconds.collect { fadeSeconds = it } }
+        scope.launch { settings.beatMatchedCrossfade.collect { beatMatchedFade = it } }
+        scope.launch { settings.navCrossfadeOverlap.collect { overlapFades = it } }
+        scope.launch { settings.djRadioSmartFade.collect { djSmartFade = it } }
         scope.launch {
             settings.replayGainMode.collect { mode ->
                 replayGainMode = mode
@@ -2064,7 +2071,10 @@ class LocalPlayer(private val context: Context) {
     var fadeSeconds: Int = 0
         set(value) {
             field = value.coerceIn(0, 12)
-            if (field == 0) { fadeFactor = 1f; applyGain() }
+            if (field == 0) {
+                if (overlapFades && djCrossfadeSeconds == 0) dropCrossfade()
+                fadeFactor = 1f; applyGain()
+            }
         }
 
     /**
@@ -2178,7 +2188,39 @@ class LocalPlayer(private val context: Context) {
      * deck's job now, and this player leaves its track early rather than riding it
      * down to nothing.
      */
-    private val crossfading: Boolean get() = djCrossfadeSeconds > 0
+    private val crossfading: Boolean get() = crossfadeSeconds > 0
+
+    /**
+     * Overlap ordinary transitions too, for [fadeSeconds] — the same deck DJ Radio
+     * uses, on any queue that is not one album. Off by default: see
+     * `AppSettings.navCrossfadeOverlap`. Collected here rather than pushed from a
+     * screen, so it holds with no screen open.
+     */
+    @Volatile
+    var overlapFades: Boolean = false
+        set(value) {
+            field = value
+            if (!value && djCrossfadeSeconds == 0) dropCrossfade()
+        }
+
+    /**
+     * How long the overlap is, 0 for none: DJ Radio's own length while a set runs,
+     * otherwise the ordinary fade when [overlapFades] is on.
+     */
+    private val crossfadeSeconds: Int
+        get() = when {
+            djCrossfadeSeconds > 0 -> djCrossfadeSeconds
+            overlapFades -> fadeSeconds
+            else -> 0
+        }
+
+    /**
+     * Plan the join from the scans ([SmartCrossfade]) or by the clock. DJ Radio has
+     * its own switch; an ordinary queue follows "Beat-matched fade", which asks the
+     * same thing of the same analysis.
+     */
+    private val smartJoins: Boolean
+        get() = if (djCrossfadeSeconds > 0) djSmartFade else beatMatchedFade
 
     /**
      * A transition is armed, running, or still ramping in.
@@ -2256,7 +2298,7 @@ class LocalPlayer(private val context: Context) {
      *    a record into itself is vandalism.
      */
     private fun stepCrossfade(positionMs: Long, durationMs: Long) {
-        val seconds = djCrossfadeSeconds
+        val seconds = crossfadeSeconds
         if (seconds <= 0 || exclusiveOutput || !smoothQueue || remote != null) return
         val p = livePlayer ?: return
         if (!_playing.value) return
@@ -2343,12 +2385,12 @@ class LocalPlayer(private val context: Context) {
      * transition was before any of this.
      */
     private fun planFor(track: LocalTrack, p: ExoPlayer, durationMs: Long): MixPlan? {
-        if (!djSmartFade) return SmartCrossfade.standardPlan(durationMs, djCrossfadeSeconds)
+        if (!smartJoins) return SmartCrossfade.standardPlan(durationMs, crossfadeSeconds)
         val scans = SendpinApp.instance.trackScans.store
         val outgoing = scans.peek(TrackScanRepository.keyFor(track))
         val next = _queue.value.getOrNull(p.nextMediaItemIndex)
         val incoming = next?.let { scans.peek(TrackScanRepository.keyFor(it)) }
-        return SmartCrossfade.plan(outgoing, incoming, durationMs, djCrossfadeSeconds, smart = true)
+        return SmartCrossfade.plan(outgoing, incoming, durationMs, crossfadeSeconds, smart = true)
     }
 
     /**
@@ -2366,7 +2408,7 @@ class LocalPlayer(private val context: Context) {
      * error anybody needs to hear about.
      */
     private fun prefetchScans(current: LocalTrack?) {
-        if (!crossfading || !djSmartFade) return
+        if (!crossfading || !smartJoins) return
         val next = livePlayer?.let { p ->
             p.nextMediaItemIndex.takeIf { it >= 0 }?.let { _queue.value.getOrNull(it) }
         }

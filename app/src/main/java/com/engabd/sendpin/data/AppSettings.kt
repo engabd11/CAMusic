@@ -191,6 +191,7 @@ class AppSettings(private val context: Context) {
         private val LASTFM_API_SECRET = stringPreferencesKey("lastfm_api_secret")
         private val LASTFM_API_ROOT = stringPreferencesKey("lastfm_api_root")
         private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
+        private val NAV_CROSSFADE_OVERLAP = booleanPreferencesKey("nav_crossfade_overlap")
         private val BEAT_MATCHED_CROSSFADE = booleanPreferencesKey("beat_matched_crossfade") // time the fade to land on a beat
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val CLOCK_OFFSET_US = stringPreferencesKey("sendspin_clock_offset_us") // persisted clock offset for fast reconnect
@@ -1349,6 +1350,15 @@ class AppSettings(private val context: Context) {
      * Suppressed automatically when the queue is a single album.
      */
     val navFadeSeconds: Flow<Int> = pref { it[NAV_FADE_SECONDS]?.toIntOrNull() ?: 0 }
+
+    /**
+     * Whether [navFadeSeconds] overlaps the two songs — the tail deck DJ Radio uses —
+     * rather than fading one down and the next up. Off by default, so the fade
+     * people already have stays the fade they get.
+     */
+    val navCrossfadeOverlap: Flow<Boolean> = pref { it[NAV_CROSSFADE_OVERLAP] ?: false }
+
+    suspend fun setNavCrossfadeOverlap(on: Boolean) = context.dataStore.edit { it[NAV_CROSSFADE_OVERLAP] = on }
 
     suspend fun setNavFadeSeconds(value: Int) = context.dataStore.edit {
         it[NAV_FADE_SECONDS] = value.coerceIn(0, 12).toString()
