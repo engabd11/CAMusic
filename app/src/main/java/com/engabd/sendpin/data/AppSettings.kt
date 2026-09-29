@@ -135,6 +135,7 @@ class AppSettings(private val context: Context) {
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
+        private val TAB_MINI_PLAYER = booleanPreferencesKey("tab_mini_player")
         private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" | "wave" (default) | "pill" | "glow"
         // The album/artist pages and the library's dress — see PageLook.kt. Each shelf
         // toggle has its own key, named by PageShelf.prefName.
@@ -979,6 +980,15 @@ class AppSettings(private val context: Context) {
         maOption(it, ServerConfig.OPT_TARGET_PLAYER) ?: it[TARGET_PLAYER] ?: ""
     }
     val nowPlayingLayout: Flow<String> = pref { it[NOW_PLAYING_LAYOUT] ?: "tab" }
+
+    /**
+     * In the tab layout, show the mini player above the tabs while something is
+     * loaded and the Playing tab is not the one open. Off by default: it changes a
+     * layout people already have.
+     */
+    val tabMiniPlayer: Flow<Boolean> = pref { it[TAB_MINI_PLAYER] ?: false }
+
+    suspend fun setTabMiniPlayer(on: Boolean) = context.dataStore.edit { it[TAB_MINI_PLAYER] = on }
     /** How the Now Playing seek bar is drawn — a straight line, or a wobbling wave. */
     val seekBarStyle: Flow<String> = pref { it[SEEK_BAR_STYLE] ?: "wave" }
 
