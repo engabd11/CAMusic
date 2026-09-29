@@ -26,8 +26,19 @@ data class UacDevice(
 /** A UAC2 clock source: the entity a sample rate is set and read on. */
 data class ClockSource(val id: Int, val type: String, val frequencyControl: String)
 
-/** A feature unit with a volume control the DAC can apply itself. */
-data class VolumeUnit(val id: Int, val masterVolume: Boolean, val channelVolume: Boolean, val mute: Boolean)
+/**
+ * A feature unit with a volume control the DAC can apply itself.
+ *
+ * [playback] is whether it sits on the path from the USB audio stream to the output —
+ * a headset DAC also has one on its microphone path, which is no use to a player.
+ */
+data class VolumeUnit(
+    val id: Int,
+    val masterVolume: Boolean,
+    val channelVolume: Boolean,
+    val mute: Boolean,
+    val playback: Boolean = false,
+)
 
 /** One playback alternate setting of an AudioStreaming interface. */
 data class StreamingAlt(
@@ -72,6 +83,9 @@ object UacDescriptors {
 
     // AudioControl interface descriptor subtypes.
     private const val AC_HEADER = 0x01
+    private const val AC_INPUT_TERMINAL = 0x02
+    private const val AC_OUTPUT_TERMINAL = 0x03
+    private const val TERMINAL_USB_STREAMING = 0x0101
     private const val AC_FEATURE_UNIT = 0x06
     private const val AC2_CLOCK_SOURCE = 0x0A
 
@@ -92,6 +106,9 @@ object UacDescriptors {
         var controlInterface = -1
         val clocks = mutableListOf<ClockSource>()
         val volumes = mutableListOf<VolumeUnit>()
+        // The AudioControl graph, for telling a playback volume from a microphone one.
+        val sourceOf = mutableMapOf<Int, Int>()
+        val usbStreamingInputs = mutableSetOf<Int>()
         val outputs = mutableListOf<StreamingAlt>()
 
         // Where we are: the interface the descriptors that follow belong to.
@@ -142,7 +159,14 @@ object UacDescriptors {
                                 frequencyControl = controlAccess(raw.u8(i + 5) and 0x03),
                             )
                         }
-                        AC_FEATURE_UNIT -> featureUnit(raw, i, len, ifProtocol == 0x20)?.let(volumes::add)
+                        AC_INPUT_TERMINAL -> if (len >= 6 && raw.u16(i + 4) == TERMINAL_USB_STREAMING) {
+                            usbStreamingInputs += raw.u8(i + 3)
+                        }
+                        AC_OUTPUT_TERMINAL -> if (len >= 8) sourceOf[raw.u8(i + 3)] = raw.u8(i + 7)
+                        AC_FEATURE_UNIT -> {
+                            if (len >= 5) sourceOf[raw.u8(i + 3)] = raw.u8(i + 4)
+                            featureUnit(raw, i, len, ifProtocol == 0x20)?.let(volumes::add)
+                        }
                     }
                 }
                 type == CS_INTERFACE && ifSub == SUBCLASS_STREAMING && len >= 3 -> {
@@ -209,7 +233,19 @@ object UacDescriptors {
         }
         flush()
         if (controlInterface < 0) return null
-        return UacDevice(vendor, product, uacVersion, controlInterface, clocks, volumes, outputs)
+        // A unit fed, through single-source units, by the USB streaming input terminal is on
+        // the playback path. Mixer and selector units have several sources and end the walk,
+        // which leaves such a unit marked not-playback rather than guessed.
+        fun onPlaybackPath(id: Int): Boolean {
+            var at = id
+            repeat(16) {
+                if (at in usbStreamingInputs) return true
+                at = sourceOf[at] ?: return false
+            }
+            return false
+        }
+        val marked = volumes.map { it.copy(playback = onPlaybackPath(it.id)) }
+        return UacDevice(vendor, product, uacVersion, controlInterface, clocks, marked, outputs)
     }
 
     /**

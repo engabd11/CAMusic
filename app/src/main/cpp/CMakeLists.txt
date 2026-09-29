@@ -33,7 +33,16 @@ target_link_libraries(sendspin_output
     android
 )
 
+# CAMusic's own USB audio streaming engine (usbfs isochronous), for bit-perfect
+# output that bypasses Android's audio stack. docs/plan/usb-bitperfect-driver.md.
+add_library(usb_audio SHARED
+    usb_audio.cpp
+)
+target_compile_features(usb_audio PRIVATE cxx_std_17)
+target_link_libraries(usb_audio ${log-lib})
+
 # 16 KB page sizes apply to every native library built here.
+target_link_options(usb_audio PRIVATE "-Wl,-z,max-page-size=16384")
 target_link_options(sendspin_aaudio PRIVATE "-Wl,-z,max-page-size=16384")
 target_link_options(sendspin_output PRIVATE "-Wl,-z,max-page-size=16384")
 
