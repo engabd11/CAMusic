@@ -98,7 +98,9 @@ Each milestone is its own PR, testable on the S23 with the BTD 700 over Wi-Fi ad
 | **M5** | DAC hardware volume (feature unit), honest UI ("CAMusic has the DAC; other sounds are paused"), and a signal-path readout of what the DAC confirmed | The slider moves the DAC's volume; the page proves bit-perfect from the DAC's read-back |
 | **M6** | Hardening across DACs (UAC1 and UAC2, full and high speed), shipped as **experimental** | At least three different DACs |
 
-## Decisions needed
+## Decisions
+
+Decided 2026-09-29: **our own usbfs layer**, **take the DAC while playing and hand it back after 30 s paused**, and **digital volume offered as a labelled option, off by default**. The reasoning is kept below.
 
 1. **Native USB layer.** One option is a small usbfs-based layer of our own: only control
    transfers (through Java's `controlTransfer`) and isochronous URBs, a few hundred lines,
