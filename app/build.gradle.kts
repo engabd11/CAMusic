@@ -1,3 +1,5 @@
+import com.android.build.api.artifact.ArtifactTransformationRequest
+import com.android.build.api.artifact.SingleArtifact
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -138,8 +140,10 @@ android {
             // XML theme from.
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key so a minified build is installable without a
-            // release keystore. This is the build that should be judged for smoothness:
+            // Packaged with the debug key, then re-signed by rotationSign<Variant>Apk
+            // (bottom of this file) with the release key and the rotation lineage when
+            // ~/.camusic-signing exists — see docs/signing.md. Without it (CI, a fork)
+            // the APK stays debug-signed. This is the build that should be judged for smoothness:
             // a debug build carries Compose composition tracing, skips R8 entirely, and
             // runs debuggable, which suppresses most of ART's optimisation. Testing
             // scroll performance on one measures the build, not the app.
@@ -232,6 +236,72 @@ composeCompiler {
     if (project.findProperty("composeMetrics") != null) {
         reportsDestination = layout.buildDirectory.dir("compose_reports")
         metricsDestination = layout.buildDirectory.dir("compose_metrics")
+    }
+}
+
+// Release signing with key rotation (docs/signing.md).
+//
+// v0.1.0–v0.13.x were signed with one machine's debug key, whose password is the public
+// "android". Releases now carry the release key plus a lineage proving the debug key
+// handed over to it, so installed copies update in place — and the lineage grants the
+// old key no rollback, so an APK signed with the debug key alone can no longer update
+// a rotated install. AGP's signingConfig takes one key and no lineage, so this re-signs
+// the packaged APK with apksigner instead. The key, its password and the lineage live
+// in ~/.camusic-signing (or -Pcamusic.signing.dir), never in the repo; apksigner reads
+// the password from its file, so it is never on a command line.
+abstract class RotationSignApkTask : DefaultTask() {
+    @get:InputFiles abstract val apkIn: DirectoryProperty
+    @get:OutputDirectory abstract val apkOut: DirectoryProperty
+    @get:Internal abstract val request: Property<ArtifactTransformationRequest<RotationSignApkTask>>
+    @get:Input abstract val signingDir: Property<String>
+    @get:Input abstract val apksignerJar: Property<String>
+
+    // The key lives outside the build, so Gradle cannot see it change: always re-sign.
+    init { outputs.upToDateWhen { false } }
+
+    @TaskAction
+    fun sign() {
+        val dir = File(signingDir.get())
+        val files = listOf("old-debug.keystore", "release.p12", "release.pass", "lineage.bin").map { File(dir, it) }
+        val (oldKs, ks, pass, lineage) = files
+        val ready = files.all { it.isFile }
+        if (!ready) logger.warn("w: $dir is incomplete; the release APK stays signed with the debug key only.")
+        request.get().submit(this) { artifact ->
+            val input = File(artifact.outputFile)
+            val out = apkOut.file(input.name).get().asFile
+            if (!ready) return@submit input.copyTo(out, overwrite = true)
+            val cmd = listOf(
+                File(System.getProperty("java.home"), "bin/java").path, "-jar", apksignerJar.get(), "sign",
+                "--ks", oldKs.path, "--ks-pass", "pass:android", "--ks-key-alias", "androiddebugkey",
+                "--next-signer", "--ks", ks.path, "--ks-pass", "file:${pass.path}", "--ks-key-alias", "camusic",
+                "--lineage", lineage.path, "--rotation-min-sdk-version", "31",
+                "--out", out.path, input.path,
+            )
+            val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            val log = proc.inputStream.bufferedReader().readText()
+            if (proc.waitFor() != 0) throw GradleException("apksigner failed for ${input.name}:\n$log")
+            out
+        }
+    }
+}
+
+androidComponents {
+    val signingDir = providers.gradleProperty("camusic.signing.dir")
+        .orElse(File(System.getProperty("user.home"), ".camusic-signing").path)
+    val apksigner = sdkComponents.sdkDirectory.map {
+        it.dir("build-tools/${android.buildToolsVersion}/lib").file("apksigner.jar").asFile.path
+    }
+    onVariants(selector().withBuildType("release")) { variant ->
+        val task = tasks.register<RotationSignApkTask>(
+            "rotationSign${variant.name.replaceFirstChar { it.uppercase() }}Apk",
+        ) {
+            this.signingDir.set(signingDir)
+            apksignerJar.set(apksigner)
+        }
+        val request = variant.artifacts.use(task)
+            .wiredWithDirectories(RotationSignApkTask::apkIn, RotationSignApkTask::apkOut)
+            .toTransformMany(SingleArtifact.APK)
+        task.configure { this.request.set(request) }
     }
 }
 

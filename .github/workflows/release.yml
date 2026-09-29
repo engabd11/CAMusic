@@ -3,16 +3,13 @@ name: Build APK
 # Builds the debug APK for a branch and uploads it as a workflow artifact, so a
 # branch can be checked for compile errors before anything is released.
 #
-# This workflow deliberately does NOT publish releases. "debug keystore" is not one
-# shared key: each machine generates its own at ~/.android/debug.keystore, and a CI
-# runner starts empty, so every run signs with a brand-new throwaway key. Android
-# refuses to update an installed app whose signer changed — "package conflicts with
-# an existing package" — so a CI-signed APK cannot install over a locally-signed one.
+# This workflow deliberately does NOT publish releases. Releases are signed with the
+# release key and a rotation lineage kept in ~/.camusic-signing on the release machine
+# (see docs/signing.md), and neither is given to CI. Without them the release build
+# stays signed with a throwaway debug key, which Android refuses as an update —
+# exactly what broke v0.2.5, the one CI-published release.
 #
-# That is exactly what broke v0.2.5: it was the first CI-published release, signed
-# 03cdee29… while v0.1.0-v0.2.4 were all built locally and signed 21b01f0f….
-#
-# Releases are therefore cut locally, where the keystore is stable:
+# Releases are therefore cut locally, where the key is:
 #
 #     ./gradlew assembleMobileRelease assembleTvRelease
 #     gh release create vX.Y.Z --prerelease \
@@ -24,9 +21,7 @@ name: Build APK
 # (the #label suffix renames the uploaded asset - both release APKs are otherwise
 # named app-*-release.apk and easy to grab the wrong one of when sideloading.)
 #
-# To publish from CI instead, commit a dedicated keystore to GitHub Actions secrets
-# and add a signingConfig that uses it, so every build — local and CI — shares one
-# key. Until then, keep publishing local.
+# Check the APK's signer is CN=CAMusic before uploading (docs/signing.md).
 on:
   push:
     branches: ['claude/**']
