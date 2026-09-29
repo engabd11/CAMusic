@@ -132,10 +132,19 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
             )
         }
 
+        val usbPath = SignalPath.state.collectAsStateWithLifecycle().value.usb
         StatusPanel {
-            StatusRow("Playing through", route?.label ?: "Unknown")
-            route?.sampleRateLabel?.let { StatusRow("Device accepts", it) }
-            if (mixerRate > 0) StatusRow("Mixer output", "${StreamQuality.khz(mixerRate)} kHz")
+            if (usbPath != null) {
+                // CAMusic's own driver has the DAC: Android's route and mixer are not in
+                // the chain at all, so the rows say what the DAC itself confirmed.
+                StatusRow("Playing through", "${usbPath.dacName} · CAMusic's USB driver")
+                StatusRow("DAC confirmed", "${StreamQuality.khz(usbPath.confirmedRateHz)} kHz · ${usbPath.dacBits}-bit")
+                StatusRow("Android mixer", "Bypassed")
+            } else {
+                StatusRow("Playing through", route?.label ?: "Unknown")
+                route?.sampleRateLabel?.let { StatusRow("Device accepts", it) }
+                if (mixerRate > 0) StatusRow("Mixer output", "${StreamQuality.khz(mixerRate)} kHz")
+            }
         }
         route?.bluetoothCodecNote?.let { Note(it) }
 
@@ -150,15 +159,39 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                 StatusPanel {
                     if (path.source.known) StatusRow("File", path.source.summary())
                     if (path.decoded.known) StatusRow("Decoder output", path.decoded.summary())
-                    if (path.sink.known) StatusRow("To Android", path.sink.summary())
-                    StatusRow(
-                        OutputMode.HIGH_RESOLUTION.title,
-                        when {
-                            !path.highResRequested -> "Off"
-                            path.floatEngaged -> "On, carrying the extra bits"
-                            else -> "On, but this stream is 16-bit so it makes no difference"
-                        },
-                    )
+                    val usb = path.usb
+                    if (usb != null) {
+                        StatusRow(
+                            "To the DAC",
+                            "${StreamQuality.khz(usb.confirmedRateHz)} kHz · ${usb.dacBits}-bit" +
+                                if (usb.slotBits != usb.dacBits) " in ${usb.slotBits}-bit slots" else "",
+                        )
+                        val fileBits = path.source.bitDepth
+                        StatusRow(
+                            "Bit-perfect",
+                            when {
+                                usb.convertedFromHz != null ->
+                                    "No: converted from ${StreamQuality.khz(usb.convertedFromHz)} kHz, above what the DAC takes"
+                                !usb.samplesUntouched -> "No: digital volume is scaling the samples"
+                                fileBits != null && fileBits > usb.dacBits ->
+                                    "No: the DAC takes ${usb.dacBits}-bit, the file is $fileBits-bit"
+                                fileBits != null && fileBits < usb.dacBits ->
+                                    "Yes: the file's $fileBits-bit samples, zeros below"
+                                else -> "Yes: the file's own samples"
+                            },
+                        )
+                        StatusRow("Volume", usb.volume)
+                    } else {
+                        if (path.sink.known) StatusRow("To Android", path.sink.summary())
+                        StatusRow(
+                            OutputMode.HIGH_RESOLUTION.title,
+                            when {
+                                !path.highResRequested -> "Off"
+                                path.floatEngaged -> "On, carrying the extra bits"
+                                else -> "On, but this stream is 16-bit so it makes no difference"
+                            },
+                        )
+                    }
                     if (path.processorsBypassed) {
                         StatusRow("Equaliser / Light Sync", "Bypassed")
                     }
@@ -327,6 +360,17 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                     "while this mode is selected. That is the mode working, not a fault.",
                 warn = true,
             )
+        }
+
+        if (mode == OutputMode.USB_BITPERFECT) {
+            val digital by settings.usbDigitalVolume.collectAsStateWithLifecycle(initialValue = false)
+            ToggleRow(
+                title = "Digital volume on DACs without their own",
+                subtitle = "Lets the volume keys work on a DAC with no volume control, by scaling the " +
+                    "samples. Not bit-perfect while in use. DACs with their own volume are unaffected",
+                checked = digital,
+                accent = accent,
+            ) { on -> scope.launch { settings.setUsbDigitalVolume(on) } }
         }
 
         if ((mode == OutputMode.DIRECT || mode == OutputMode.USB_BITPERFECT) && route?.isUsb != true) {

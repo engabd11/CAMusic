@@ -81,6 +81,7 @@ class LocalPlaybackService : Service() {
     private val player get() = SendpinApp.instance.localPlayer
 
     private var mediaSession: MediaSession? = null
+    private var usbVolumePlayer: com.engabd.sendpin.usb.UsbVolumePlayer? = null
     private var remoteSessionPlayer: RemoteSessionPlayer? = null
     private var remoteActiveJob: Job? = null
     /**
@@ -139,6 +140,8 @@ class LocalPlaybackService : Service() {
     private fun rebuildSession(remote: Boolean) {
         mediaSession?.release()
         mediaSession = null
+        usbVolumePlayer?.detach()
+        usbVolumePlayer = null
         remoteSessionPlayer?.detach()
         remoteSessionPlayer = null
 
@@ -153,7 +156,9 @@ class LocalPlaybackService : Service() {
                 it.start()
             }
         } else {
-            player.exoPlayer
+            // Volume keys to the DAC's own volume while USB bit-perfect holds it; the
+            // ExoPlayer exactly, otherwise. See UsbVolumePlayer.
+            com.engabd.sendpin.usb.UsbVolumePlayer(player.exoPlayer).also { usbVolumePlayer = it }
         }
         mediaSession = MediaSession.Builder(this, target).setId("local").build()
         // The posted notification carries this session's token inside its
@@ -316,6 +321,8 @@ class LocalPlaybackService : Service() {
         player.removePlayerRebuiltListener(onPlayerRebuilt)
         remoteSessionPlayer?.detach()
         remoteSessionPlayer = null
+        usbVolumePlayer?.detach()
+        usbVolumePlayer = null
         mediaSession?.release()
         mediaSession = null
         scope.cancel()

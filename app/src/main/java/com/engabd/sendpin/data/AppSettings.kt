@@ -172,6 +172,7 @@ class AppSettings(private val context: Context) {
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
         private val BIT_PERFECT_AAUDIO = booleanPreferencesKey("bit_perfect_aaudio") // AAudio direct I24/float exclusive path
         private val USB_BITPERFECT = booleanPreferencesKey("usb_bitperfect") // CAMusic's own USB driver
+        private val USB_DIGITAL_VOLUME = booleanPreferencesKey("usb_digital_volume") // opt-in, not bit-perfect
         private val EXCLUSIVE_OUTPUT = booleanPreferencesKey("exclusive_output")  // no processors, no in-app volume — the source's own bits
         // "sendspin_exoplayer" and "sendspin_oboe" were here and are deliberately
         // not replaced. The native Oboe engine is the only MA engine now, so a
@@ -969,6 +970,7 @@ class AppSettings(private val context: Context) {
             .putBoolean("exclusive_output", prefs[EXCLUSIVE_OUTPUT] ?: false)
             .putBoolean("bit_perfect_aaudio", prefs[BIT_PERFECT_AAUDIO] ?: false)
             .putBoolean("usb_bitperfect", prefs[USB_BITPERFECT] ?: false)
+            .putBoolean("usb_digital_volume", prefs[USB_DIGITAL_VOLUME] ?: false)
             .putString("preferred_audio_device_id", prefs[PREFERRED_AUDIO_DEVICE_ID] ?: "")
             .putBoolean(HAS_LIBRARY, storedServers(prefs).any { it.id != DOWNLOADS_SERVER_ID })
             .apply()
@@ -1904,6 +1906,19 @@ class AppSettings(private val context: Context) {
 
     /** USB bit-perfect output, readable without a coroutine — see [bootBitPerfect] for why. */
     val bootUsbBitperfect: Boolean get() = bootPrefs.getBoolean("usb_bitperfect", false)
+
+    /**
+     * USB bit-perfect on a DAC with no volume control of its own: scale the samples so the
+     * volume keys still work. Off by default — it is the one thing that makes the output
+     * no longer the file's own samples. Synchronous because the output reads it when it
+     * takes the DAC.
+     */
+    val usbDigitalVolume: Flow<Boolean> = pref { it[USB_DIGITAL_VOLUME] ?: false }
+    val bootUsbDigitalVolume: Boolean get() = bootPrefs.getBoolean("usb_digital_volume", false)
+    suspend fun setUsbDigitalVolume(value: Boolean) {
+        bootPrefs.edit().putBoolean("usb_digital_volume", value).apply()
+        context.dataStore.edit { it[USB_DIGITAL_VOLUME] = value }
+    }
 
     /**
      * Which player last actually played: "local" (this phone's library player) or "ma"
