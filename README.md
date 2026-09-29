@@ -275,11 +275,23 @@ Playback is built to be worth good headphones and a good DAC.
   applies a persistent vari-speed slowdown, speed and pitch together, with wow-and-flutter
   modulation on top. Old Radio band-limits to telephone range with light saturation, AM
   static bursts shaped by the same "speaker", and a slow carrier warble.
-- **An output ladder** — Standard, High resolution, Pure, Direct to DAC — replaces what used
-  to be three overlapping switches with one dial, each rung removing one more stage between
-  the decoder and the DAC. High resolution carries more than 16 bits to the sink; Pure strips
-  every processor this app adds, equaliser and sound modes included; Direct to DAC bypasses
-  media3 entirely over a native AAudio bridge straight to a USB DAC.
+- **Three output modes**: Standard, High resolution and USB bit-perfect. They're compared in
+  the table under [Output modes](#output-modes) below.
+- **USB bit-perfect** (experimental). On many phones Android runs a USB DAC at a fixed
+  48 kHz / 16-bit and converts every file to that. In this mode CAMusic drives the DAC with
+  **its own USB audio driver**, bypassing Android's audio stack entirely, and sends **the
+  file's own samples at the file's own rate and bit depth**. A 16/44.1 album reaches the DAC
+  as 16/44.1, and a 96/24 file as 96/24.
+  - **Volume**: the volume keys and slider drive the DAC's own hardware volume, so the
+    samples stay untouched. Digital volume for a DAC without its own is an opt-in.
+  - **Over-rate tracks**: a track above the DAC's highest rate (192 kHz on a 96 kHz DAC) is
+    converted by CAMusic at an exact ratio and still goes out on its own driver, labelled
+    as converted.
+  - **Signal path**: the Output & signal path page shows what the DAC itself confirmed.
+  - **Sharing the DAC**: CAMusic takes the DAC while playing and hands it back to Android
+    after 30 s paused. Unplugging pauses playback, like unplugging headphones.
+  - **Tested on**: a Galaxy S23 with a Sennheiser BTD 700. The Diagnostics page can read any
+    USB DAC's own description of itself and play a test tone through the driver.
 - **USB DAC awareness**: connect one and CAMusic tells you what it can do and offers to pin
   the output to it.
 - **DJ Radio** — one button on the library's front page, and the room has a set on. Tapping it
@@ -302,6 +314,30 @@ Playback is built to be worth good headphones and a good DAC.
   cross-device resume. Where a server has no "more like this" of its own, an on-device sonic
   index finds one anyway, matching local tracks on the same tempo, key, energy and spectral
   shape the offline scan already measured.
+
+### Output modes
+
+Settings › Audio Engine & DSP › Output & signal path. Each mode takes more out of the way
+between the decoder and the DAC.
+
+| | Standard | High resolution | USB bit-perfect |
+|---|---|---|---|
+| **How it plays** | Through Android's audio | Through Android's audio | CAMusic's own USB driver, bypassing Android's audio entirely |
+| **Sample rate at the output** | Whatever Android's mixer runs at (often a fixed 48 kHz) | Whatever Android's mixer runs at | **The file's own rate**, confirmed by the DAC |
+| **Bit depth** | 16-bit | Up to what the decoder produced (24-bit and more) | **The file's own depth** where the DAC has it |
+| **Samples reaching the DAC** | Processed and resampled | Resampled by Android if the rates differ | **Unchanged** (bit-perfect) |
+| **Equaliser, sound modes, ReplayGain** | On | Off whenever the float path is in use | Off |
+| **Light Sync from the audio** | Yes | Off whenever the float path is in use | Off |
+| **System sound effects** (e.g. Samsung Dolby Atmos) | Applied | Applied | Not applied |
+| **Volume** | Android's media volume | Android's media volume | The DAC's own hardware volume (digital only if you opt in) |
+| **Other apps and calls** | Share the output as usual | Share the output as usual | Can't use the DAC while CAMusic plays; handed back after 30 s paused |
+| **Needs** | Any output | Any output; best with a 24-bit-capable DAC or LDAC | A USB DAC and one USB permission prompt |
+| **Best for** | Everyday listening with the equaliser and Light Sync | Bluetooth LDAC and hi-res files through Android | The most faithful playback from a USB DAC |
+
+In USB bit-perfect, a track the DAC can't take at its own rate (192 kHz on a 96 kHz DAC) is
+converted by CAMusic at an exact ratio (192 → 96 kHz) rather than handed to Android. The
+signal path marks that track "not bit-perfect: converted". Pure and Direct to DAC, the older
+Android-based rungs, are no longer offered, but still work for anyone who had selected them.
 
 ---
 
@@ -601,6 +637,12 @@ playing. `LocalDsp` sits ahead of the tap so the show reacts to what you actuall
 
 ## Recent releases
 
+**v0.15.0**: **USB bit-perfect**, CAMusic's own USB audio driver. Files reach a USB DAC at their
+own rate and bit depth, with DAC hardware volume and a signal path the DAC confirms; unplug,
+replug, screen-off and restarts are handled. The output ladder is now Standard, High resolution
+and USB bit-perfect. Also: after a restart, the media card and play button belong to the player
+last used, and the local player's card no longer vanishes when Music Assistant's retires.
+
 **v0.14.1**: **Direct to DAC** plays for the first time on real hardware (it crashed, stalled or
 paused itself before), and 16-bit FLAC no longer plays as noise in High resolution, Pure and
 Direct to DAC on Samsung phones, whose FLAC decoder mislabels its output.
@@ -685,8 +727,8 @@ Full history: [docs/release-history.md](docs/release-history.md).
 
 ## Good to know
 
-- **Settings default to Simple.** Advanced toggles — detailed signal-path readouts, the Pure
-  and Direct to DAC output rungs, motion settings, listening-DNA and lyrics timing — sit behind
+- **Settings default to Simple.** Advanced toggles — detailed signal-path readouts, the USB
+  bit-perfect output mode, motion settings, listening-DNA and lyrics timing — sit behind
   one Advanced switch at the top of Settings, off until you go looking for them.
 - **A Hue entertainment area serves one client at a time.** If the Hue app takes the area,
   CAMusic's stream is handed over and stays stopped, deliberately, so its own stop button keeps
