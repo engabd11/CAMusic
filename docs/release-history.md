@@ -206,6 +206,72 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
+**v0.11.1 to v0.15.0** (summaries moved here from the README):
+
+**v0.15.0**: **USB bit-perfect**, CAMusic's own USB audio driver. Files reach a USB DAC at their
+own rate and bit depth, with DAC hardware volume and a signal path the DAC confirms; unplug,
+replug, screen-off and restarts are handled. The output ladder is now Standard, High resolution
+and USB bit-perfect. Also: after a restart, the media card and play button belong to the player
+last used, and the local player's card no longer vanishes when Music Assistant's retires.
+
+**v0.14.1**: **Direct to DAC** plays for the first time on real hardware (it crashed, stalled or
+paused itself before), and 16-bit FLAC no longer plays as noise in High resolution, Pure and
+Direct to DAC on Samsung phones, whose FLAC decoder mislabels its output.
+
+**v0.14.0**: a full audit and the work that came out of it, and the first release signed
+with the dedicated release key:
+**lyrics** from embedded tags, sidecar `.lrc` and optionally LRCLIB, with tap-to-seek and a
+per-song timing nudge; **scrobbling** to ListenBrainz and Last.fm with an offline queue;
+**playlist editing** (remove, reorder, rename) and **ratings**; **search all libraries** as a
+toggle; a real **crossfade on any queue**, **artist-spread shuffle**, a **sleep timer** that
+fades the player and can stop at the end of the song, and **ReplayGain** that lifts quiet
+masters through a limiter; a separate **mobile-data stream format**; **This device** rebuilt
+(background scan, rescan on change, art, genres, `.m3u`); **downloads** that resume and never
+collide across servers; **queue resumption** after a reboot or in the car; optional **Gallery**
+album and artist pages; **shareable light shows**, a **self-healing, battery-aware Light Sync**;
+a **mini player** on the tab layout and **swipe-to-remove with undo** on the queue; TalkBack
+support for the custom controls; a TV APK down from 83 MB to 15 MB; and a long list of fixes, among them a launch crash, Driving mode's Picture-in-Picture that never opened, credentials in
+the debug file, a network drop that skipped through the whole queue, long Jellyfin, Emby and
+Plex lists cut short, media keys captured by a paused queue, and TV notification taps that did
+nothing.
+
+**v0.13.0**: **playlists download as playlists** and stay playlists in Downloads, in order,
+instead of scattering into their albums; **five looks for the library's category buttons**
+(cards, chips, list, icon grid, artwork) with size, corners and a say in which appear at all;
+the **webOS TV app becomes the light show**: the panel itself as the lamp, with scenes, the
+Hue colour schemes and a luminance clamp that keeps red and yellow comfortable in a dark room;
+and an **Android Auto** pass that closes a set of conformance gaps, fixes cover art that could
+never load in a car, restores Bluetooth catalogue browsing on Android 16/17 (media3 1.11.1),
+and adds a readiness panel that reads the phone instead of guessing.
+
+**v0.12.4 to v0.12.2**: the **Music Assistant progress bar** rebuilt on the official app's model
+(no more snapping after a seek, and short tracks no longer loop back to 0:00); **AirPlay from
+Now Playing**; a settings page for each streaming account with the service's own settings and
+every server page in its server's colours; **foobar2000** as a remote player over Beefweb;
+server families in the picker and the setup wizard; an onboarding fix for Music Assistant
+servers that require a login; the Driving Mode Bluetooth gate, the AirPlay R8 crash and the
+download retry pass.
+
+**v0.12.1**: Driving Mode only holds the GPS while the designated car is connected.
+**v0.12.0**: **Spotify, Qobuz and Tidal** as streaming accounts (experimental, played on the
+phone); a two-pane **Android Automotive** layout; libraries orderable and statistics on the
+Settings index; the Light Sync page rebuilt; no dead ends in onboarding.
+**v0.11.8 to v0.11.6**: **Rhythm Lights** (a tap-along game that gates the real light show), the
+**output ladder** that collapses three overlapping switches into one dial, hand-correctable
+album colours, a Simple/Advanced split for Settings, an on-device sonic "more like this", DJ
+Radio's six-song opening picker, and a pass of MPD transport, queue and Light Sync fixes.
+
+**v0.11.5**: DJ Radio starts the instant you tap it, with no flicker on the way in.
+**v0.11.4**: **DJ Radio** ships: a set that chooses by genre, energy, tempo and key and mixes with no gap between tracks; vinyl and lo-fi reworked into real production techniques, plus a
+new **Old Radio** effect; ambience effects driven by their own recording's audio instead of a
+script running alongside it.
+**v0.11.3**: the ambience storm and fireworks unified into one show instead of two; motion
+polish across the parts of the app that still jumped; MPD's lock screen session.
+**v0.11.2**: **MPD** as a library: browse, play and control a daemon over its own protocol port, the phone becoming the remote for whatever DAC it is plugged into.
+**v0.11.1**: the ten band equaliser, the signal path card, saved light shows with genre rules,
+the Set Builder, the shareable listening recap, and the offline speed-limit database shipping
+inside the app.
+
 ### Next up
 
 - [ ] **On-device verification of the newest work.** The playback chain is confirmed on hardware.
