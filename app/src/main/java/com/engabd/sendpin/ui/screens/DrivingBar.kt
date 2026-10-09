@@ -227,44 +227,71 @@ private fun LocalAccentOrDefault(): Color = DefaultAccent
  * What the Picture-in-Picture window shows: the track, big enough to read at a glance.
  *
  * The window's own buttons are the three `RemoteAction`s from
- * [com.engabd.sendpin.service.DrivingPip] — the system draws those over the window and
- * no tap reaches the content — so this carries no controls at all. Before it existed,
- * PiP would have shrunk whichever full screen was open (Library, Settings) into the
- * window, unreadable at that size.
+ * [com.engabd.sendpin.service.DrivingPip] — the system draws those in its own menu
+ * when the window is tapped, and no tap ever reaches this content — so this carries
+ * no controls of its own. What it does carry is a quiet "Tap for controls": a window
+ * with a title and nothing else gave no sign that the buttons were one tap away, and
+ * read as a window with no buttons at all. Before this card existed, PiP would have
+ * shrunk whichever full screen was open (Library, Settings) into the window,
+ * unreadable at that size.
  */
 @Composable
 fun DrivingPipCard(modifier: Modifier = Modifier) {
     val app = SendpinApp.instance
-    val maNow by app.maNowPlaying.now.collectAsStateWithLifecycle()
-    val localTrack by app.localPlayer.current.collectAsStateWithLifecycle()
-    val ownerState by app.playbackOwner.state.collectAsStateWithLifecycle()
+    val now by remember(app) { com.engabd.sendpin.service.DrivingPip.nowPlaying(app) }
+        .collectAsStateWithLifecycle(com.engabd.sendpin.service.DrivingPip.Now())
 
-    val isLocal = ownerState.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.LOCAL
-    val title = if (isLocal) localTrack?.title.orEmpty() else maNow?.title.orEmpty()
-    val artist = if (isLocal) localTrack?.artist.orEmpty() else maNow?.artist.orEmpty()
-
-    Column(
-        modifier.background(Ink).padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.Center,
+    Row(
+        modifier.background(Ink).padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(
-            title.ifBlank { "Nothing playing" },
-            color = if (title.isBlank()) TextMuted else TextPrimary,
-            fontFamily = AppFont,
-            fontWeight = FontWeight.Bold,
-            fontSize = 16.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (artist.isNotBlank()) {
+        if (now.artUrl != null) {
+            coil.compose.AsyncImage(
+                model = now.artUrl,
+                contentDescription = null,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Ink2),
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
             Text(
-                artist,
-                color = TextSecondary,
+                now.title.ifBlank { "Nothing playing" },
+                color = if (now.title.isBlank()) TextMuted else TextPrimary,
                 fontFamily = AppFont,
-                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (now.artist.isNotBlank()) {
+                Text(
+                    now.artist,
+                    color = TextSecondary,
+                    fontFamily = AppFont,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                "Tap for controls",
+                color = TextFaint,
+                fontFamily = AppFont,
+                fontSize = 11.sp,
+                maxLines = 1,
+            )
         }
+        // What the music is doing, not a button: no tap reaches it.
+        Icon(
+            if (now.playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+            contentDescription = if (now.playing) "Playing" else "Paused",
+            tint = if (now.playing) LocalAccentOrDefault() else TextMuted,
+            modifier = Modifier.size(26.dp),
+        )
     }
 }

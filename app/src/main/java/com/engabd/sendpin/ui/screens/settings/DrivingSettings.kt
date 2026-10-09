@@ -184,7 +184,7 @@ internal fun DrivingModeCard(settings: AppSettings, accent: Color, scope: Corout
         }
         Note(
             if (mechanism == AppSettings.DRIVING_OVERLAY) "A full-width bar. Largest targets."
-            else "A small floating window. No permission needed.",
+            else "A small floating window. Tap it for its buttons. No permission needed.",
             title = "How the controls appear",
             info = if (mechanism == AppSettings.DRIVING_OVERLAY) {
                 "A bar along the edge of the screen, as wide as the screen is, with the " +
@@ -194,10 +194,14 @@ internal fun DrivingModeCard(settings: AppSettings, accent: Color, scope: Corout
                     "keeps its buttons away from. The position is remembered."
             } else {
                 "Picture-in-picture, the same floating window video apps use, so it needs " +
-                    "no permission at all.\n\nThe system decides its size, which makes the " +
-                    "buttons smaller than the full-width bar's, and it only appears if you open " +
-                    "this app before starting the map.\n\nTip: if it never shows up, that last " +
-                    "point is usually why. Open CAMusic, start playing, then switch to the map."
+                    "no permission at all.\n\nIt shows the song. Tap it once for its buttons: " +
+                    "previous, play or pause, and next. The expand button in that menu takes you " +
+                    "back into CAMusic. Android does not let a floating window take taps itself, " +
+                    "which is why the buttons wait for that first tap; the full-width bar keeps " +
+                    "large buttons on screen all the time.\n\nThe system decides its size, and " +
+                    "it only appears if you open this app before starting the map.\n\nTip: if it " +
+                    "never shows up, that last point is usually why. Open CAMusic, start " +
+                    "playing, then switch to the map."
             },
         )
 
