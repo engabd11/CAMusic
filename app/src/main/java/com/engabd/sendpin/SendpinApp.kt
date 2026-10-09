@@ -29,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -574,6 +575,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        if (BuildConfig.DEBUG) enableStrictMode()
         // Before any client is built: [Http.base] is lazy, and a cache installed after
         // the first request would be attached to a client nobody is using any more.
         Http.initCache(cacheDir)
@@ -894,52 +896,63 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // a whole album of one genre still applies its preset once, at the first
         // track, because re-applying the same show between two tracks off one
         // record would re-roll a Song-scheme palette each time.
+        //
+        // Only while Light Sync is on. The source it reads is the whole light-sync
+        // graph - scan sources, the track-scan worker, the download index, Music
+        // Assistant's now-playing - and collecting it here built all of that on every
+        // process start: a widget tap, a Quick Settings tile, Android Auto binding,
+        // for someone who has never switched Light Sync on. The shows it picks only
+        // matter to a running show, and switching Light Sync on applies the current
+        // song's at once.
         appScope.launch {
             val settings = AppSettings(this@SendpinApp)
-            var lastGenre: String? = null
-            activeLightSyncSource
-                .map { source ->
-                    Triple(
-                        com.engabd.sendpin.hue.TrackShowRule.keysFor(
-                            title = source.trackTitle ?: source.scanTrack?.title,
-                            artist = source.paletteArtist ?: source.scanTrack?.artist,
-                            trackId = source.scanTrack?.id,
-                        ),
-                        source.scanTrack?.genre,
-                        // Only so that two different songs with neither tags nor a
-                        // genre are still two emissions rather than one.
-                        source.artUrl,
-                    )
-                }
-                .distinctUntilChanged()
-                .collect { (songKeys, genre, _) ->
-                    val presets = settings.showPresets.first()
-                    // A show pinned to this one song wins outright. A genre rule is a
-                    // statement about a kind of music; this is a statement about this
-                    // record, and the narrower one is the one that was meant.
-                    val pinned = com.engabd.sendpin.hue.TrackShowRule.presetFor(
-                        rules = settings.trackShowRules.first(),
-                        presets = presets,
-                        keys = songKeys,
-                    )
-                    if (pinned != null) {
-                        // Cleared so that leaving a pinned song for another track of
-                        // the same genre re-applies that genre's show, rather than
-                        // being swallowed as "the genre has not changed".
-                        lastGenre = null
-                        settings.applyShowPreset(pinned)
-                        return@collect
+            settings.lightSyncEnabled.distinctUntilChanged().collectLatest { lightsOn ->
+                if (!lightsOn) return@collectLatest
+                var lastGenre: String? = null
+                activeLightSyncSource
+                    .map { source ->
+                        Triple(
+                            com.engabd.sendpin.hue.TrackShowRule.keysFor(
+                                title = source.trackTitle ?: source.scanTrack?.title,
+                                artist = source.paletteArtist ?: source.scanTrack?.artist,
+                                trackId = source.scanTrack?.id,
+                            ),
+                            source.scanTrack?.genre,
+                            // Only so that two different songs with neither tags nor a
+                            // genre are still two emissions rather than one.
+                            source.artUrl,
+                        )
                     }
-                    if (genre == lastGenre) return@collect
-                    lastGenre = genre
-                    if (!settings.genrePresetsEnabled.first()) return@collect
-                    val preset = com.engabd.sendpin.hue.GenrePresetRule.presetFor(
-                        rules = settings.genrePresetRules.first(),
-                        presets = presets,
-                        trackGenre = genre,
-                    ) ?: return@collect
-                    settings.applyShowPreset(preset)
-                }
+                    .distinctUntilChanged()
+                    .collect { (songKeys, genre, _) ->
+                        val presets = settings.showPresets.first()
+                        // A show pinned to this one song wins outright. A genre rule is a
+                        // statement about a kind of music; this is a statement about this
+                        // record, and the narrower one is the one that was meant.
+                        val pinned = com.engabd.sendpin.hue.TrackShowRule.presetFor(
+                            rules = settings.trackShowRules.first(),
+                            presets = presets,
+                            keys = songKeys,
+                        )
+                        if (pinned != null) {
+                            // Cleared so that leaving a pinned song for another track of
+                            // the same genre re-applies that genre's show, rather than
+                            // being swallowed as "the genre has not changed".
+                            lastGenre = null
+                            settings.applyShowPreset(pinned)
+                            return@collect
+                        }
+                        if (genre == lastGenre) return@collect
+                        lastGenre = genre
+                        if (!settings.genrePresetsEnabled.first()) return@collect
+                        val preset = com.engabd.sendpin.hue.GenrePresetRule.presetFor(
+                            rules = settings.genrePresetRules.first(),
+                            presets = presets,
+                            trackGenre = genre,
+                        ) ?: return@collect
+                        settings.applyShowPreset(preset)
+                    }
+            }
         }
 
         // One media notification per app. Music Assistant's goes the moment the local
@@ -1167,6 +1180,27 @@ class SendpinApp : Application(), ImageLoaderFactory {
     private fun sha256(value: String): String =
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
             .joinToString("") { "%02x".format(it) }
+
+
+    /**
+     * Debug builds only: log disk and network work on the main thread, and leaked
+     * closeables, so the next regression of either shows up in logcat during
+     * development rather than as jank on a phone. Logging only, never a crash: some of
+     * what it reports comes from libraries this app cannot change.
+     */
+    private fun enableStrictMode() {
+        android.os.StrictMode.setThreadPolicy(
+            android.os.StrictMode.ThreadPolicy.Builder().detectAll().penaltyLog().build(),
+        )
+        android.os.StrictMode.setVmPolicy(
+            android.os.StrictMode.VmPolicy.Builder()
+                .detectLeakedClosableObjects()
+                .detectLeakedRegistrationObjects()
+                .detectActivityLeaks()
+                .penaltyLog()
+                .build(),
+        )
+    }
 
     companion object {
         lateinit var instance: SendpinApp

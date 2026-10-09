@@ -38,13 +38,18 @@ class Scrobbler(
     private val queue = ScrobbleQueue(File(context.noBackupFilesDir, "scrobble_queue.json"))
     private val flushing = Mutex()
 
-    private val _pending = MutableStateFlow(queue.load().size)
+    // Counted on start(), off the main thread: building this used to read and parse
+    // the whole backlog file right there in the constructor, on every process start.
+    private val _pending = MutableStateFlow(0)
     /** Listens waiting to be delivered, for the settings page. */
     val pending: StateFlow<Int> = _pending
 
     fun start() {
         watchNetwork()
-        scope.launch { flush() }
+        scope.launch {
+            _pending.value = queue.load().size
+            flush()
+        }
     }
 
     /** The services switched on and able to send, as configured right now. */
