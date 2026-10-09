@@ -3,6 +3,8 @@
 #include <linux/usbdevice_fs.h>
 #include <linux/usb/ch9.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
@@ -27,7 +29,21 @@
 namespace {
 
 constexpr int kNumUrbs = 8;
+// Packets per URB at full speed (1 ms each): 8 URBs x 8 ms = 64 ms on the wire.
 constexpr int kPacketsPerUrb = 8;
+// usbfs refuses more than this many isochronous packets in one URB.
+constexpr int kMaxPacketsPerUrb = 128;
+
+// Packets per URB for an endpoint serviced packetsPerSecond times a second: whatever
+// keeps each URB 8 ms long. At full speed that is the 8 it always was; at high speed
+// with bInterval 1 (8000 a second) a fixed 8 packets was 1 ms per URB and 8 ms in
+// flight in all, so any scheduling stall longer than that was a gap on the wire.
+inline int packetsPerUrbFor(int packetsPerSecond) {
+    int n = packetsPerSecond * kPacketsPerUrb / 1000;
+    if (n < kPacketsPerUrb) n = kPacketsPerUrb;
+    if (n > kMaxPacketsPerUrb) n = kMaxPacketsPerUrb;
+    return n;
+}
 
 struct Stream {
     int fd = -1;
@@ -38,6 +54,7 @@ struct Stream {
     // Isochronous service opportunities per second: 1000 at full speed; at high speed
     // 8000 microframes divided by the endpoint's interval.
     int packetsPerSecond = 1000;
+    int packetsPerUrb = kPacketsPerUrb;
 
     // Frames owed so far, times packetsPerSecond. Each packet takes the whole frames it
     // has earned, so 44.1 kHz at 1000 packets/s comes out as 44 x9 then 45, exactly,
@@ -75,7 +92,7 @@ struct Stream {
 
     // Take up to `frames` whole frames from the ring into dst; pad the rest with silence.
     // Returns how many were real audio.
-    int fill(uint8_t* dst, int frames) {
+    int fill(uint8_t* dst, int frames, int* takenInEpoch) {
         const size_t want = static_cast<size_t>(frames) * bytesPerFrame;
         if (paused.load()) {
             std::memset(dst, 0, want);
@@ -84,6 +101,9 @@ struct Stream {
         size_t got = 0;
         {
             std::lock_guard<std::mutex> lock(mutex);
+            // Read with the ring, so a flush can never land between taking the frames
+            // and saying which side of it they came from.
+            *takenInEpoch = epoch.load();
             const size_t avail = ringSize - ringSize % bytesPerFrame;
             got = std::min(want, avail);
             size_t first = std::min(got, ring.size() - ringHead);
@@ -105,7 +125,9 @@ struct Stream {
         uint8_t* buf = buffers[index].data();
         int offset = 0;
         int real = 0;
-        for (int p = 0; p < kPacketsPerUrb; ++p) {
+        int urbEpochSeen = -1;
+        bool mixedEpochs = false;
+        for (int p = 0; p < packetsPerUrb; ++p) {
             owed += static_cast<uint64_t>(rate);
             int frames = static_cast<int>(owed / packetsPerSecond);
             owed -= static_cast<uint64_t>(frames) * packetsPerSecond;
@@ -116,7 +138,13 @@ struct Stream {
                 frames = maxPacket / bytesPerFrame;
                 bytes = frames * bytesPerFrame;
             }
-            real += fill(buf + offset, frames);
+            int e = epoch.load();
+            const int took = fill(buf + offset, frames, &e);
+            if (took > 0) {
+                if (urbEpochSeen >= 0 && urbEpochSeen != e) mixedEpochs = true;
+                urbEpochSeen = e;
+            }
+            real += took;
             urb->iso_frame_desc[p].length = static_cast<unsigned int>(bytes);
             urb->iso_frame_desc[p].actual_length = 0;
             urb->iso_frame_desc[p].status = 0;
@@ -130,12 +158,15 @@ struct Stream {
         urb->buffer_length = offset;
         urb->actual_length = 0;
         urb->start_frame = 0;
-        urb->number_of_packets = kPacketsPerUrb;
+        urb->number_of_packets = packetsPerUrb;
         urb->error_count = 0;
         urb->signr = 0;
         urb->usercontext = reinterpret_cast<void*>(static_cast<intptr_t>(index));
-        urbRealFrames[index] = real;
-        urbEpoch[index] = epoch.load();
+        // A URB straddling a flush holds audio from both sides of it; counting either way
+        // would be wrong by a few milliseconds, so it is not counted at all.
+        urbRealFrames[index] = mixedEpochs ? 0 : real;
+        urbEpoch[index] = urbEpochSeen >= 0 ? urbEpochSeen : epoch.load();
+        if (mixedEpochs) real = 0;
         if (ioctl(fd, USBDEVFS_SUBMITURB, urb) < 0) {
             lastError = errno;
             LOGW("SUBMITURB failed: %s", strerror(errno));
@@ -147,6 +178,10 @@ struct Stream {
     }
 
     void run() {
+        // Audio priority: this thread is the only thing between the ring and the wire.
+        // THREAD_PRIORITY_AUDIO (-16) is the most an app may ask for; a refusal just
+        // leaves it at the default.
+        setpriority(PRIO_PROCESS, gettid(), -16);
         for (int i = 0; i < kNumUrbs; ++i) {
             if (!submit(i)) break;
         }
@@ -184,12 +219,19 @@ struct Stream {
         running = false;
         for (auto* urb : urbs) ioctl(fd, USBDEVFS_DISCARDURB, urb);  // In flight or not; EINVAL is fine.
         if (thread.joinable()) thread.join();
+        // A thread that left on a REAPURB error never reaped what it had submitted. Take
+        // back whatever the kernel still holds, so a restart never resubmits a URB that
+        // is still the kernel's.
+        usbdevfs_urb* done = nullptr;
+        while (inFlight.load() > 0 && ioctl(fd, USBDEVFS_REAPURBNDELAY, &done) == 0) inFlight--;
+        inFlight = 0;
         // Whatever was discarded was not played; it is not in flight any more either.
         inFlightRealFrames = 0;
     }
 
     void begin() {
         owed = 0;
+        inFlight = 0;
         running = true;
         thread = std::thread([this] { run(); });
     }
@@ -229,15 +271,16 @@ Java_com_engabd_sendpin_usb_UsbAudioNative_nativeStart(
     s->bytesPerFrame = bytesPerFrame;
     s->rate = rate;
     s->packetsPerSecond = packetsPerSecond;
+    s->packetsPerUrb = packetsPerUrbFor(packetsPerSecond);
     s->ring.resize(static_cast<size_t>(rate) * bytesPerFrame);  // One second.
-    const size_t urbBytes = sizeof(usbdevfs_urb) + kPacketsPerUrb * sizeof(usbdevfs_iso_packet_desc);
+    const size_t urbBytes = sizeof(usbdevfs_urb) + s->packetsPerUrb * sizeof(usbdevfs_iso_packet_desc);
     for (int i = 0; i < kNumUrbs; ++i) {
         s->urbs.push_back(static_cast<usbdevfs_urb*>(std::calloc(1, urbBytes)));
-        s->buffers.emplace_back(static_cast<size_t>(maxPacket) * kPacketsPerUrb);
+        s->buffers.emplace_back(static_cast<size_t>(maxPacket) * s->packetsPerUrb);
     }
     s->begin();
-    LOGI("streaming ep=0x%02x rate=%d frame=%dB maxPacket=%d pps=%d", endpoint, rate, bytesPerFrame, maxPacket,
-         packetsPerSecond);
+    LOGI("streaming ep=0x%02x rate=%d frame=%dB maxPacket=%d pps=%d packets/urb=%d", endpoint, rate, bytesPerFrame,
+         maxPacket, packetsPerSecond, s->packetsPerUrb);
     return reinterpret_cast<jlong>(s);
 }
 
@@ -323,7 +366,14 @@ JNIEXPORT void JNICALL
 Java_com_engabd_sendpin_usb_UsbAudioNative_nativeRestart(JNIEnv*, jobject, jlong ptr) {
     if (ptr == 0) return;
     auto* s = reinterpret_cast<Stream*>(ptr);
-    if (!s->running.load() && !s->thread.joinable()) s->begin();
+    // Not running: halted, or the streaming thread left on its own (a transfer error).
+    // That thread is still joinable until joined, and the old check took "joinable" to
+    // mean "running", so a restart after a self-exit did nothing and the DAC stayed
+    // silent. stop() joins it and clears what it left in flight.
+    if (!s->running.load()) {
+        s->stop();
+        s->begin();
+    }
 }
 
 // Hand an interface back to the kernel's driver after it has been released, so
