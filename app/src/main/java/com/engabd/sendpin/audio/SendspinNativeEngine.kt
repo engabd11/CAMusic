@@ -115,6 +115,9 @@ class SendspinNativeEngine(
 ) : SendspinPlaybackEngine {
 
     companion object {
+        /** Shared across engines: a reconnect builds a new one. */
+        @Volatile private var lastCreateFailureReconnectMs = 0L
+        private const val CREATE_FAILURE_RECONNECT_GAP_MS = 60_000L
         private const val TAG = "SendspinNative"
 
         /**
@@ -349,6 +352,30 @@ class SendspinNativeEngine(
         codecFailures = 0
     }
 
+    /**
+     * The decoder could not be created at all: `MediaCodec` threw on create, configure
+     * or start (no codec resources left, a rate this device's decoder refuses). It used
+     * to be thrown into the stream-start handler, logged there, and left the engine
+     * configured with no decoder: every frame was dropped, Music Assistant showed this
+     * phone playing, and it was silent with nothing said and nothing retried.
+     *
+     * One reconnect is asked for, as for a decoder that dies mid-stream - but no more
+     * than one a minute, so a decoder that can never be created does not become a
+     * reconnect loop.
+     */
+    private fun createCodecOrReport(format: StreamStartPlayerInfo): MediaCodec? = try {
+        createCodec(format.codec, format.sampleRate, format.channels, format.bitDepth, format.codecHeader)
+    } catch (e: Exception) {
+        Log.e(TAG, "Decoder for ${format.codec} ${format.sampleRate}Hz/${format.channels}ch could not be created: ${e.message}")
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!fatalReported && now - lastCreateFailureReconnectMs > CREATE_FAILURE_RECONNECT_GAP_MS) {
+            fatalReported = true
+            lastCreateFailureReconnectMs = now
+            mainHandler.post { onFatalError() }
+        }
+        null
+    }
+
     /** Count a codec failure; past [CODEC_FAILURES_FATAL] in a row, ask for a reconnect once. */
     private fun codecFailed(where: String, e: IllegalStateException) {
         val fatal = e is MediaCodec.CodecException && !e.isTransient && !e.isRecoverable
@@ -513,9 +540,9 @@ class SendspinNativeEngine(
         registerDeviceCallback()
         refreshRoutedDevice()
 
-        codec = createCodec(format.codec, format.sampleRate, format.channels, format.bitDepth, format.codecHeader)
         codecFailures = 0
         fatalReported = false
+        codec = createCodecOrReport(format)
         configured = true
         playbackActive = true
         playbackStarted = false
@@ -570,11 +597,20 @@ class SendspinNativeEngine(
             // The output stream is opened at one rate; a new one needs a new stream.
             activeSampleRate = format.sampleRate
             activeChannels = format.channels
+            // Not under the playback thread's feet. It reads and writes the native output
+            // with no lock, and startNativeOutput() destroys that output and builds
+            // another - from this thread, the ingest thread - so a write landing in the
+            // gap went into freed memory. The thread is stopped for the swap and started
+            // again on the new output; queue, marks and timeline are all kept.
+            stopPlaybackThread()
             startNativeOutput()
+            ensurePlaybackThread()
         }
-        codec = createCodec(format.codec, format.sampleRate, format.channels, format.bitDepth, format.codecHeader)
         codecFailures = 0
         fatalReported = false
+        // Under the lock the decode loop takes, so it never sees a half-built decoder.
+        val next = createCodecOrReport(format)
+        synchronized(codecLock) { codec = next }
     }
 
     override fun submit(frame: ByteArray) {
@@ -979,6 +1015,23 @@ class SendspinNativeEngine(
 
     // ---- Playback thread ----
 
+    /**
+     * End the playback thread and wait (briefly) for it to leave. Its loop exits on the
+     * next pass once the generation moves on; the interrupt wakes it from a queue poll.
+     */
+    private fun stopPlaybackThread() {
+        playbackGeneration++
+        val producer = synchronized(playbackThreadLock) {
+            val t = playbackThread
+            playbackThread = null
+            t
+        }
+        producer?.interrupt()
+        if (producer != null && producer !== Thread.currentThread()) {
+            try { producer.join(500) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        }
+    }
+
     private fun ensurePlaybackThread() {
         synchronized(playbackThreadLock) {
             if (playbackThread?.isAlive == true) return
@@ -995,84 +1048,96 @@ class SendspinNativeEngine(
 
     private fun playbackLoop(generation: Long) {
         while (playbackActive && generation == playbackGeneration) {
-            if (paused || !configured) {
-                sleepMs(10)
-                continue
-            }
-            // Oboe disconnected — reopen.
-            if (nativeOutput.isDisconnected() && !reopenInFlight) {
-                reopenInFlight = true
-                mainHandler.post { reopenAfterDisconnect() }
-                sleepMs(50)
-                continue
-            }
-            // Park while a reopen is in flight.
-            if (reopenInFlight) {
-                sleepMs(10)
-                continue
-            }
-            // A stream that had to start on the local anchor moves to the server
-            // timeline the moment the clock is fit to schedule against.
-            if (playbackStarted && !serverTimeline && clock.isReadyForPlaybackStart()) {
-                reanchorToServerTimeline()
-                continue
-            }
-            // Start buffer gate (only before first startTrack).
-            if (!playbackStarted) {
-                if (!startupReady()) {
-                    // A stream that has ended cannot fill this buffer: a pause cuts
-                    // the tail, which clears `playbackStarted` and lands the loop
-                    // here, and here it spun — a hundred times a second, with the
-                    // output stream started under it — until the next stream/start.
-                    // The idle stop was only ever armed from the poll branch below,
-                    // which this gate never let it reach.
-                    if (endOfStreamSignalled && frameQueue.isEmpty() && decoderMarks.isEmpty()) scheduleIdleStop()
+            try {
+                if (paused || !configured) {
                     sleepMs(10)
                     continue
                 }
-                startTrack()
-            }
-
-            // Backpressure: keep the native ring around RING_TARGET_MS.
-            val ringTargetFrames = activeSampleRate.toLong() * RING_TARGET_MS / 1000L
-            if (nativeOutput.bufferedFrames() >= ringTargetFrames) {
-                sleepMs(10)
-                continue
-            }
-
-            val drained = drainDecoder(generation)
-            if (drained) continue
-
-            // Pull next encoded frame.
-            val frame: EncodedFrame
-            val held = pendingFrame
-            if (held != null) {
-                frame = held
-                pendingFrame = null
-            } else {
-                val polled = try {
-                    frameQueue.poll(10, TimeUnit.MILLISECONDS)
-                } catch (_: InterruptedException) {
-                    break
-                } ?: run {
-                    // Queue empty. If the stream has ended, schedule idle stop
-                    // so the Oboe callback and producer thread exit after the
-                    // grace period, saving power while connected but not playing.
-                    if (endOfStreamSignalled && decoderMarks.isEmpty()) {
-                        scheduleIdleStop()
-                    }
+                // Oboe disconnected — reopen.
+                if (nativeOutput.isDisconnected() && !reopenInFlight) {
+                    reopenInFlight = true
+                    mainHandler.post { reopenAfterDisconnect() }
+                    sleepMs(50)
                     continue
                 }
-                frameQueueBytes.addAndGet(-polled.length.toLong())
-                frame = polled
-            }
-            if (frame.generation != configureGeneration) continue
+                // Park while a reopen is in flight.
+                if (reopenInFlight) {
+                    sleepMs(10)
+                    continue
+                }
+                // A stream that had to start on the local anchor moves to the server
+                // timeline the moment the clock is fit to schedule against.
+                if (playbackStarted && !serverTimeline && clock.isReadyForPlaybackStart()) {
+                    reanchorToServerTimeline()
+                    continue
+                }
+                // Start buffer gate (only before first startTrack).
+                if (!playbackStarted) {
+                    if (!startupReady()) {
+                        // A stream that has ended cannot fill this buffer: a pause cuts
+                        // the tail, which clears `playbackStarted` and lands the loop
+                        // here, and here it spun — a hundred times a second, with the
+                        // output stream started under it — until the next stream/start.
+                        // The idle stop was only ever armed from the poll branch below,
+                        // which this gate never let it reach.
+                        if (endOfStreamSignalled && frameQueue.isEmpty() && decoderMarks.isEmpty()) scheduleIdleStop()
+                        sleepMs(10)
+                        continue
+                    }
+                    startTrack()
+                }
 
-            if (activeCodec == "pcm") {
-                writeChunk(frame.serverTimestampUs, frame.data, frame.offset, frame.length, frame.generation, generation)
-            } else {
-                if (!queueCodecInput(frame)) pendingFrame = frame
-                drainDecoder(generation)
+                // Backpressure: keep the native ring around RING_TARGET_MS.
+                val ringTargetFrames = activeSampleRate.toLong() * RING_TARGET_MS / 1000L
+                if (nativeOutput.bufferedFrames() >= ringTargetFrames) {
+                    sleepMs(10)
+                    continue
+                }
+
+                val drained = drainDecoder(generation)
+                if (drained) continue
+
+                // Pull next encoded frame.
+                val frame: EncodedFrame
+                val held = pendingFrame
+                if (held != null) {
+                    frame = held
+                    pendingFrame = null
+                } else {
+                    val polled = try {
+                        frameQueue.poll(10, TimeUnit.MILLISECONDS)
+                    } catch (_: InterruptedException) {
+                        break
+                    } ?: run {
+                        // Queue empty. If the stream has ended, schedule idle stop
+                        // so the Oboe callback and producer thread exit after the
+                        // grace period, saving power while connected but not playing.
+                        if (endOfStreamSignalled && decoderMarks.isEmpty()) {
+                            scheduleIdleStop()
+                        }
+                        continue
+                    }
+                    frameQueueBytes.addAndGet(-polled.length.toLong())
+                    frame = polled
+                }
+                if (frame.generation != configureGeneration) continue
+
+                if (activeCodec == "pcm") {
+                    writeChunk(frame.serverTimestampUs, frame.data, frame.offset, frame.length, frame.generation, generation)
+                } else {
+                    if (!queueCodecInput(frame)) pendingFrame = frame
+                    drainDecoder(generation)
+                }
+            } catch (e: IllegalStateException) {
+                // MediaCodec in its error state throws from outputFormat,
+                // getOutputBuffer and releaseOutputBuffer too, not only from the
+                // calls the decode path already guards. Uncaught here, that ended
+                // this thread with an exception, which takes the whole app down.
+                // Counted like any other codec failure: one skipped pass is the
+                // answer to a hiccup, a reconnect the answer to a dead decoder.
+                Log.w(TAG, "Timeline pass failed: ${e.message}")
+                codecFailed("timeline", e)
+                sleepMs(10)
             }
         }
     }
@@ -1345,12 +1410,18 @@ class SendspinNativeEngine(
         nativeOutput.setFrozen(false)
         frameQueue.clear()
         frameQueueBytes.set(0)
-        decoderMarks.clear()
         lastEnqueuedTimestampUs = 0L
         estimatedFrameDurationUs = 20_000L
         onFlush()
         nativeOutput.flush()
+        // The marks pair each decoded chunk with its server timestamp, in order. Cleared
+        // outside this lock, a frame the decode loop queued in between left a mark for
+        // audio the flush then threw away, and every chunk after was paired with the
+        // timestamp before it: a steady one-chunk (about 20 ms) offset in a group,
+        // until the next stream. Cleared together with the decoder, as the re-anchor does.
         synchronized(codecLock) {
+            decoderMarks.clear()
+            pendingFrame = null
             try { codec?.flush() } catch (_: Exception) {}
         }
     }
@@ -1366,17 +1437,8 @@ class SendspinNativeEngine(
         playbackActive = false
         paused = false
         playbackStarted = false
-        playbackGeneration++
         // Stop the producer and wait for it to exit before releasing the codec.
-        val producer = synchronized(playbackThreadLock) {
-            val t = playbackThread
-            playbackThread = null
-            t
-        }
-        producer?.interrupt()
-        if (producer != null && producer !== Thread.currentThread()) {
-            try { producer.join(500) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
-        }
+        stopPlaybackThread()
         flushQueuesAndDecoder()
         synchronized(codecLock) {
             try { codec?.stop() } catch (_: Exception) {}
