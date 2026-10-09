@@ -510,7 +510,7 @@ class SendspinClient(
         if (userClosed) return
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
-            val delayMs = (500L * (1 shl attempt.coerceAtMost(5))).coerceAtMost(15_000L)
+            val delayMs = ReconnectBackoff.delayMs(attempt)
             attempt++
             dbg("reconnecting in ${delayMs}ms (attempt $attempt)")
             delay(delayMs)
