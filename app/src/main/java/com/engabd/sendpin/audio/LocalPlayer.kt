@@ -1106,7 +1106,10 @@ class LocalPlayer(private val context: Context) {
                 // The *last* command of a burst is the one worth re-reading after:
                 // asking between the clear and the play of a queue swap would only
                 // put the intermediate state on screen.
-                if (remotePending.decrementAndGet() <= 0) remoteRepoll = true
+                if (remotePending.decrementAndGet() <= 0) {
+                    remoteRepoll = true
+                    remoteWake.trySend(Unit)
+                }
             }
         }
     }
@@ -1146,35 +1149,72 @@ class LocalPlayer(private val context: Context) {
     private fun startRemoteLoop() {
         stopRemoteLoop()
         val r = remote ?: return
+        // The player's own change notifications, where it has them (MPD's idle).
+        // Each one asks for a read now; with them, the timed reads can be rare.
+        remoteEventsJob = r.changes()?.let { events ->
+            scope.launch {
+                events.collect {
+                    remoteRepoll = true
+                    remoteWake.trySend(Unit)
+                }
+            }
+        }
+        val pushed = remoteEventsJob != null
         remoteJob = scope.launch {
-            var sincePoll = REMOTE_POLL_MS
+            var sincePoll = Long.MAX_VALUE / 2
+            var failures = 0
             while (isActive) {
                 val busy = remotePending.get() > 0
-                if (!busy && (remoteRepoll || sincePoll >= remotePollInterval())) {
+                if (!busy && (remoteRepoll || sincePoll >= remotePollInterval(pushed))) {
                     remoteRepoll = false
                     sincePoll = 0
                     val issuedAt = remoteEpoch.get()
                     val state = runCatching { r.poll() }.getOrNull()
-                    if (state != null && remoteEpoch.get() == issuedAt) {
-                        applyRemoteState(state)
-                    } else {
-                        // Unanswered, or overtaken by a command while it was in the
-                        // air. Either way this reading says nothing; ask again on
-                        // the next tick rather than sitting on it for a second.
-                        sincePoll = REMOTE_POLL_MS
+                    when {
+                        state != null && remoteEpoch.get() == issuedAt -> {
+                            failures = 0
+                            applyRemoteState(state)
+                        }
+                        state != null -> {
+                            // Overtaken by a command while it was in the air: this
+                            // reading says nothing, so ask again on the next tick.
+                            remoteRepoll = true
+                        }
+                        else -> {
+                            // Unanswered. Not again on the next tick - that was four
+                            // new connections a second to a server that had gone
+                            // away - but after a growing pause; and after a few, stop
+                            // claiming the music is playing.
+                            failures++
+                            sincePoll = remotePollInterval(pushed) - RemotePollPolicy.retryAfterMs(failures)
+                            if (failures >= RemotePollPolicy.STALE_AFTER_FAILURES && _playing.value) {
+                                _playing.value = false
+                            }
+                        }
                     }
                 } else if (_playing.value) {
                     // Between polls, and while a poll is failing: the music has not
                     // stopped just because the Wi-Fi dropped a packet.
                     _positionMs.value += POSITION_TICK_MS
                 }
-                delay(POSITION_TICK_MS)
-                sincePoll += POSITION_TICK_MS
+                // A position to carry forward needs the quick tick; paused, nothing
+                // moves on its own, and a push or a command wakes the loop at once.
+                val tick = if (_playing.value || busy) POSITION_TICK_MS else RemotePollPolicy.PAUSED_TICK_MS
+                kotlinx.coroutines.withTimeoutOrNull(tick) { remoteWake.receive() }
+                sincePoll += tick
             }
         }
     }
 
-    private fun stopRemoteLoop() { remoteJob?.cancel(); remoteJob = null }
+    private fun stopRemoteLoop() {
+        remoteJob?.cancel(); remoteJob = null
+        remoteEventsJob?.cancel(); remoteEventsJob = null
+    }
+
+    private var remoteEventsJob: Job? = null
+
+    /** Wakes the remote loop early: a push from the player, or a command just finished. */
+    private val remoteWake = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
 
     /**
      * How long between reads of the remote player. Once a second while it plays, so
@@ -1185,11 +1225,11 @@ class LocalPlayer(private val context: Context) {
      * from here still re-polls at once (`remoteRepoll`), so a press of play from
      * the notification is not left waiting on this.
      */
-    private fun remotePollInterval(): Long = when {
-        _playing.value -> REMOTE_POLL_MS
-        com.engabd.sendpin.service.AppLifecycleObserver.get()?.foreground?.value != false -> REMOTE_PAUSED_POLL_MS
-        else -> REMOTE_BACKGROUND_PAUSED_POLL_MS
-    }
+    private fun remotePollInterval(pushed: Boolean): Long = RemotePollPolicy.intervalMs(
+        playing = _playing.value,
+        foreground = com.engabd.sendpin.service.AppLifecycleObserver.get()?.foreground?.value != false,
+        pushed = pushed,
+    )
 
     /** Put one reading of the remote player onto the flows the screens read. */
     private fun applyRemoteState(state: RemoteState) {
@@ -2682,21 +2722,5 @@ class LocalPlayer(private val context: Context) {
 
         /** One line per transition, at arm time — the plan, so a bad join can be read off logcat. */
         const val CROSSFADE_TAG = "Crossfade"
-
-        /**
-         * How often a remote player is asked what it is doing.
-         *
-         * One second, with the position carried forward on the 250ms ticks in
-         * between — see [startRemoteLoop]. Each poll is a connection to a machine
-         * that is also decoding audio, so this is as often as is polite and as
-         * rarely as a scrub bar can bear.
-         */
-        const val REMOTE_POLL_MS = 1000L
-
-        /** Paused, app on screen: someone could press play on the server itself. */
-        const val REMOTE_PAUSED_POLL_MS = 2_000L
-
-        /** Paused, app in the background: only the notification is reading. */
-        const val REMOTE_BACKGROUND_PAUSED_POLL_MS = 15_000L
     }
 }
