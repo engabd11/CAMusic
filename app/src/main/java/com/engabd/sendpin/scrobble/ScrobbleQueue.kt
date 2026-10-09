@@ -3,6 +3,7 @@ package com.engabd.sendpin.scrobble
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import com.engabd.sendpin.util.DurableFile
 import java.io.File
 
 /**
@@ -41,23 +42,32 @@ class ScrobbleQueue(private val file: File) {
     private val lock = Any()
 
     fun load(): List<PendingScrobble> = synchronized(lock) {
-        if (!file.exists()) return emptyList()
-        runCatching { json.decodeFromString(serializer, file.readText()) }.getOrDefault(emptyList())
+        DurableFile.read(file) { json.decodeFromString(serializer, it) } ?: emptyList()
     }
 
     fun add(entry: PendingScrobble) = synchronized(lock) {
         write((load() + entry).takeLast(MAX))
     }
 
-    /** Replace the whole queue — what a flush leaves behind. */
+    /** Replace the whole queue. */
     fun replace(entries: List<PendingScrobble>) = synchronized(lock) { write(entries) }
 
+    /**
+     * What a flush leaves behind: [keep] in place of the [sent] snapshot it worked
+     * through, plus anything queued *while* it was sending.
+     *
+     * A flush takes minutes on a long backlog over a slow network, and a listen that
+     * ended meanwhile was added to the file; replacing the file with [keep] alone
+     * wrote straight over it. Merged here, under the same lock `add` takes.
+     */
+    fun finishFlush(sent: List<PendingScrobble>, keep: List<PendingScrobble>) = synchronized(lock) {
+        val worked = sent.toHashSet()
+        write(keep + load().filter { it !in worked })
+    }
+
     private fun write(entries: List<PendingScrobble>) {
-        file.parentFile?.mkdirs()
         if (entries.isEmpty()) { file.delete(); return }
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(json.encodeToString(serializer, entries))
-        if (!tmp.renameTo(file)) { file.delete(); tmp.renameTo(file) }
+        DurableFile.write(file, json.encodeToString(serializer, entries))
     }
 
     companion object {
