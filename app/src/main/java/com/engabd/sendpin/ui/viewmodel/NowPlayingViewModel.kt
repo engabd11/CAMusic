@@ -397,7 +397,26 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private val onSubsonic get() = backendPref.value == "subsonic"
 
-    private val isLocal get() = localSnap.value.active || onSubsonic
+    /**
+     * Music Assistant has a stream on this phone (Sendspin), playing or paused.
+     *
+     * Read because the library and the player are separate choices. With Navidrome
+     * (or any other library) active, a Music Assistant stream sent to this phone from
+     * Home Assistant or MA's own app played fine, but this screen chose its view from
+     * the library alone: it built the local player's state, found no track, and said
+     * "Nothing playing" over music that was playing — and its buttons drove the empty
+     * local player, so it could not even pause what was heard.
+     */
+    private val sendspinHere: StateFlow<Boolean> =
+        (app as SendpinApp).playbackOwner.state
+            .map {
+                it.soundOwner == com.engabd.sendpin.service.PlaybackOwner.Who.SENDSPIN ||
+                    it.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.SENDSPIN
+            }
+            .distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    private val isLocal get() = NowPlayingView.of(localSnap.value.active, backendPref.value, sendspinHere.value) == NowPlayingView.LOCAL
 
     private val _target = MutableStateFlow("")
     private val _players = MutableStateFlow<List<MaPlayer>>(emptyList())
@@ -525,9 +544,19 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private fun resolveTarget(players: List<MaPlayer>, target: String): String =
         resolveTargetPlayer(players, target, myPlayerId)
 
-    private fun targetId() = resolveTarget(_players.value, _target.value)
+    private fun targetId() = resolveTarget(_players.value, effectiveTarget.value)
 
-    private val maState: StateFlow<State> = combine(_players, _target, _queues, localQuality, _lastTrack) { players, target, queues, local, last ->
+    /**
+     * The player this screen is about. The chosen one, except when another library is
+     * active and Music Assistant is streaming to this phone: then it is this phone's
+     * own player, the one actually making the sound.
+     */
+    private val effectiveTarget: StateFlow<String> =
+        combine(_target, backendPref, sendspinHere) { target, backend, here ->
+            if (backend == "subsonic" && here) myPlayerId else target
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    private val maState: StateFlow<State> = combine(_players, effectiveTarget, _queues, localQuality, _lastTrack) { players, target, queues, local, last ->
         val id = resolveTarget(players, target)
         val p = players.firstOrNull { it.playerId == id }
         val isSelf = id == myPlayerId
@@ -634,12 +663,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             LocalInfo(ma, l, devVol, backend, toggles)
         },
         activeServerName,
-    ) { info, serverName ->
+        sendspinHere,
+    ) { info, serverName, here ->
         val (ma, l, devVol, backend, toggles) = info
         // Either the local player has a session, or the library is Navidrome and this
         // phone is the only player there is. The second case is the one that was
-        // missing: with nothing playing yet it fell through to the MA view.
-        if (!l.active && backend != "subsonic") return@combine ma
+        // missing: with nothing playing yet it fell through to the MA view. A Music
+        // Assistant stream on this phone outranks the library; see [sendspinHere].
+        if (NowPlayingView.of(l.active, backend, here) == NowPlayingView.MA) return@combine ma
         val t = l.track
         State(
             // MPD is the one library that plays itself, with this phone as its
