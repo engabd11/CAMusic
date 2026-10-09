@@ -181,6 +181,10 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                             },
                         )
                         StatusRow("Volume", usb.volume)
+                        UsbStreamHealthRow()
+                        if (usb.asyncClock) {
+                            StatusRow("Clocking", "The DAC's own clock (asynchronous)")
+                        }
                     } else {
                         if (path.sink.known) StatusRow("To Android", path.sink.summary())
                         StatusRow(
@@ -198,6 +202,19 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                 }
                 with(SignalPath) { path.explain(route?.isBluetooth == true) }?.let {
                     Note(it, warn = path.truncating)
+                }
+                if (path.usb?.asyncClock == true) {
+                    Note(
+                        "This DAC keeps its own time. Very long sessions may click now and then.",
+                        title = "Clocking",
+                        info = "An asynchronous DAC runs from its own crystal and tells the " +
+                            "player, through a feedback endpoint, to send a little more or a " +
+                            "little less. CAMusic's driver does not follow that feedback yet: it " +
+                            "sends exactly the file's rate. The two clocks differ by a few parts " +
+                            "per million, so over a long stretch the DAC's buffer can run short " +
+                            "or long and you may hear an occasional click. Pausing, skipping or " +
+                            "a new track resets it.",
+                    )
                 }
                 Note(
                     "What each line means.",
@@ -442,6 +459,35 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
                 "this one.",
         )
     }
+}
+
+/**
+ * How the USB driver's stream is holding up, read live while this page is open.
+ *
+ * The native engine has always counted packet errors and the silence it pads with when
+ * the queue runs dry; nothing showed them. Padding at the start of a stream and after
+ * the last track is expected — only padding that keeps rising mid-song is an underrun —
+ * so it is shown as time, which is the unit a listener can judge.
+ */
+@Composable
+private fun UsbStreamHealthRow() {
+    val health by produceState<com.engabd.sendpin.usb.UsbAudioSession.Stats?>(null) {
+        while (true) {
+            value = com.engabd.sendpin.usb.UsbAudioSession.current?.stats()
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+    val rate = SignalPath.state.collectAsStateWithLifecycle().value.usb?.confirmedRateHz ?: 0
+    val h = health ?: return
+    val paddedMs = if (rate > 0) h.silentFrames * 1000 / rate else 0
+    StatusRow(
+        "Stream",
+        buildString {
+            append(if (h.packetErrors == 0L) "No packet errors" else "${h.packetErrors} packet errors")
+            append(" · ")
+            append(if (paddedMs == 0L) "no silence padded" else "${paddedMs} ms of silence padded")
+        },
+    )
 }
 
 /**

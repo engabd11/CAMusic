@@ -145,4 +145,50 @@ class UacDescriptorsTest {
         val reply = (le16(2) + le32(96_000) + le32(96_000) + le32(0)).toByteArray()
         assertEquals(listOf(96_000), UacDescriptors.parseRateRanges(reply))
     }
+
+    /**
+     * A UAC2 DAC whose streaming terminal is clocked through a selector (pin 1: internal
+     * 41, pin 2: a multiplier 50 over external 42) - the case where "the first clock
+     * source in the descriptors" was the wrong place to set a rate.
+     */
+    private fun uac2WithSelector(terminalClock: Int): ByteArray = (
+        device(0x1234, 0x5678) +
+            iface(0, 0, 0, sub = 1, protocol = 0x20) +
+            desc(0x24, bytes(0x01) + le16(0x0200) + bytes(0x08) + le16(80) + bytes(0)) +
+            desc(0x24, bytes(0x0A, 41, 0x03, 0x07, 0, 0)) +
+            desc(0x24, bytes(0x0A, 42, 0x00, 0x01, 0, 0)) +
+            desc(0x24, bytes(0x0C, 50, 42, 0, 0)) +
+            desc(0x24, bytes(0x0B, 40, 2, 41, 50, 0x03, 0)) +
+            // USB streaming input terminal 2, clocked from [terminalClock].
+            desc(0x24, bytes(0x02, 2) + le16(0x0101) + bytes(0, terminalClock, 2) + le32(3) + bytes(0) + le16(0) + bytes(0)) +
+            iface(1, 0, 0, sub = 2, protocol = 0x20) +
+            iface(1, 1, 1, sub = 2, protocol = 0x20) +
+            desc(0x24, bytes(0x01, 2, 0, 1) + le32(1) + bytes(2) + le32(3) + bytes(0)) +
+            desc(0x24, bytes(0x02, 1, 4, 24)) +
+            endpoint(0x01, 0x05, 1024, 1, uac1 = false)
+        ).toByteArray()
+
+    @Test
+    fun `uac2 clock - the terminal's selector decides, on its current pin`() {
+        val d = checkNotNull(UacDescriptors.parse(uac2WithSelector(terminalClock = 40)))
+        assertEquals(mapOf(2 to 40), d.terminalClocks)
+        assertEquals(mapOf(40 to listOf(41, 50)), d.clockSelectors)
+        assertEquals(mapOf(50 to 42), d.clockMultipliers)
+        val alt = d.outputs.single()
+        // Selector on pin 1: the internal clock.
+        assertEquals(41, d.clockSourceFor(alt.terminalLink) { 1 }?.id)
+        // Pin 2: through the multiplier to the external clock.
+        assertEquals(42, d.clockSourceFor(alt.terminalLink) { 2 }?.id)
+        // The selector would not say: its first pin.
+        assertEquals(41, d.clockSourceFor(alt.terminalLink) { null }?.id)
+    }
+
+    @Test
+    fun `uac2 clock - a terminal clocked straight from a source, and one with no terminal`() {
+        val d = checkNotNull(UacDescriptors.parse(uac2WithSelector(terminalClock = 42)))
+        assertEquals(42, d.clockSourceFor(2)?.id)
+        // A device that names no terminal clock keeps the old answer: the first source.
+        val plain = checkNotNull(UacDescriptors.parse(uac2Dac()))
+        assertEquals(41, plain.clockSourceFor(1)?.id)
+    }
 }

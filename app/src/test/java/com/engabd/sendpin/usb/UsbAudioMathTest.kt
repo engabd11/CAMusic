@@ -2,6 +2,7 @@ package com.engabd.sendpin.usb
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -71,5 +72,15 @@ class UsbAudioMathTest {
         val a = UsbAudioMath.tone(37, 0, 44_100, 2, 2, 16)
         val b = UsbAudioMath.tone(63, 37, 44_100, 2, 2, 16)
         assertArrayEquals(whole, a + b)
+    }
+
+    @Test
+    fun `a confirmed rate must be the asked rate, give or take a crystal`() {
+        assertTrue(UsbAudioMath.rateMatches(44_100, 44_100))
+        assertTrue(UsbAudioMath.rateMatches(44_100, 44_099))
+        // A 192 kHz SET the DAC ignored, read back as 96 kHz: half speed.
+        assertFalse(UsbAudioMath.rateMatches(192_000, 96_000))
+        assertFalse(UsbAudioMath.rateMatches(44_100, 48_000))
+        assertFalse(UsbAudioMath.rateMatches(44_100, null))
     }
 }
