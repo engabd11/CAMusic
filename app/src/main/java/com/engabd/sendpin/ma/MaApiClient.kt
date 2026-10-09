@@ -306,7 +306,10 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
                 // Wait longer between retries: a reconnect in progress is the most
                 // likely reason the state isn't CONNECTED yet.
                 val wait = if (attempt == 0) 5_000L else 15_000L
-                try { withTimeout(wait) { state.first { it == State.CONNECTED } } } catch (_: Exception) {
+                // The timeout only: the caller's own cancellation (a screen left, a
+                // job replaced) used to be caught here too and turned into "Not
+                // connected" - an error shown for something nobody was waiting for.
+                try { withTimeout(wait) { state.first { it == State.CONNECTED } } } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
                     // Thrown, not `return null`. Callers parse a null as an empty
                     // answer, so a Music Assistant that was simply unreachable used
                     // to look like a library with nothing in it — the "a failed load
