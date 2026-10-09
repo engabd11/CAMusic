@@ -296,6 +296,17 @@ data class CarBrowseOptions(
     }
 
     companion object {
+        /**
+         * The one library whose shelves can stand in for the root, or null. A lone
+         * library qualifies, and so does one server alongside the always-present
+         * Downloads.
+         */
+        fun <T> flattenTarget(libraries: List<T>, id: (T) -> String, downloadsId: String): T? {
+            if (libraries.size == 1) return libraries.first()
+            val servers = libraries.filter { id(it) != downloadsId }
+            return if (libraries.size == 2 && servers.size == 1) servers.first() else null
+        }
+
         const val DEFAULT_SHELF_ITEMS = 50
         const val MIN_SHELF_ITEMS = 10
         const val MAX_SHELF_ITEMS = 300

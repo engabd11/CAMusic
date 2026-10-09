@@ -163,7 +163,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
             else -> when (val id = CarMediaId.parse(parentId)) {
                 is CarMediaId.Server -> shelvesFor(id.serverId, options)
                 is CarMediaId.Shelf -> shelfChildren(id, options)
-                is CarMediaId.Item -> itemChildren(id, options).map { it.toMediaItem(id.serverId, options) }
+                is CarMediaId.Item -> itemChildren(id, options)
                 is CarMediaId.Message, null -> emptyList()
             }
         }
@@ -183,8 +183,15 @@ class CarLibraryBridge(private val app: SendpinApp) {
     private suspend fun rootChildren(options: CarBrowseOptions, limit: Int): List<MediaItem> {
         val libraries = visibleLibraries(options)
         if (libraries.isEmpty()) return listOf(noLibrariesItem())
-        if (options.flattenSingleLibrary && libraries.size == 1) {
-            return shelvesFor(libraries.first().id, options)
+        if (options.flattenSingleLibrary) {
+            // Downloads is always in the list, so "exactly one library" was never true
+            // for anyone and this never ran. One server plus Downloads is the case it
+            // was written for: the server's shelves at the root, Downloads after them.
+            val target = CarBrowseOptions.flattenTarget(libraries, { it.id }, AppSettings.DOWNLOADS_SERVER_ID)
+            if (target != null) {
+                val downloads = libraries.firstOrNull { it.id == AppSettings.DOWNLOADS_SERVER_ID && it !== target }
+                return shelvesFor(target.id, options) + listOfNotNull(downloads?.let { libraryItem(it, options) })
+            }
         }
         val (shown, overflow) = options.splitForRoot(libraries, limit)
         return shown.map { libraryItem(it, options) } +
@@ -317,21 +324,25 @@ class CarLibraryBridge(private val app: SendpinApp) {
     }
 
     private suspend fun shelfChildren(id: CarMediaId.Shelf, options: CarBrowseOptions): List<MediaItem> {
-        val items = cached(id.encode()) { shelfItems(id, options) }
-        if (items.isEmpty()) {
-            val shelf = CarShelf.byKey(id.key)
-            return listOf(messageItem("Nothing here yet", shelf?.title?.let { "$it is empty" }))
+        val load = cachedLoad(id.encode()) { shelfItems(id, options) }
+        CarLoad.message(load, libraryName(id.serverId), CarShelf.byKey(id.key)?.title)?.let { (title, subtitle) ->
+            return listOf(messageItem(title, subtitle))
         }
-        return items.map { it.toMediaItem(id.serverId, options) }
+        return (load as CarLoad.Items).items.map { it.toMediaItem(id.serverId, options) }
     }
 
-    private suspend fun shelfItems(id: CarMediaId.Shelf, options: CarBrowseOptions): List<MaItem> = runCatchingCancellable {
-        val config = configFor(id.serverId) ?: return@runCatchingCancellable emptyList<MaItem>()
+    /** A library's display name, for the lines that say it could not be reached. */
+    private suspend fun libraryName(serverId: String): String? = configFor(serverId)?.displayName
+
+    private suspend fun shelfItems(id: CarMediaId.Shelf, options: CarBrowseOptions): CarLoad = runCatchingCancellable {
+        val config = configFor(id.serverId) ?: return@runCatchingCancellable CarLoad.Items(emptyList())
+        // Before the browse timeout, which it has its own of: a Music Assistant that
+        // will not connect is unreachable, not slow.
+        if (config.kind == ServerKind.MUSIC_ASSISTANT && !maReady(config)) return@runCatchingCancellable CarLoad.Unreachable
         val limit = options.shelfItemLimit
         val trackLimit = options.trackItemLimit
-        withTimeoutOrNull(BROWSE_TIMEOUT_MS) {
+        val items = withTimeoutOrNull(BROWSE_TIMEOUT_MS) {
             if (config.kind == ServerKind.MUSIC_ASSISTANT) {
-                if (!maReady(config)) return@withTimeoutOrNull emptyList<MaItem>()
                 when (id.key) {
                     CarShelf.RECENTLY_ADDED.key -> maRepo.recentlyAdded(limit)
                     CarShelf.RECENTLY_PLAYED.key -> maRepo.recentlyPlayed(limit)
@@ -355,24 +366,32 @@ class CarLibraryBridge(private val app: SendpinApp) {
                     else -> emptyList()
                 }
             }
-        }.orEmpty()
-    }.getOrDefault(emptyList<MaItem>())
+        } ?: return@runCatchingCancellable CarLoad.TimedOut
+        CarLoad.Items(items)
+    }.getOrDefault(CarLoad.Unreachable)
 
-    private suspend fun itemChildren(id: CarMediaId.Item, options: CarBrowseOptions): List<MaItem> =
-        cached(id.encode()) {
+    private suspend fun itemChildren(id: CarMediaId.Item, options: CarBrowseOptions): List<MediaItem> {
+        val load = cachedLoad(id.encode()) {
             runCatchingCancellable {
                 val placeholder = id.toPlaceholderItem()
-                withTimeoutOrNull(BROWSE_TIMEOUT_MS) {
-                    if (MusicSources.isLocalProvider(id.provider)) {
+                val local = MusicSources.isLocalProvider(id.provider)
+                val config = if (local) null else configFor(id.serverId)
+                if (!local && config != null && !maReady(config)) return@runCatchingCancellable CarLoad.Unreachable
+                val items = withTimeoutOrNull(BROWSE_TIMEOUT_MS) {
+                    if (local) {
                         sourceFor(id.serverId)?.children(placeholder) ?: emptyList()
                     } else {
-                        val config = configFor(id.serverId) ?: return@withTimeoutOrNull emptyList<MaItem>()
-                        if (!maReady(config)) return@withTimeoutOrNull emptyList<MaItem>()
-                        maRepo.children(placeholder)
+                        if (config == null) emptyList() else maRepo.children(placeholder)
                     }
-                }.orEmpty().take(options.trackItemLimit)
-            }.getOrDefault(emptyList<MaItem>())
+                } ?: return@runCatchingCancellable CarLoad.TimedOut
+                CarLoad.Items(items.take(options.trackItemLimit))
+            }.getOrDefault(CarLoad.Unreachable)
         }
+        CarLoad.message(load, libraryName(id.serverId), null)?.let { (title, subtitle) ->
+            return listOf(messageItem(title, subtitle))
+        }
+        return (load as CarLoad.Items).items.map { it.toMediaItem(id.serverId, options) }
+    }
 
     /**
      * One folder's contents, from cache when it is fresh enough.
@@ -384,6 +403,22 @@ class CarLibraryBridge(private val app: SendpinApp) {
      * and the cost of being wrong is one re-fetch of a folder that is about to be
      * asked for anyway.
      */
+    /**
+     * [cached] for a [CarLoad]: only a non-empty list is remembered. A failure or a
+     * timeout is asked again on the next visit, which is the point of reporting it.
+     */
+    private suspend fun cachedLoad(key: String, fetch: suspend () -> CarLoad): CarLoad {
+        childCache[key]?.let { entry ->
+            if (SystemClock.elapsedRealtime() - entry.atMs < CHILDREN_CACHE_MS) return CarLoad.Items(entry.items)
+        }
+        val load = fetch()
+        if (load is CarLoad.Items && load.items.isNotEmpty()) {
+            if (childCache.size >= CHILDREN_CACHE_MAX) childCache.clear()
+            childCache[key] = CachedChildren(load.items, SystemClock.elapsedRealtime())
+        }
+        return load
+    }
+
     private suspend fun cached(key: String, fetch: suspend () -> List<MaItem>): List<MaItem> {
         childCache[key]?.let { entry ->
             if (SystemClock.elapsedRealtime() - entry.atMs < CHILDREN_CACHE_MS) return entry.items
@@ -410,6 +445,14 @@ class CarLibraryBridge(private val app: SendpinApp) {
      */
     suspend fun search(query: String): List<MediaItem> {
         if (query.isBlank()) return emptyList()
+        val hits = searchHits(query)
+        // An empty list drew a blank results screen with no word of why. One line
+        // saying so instead; it is neither playable nor browsable, so [playSearch]
+        // passes over it.
+        return hits.ifEmpty { listOf(messageItem("No results for \u201C$query\u201D", "Try another name, or check the library is reachable")) }
+    }
+
+    private suspend fun searchHits(query: String): List<MediaItem> {
         cachedSearch?.let { cached ->
             if (cached.query == query && SystemClock.elapsedRealtime() - cached.atMs < SEARCH_CACHE_MS) {
                 return cached.results
