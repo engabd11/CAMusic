@@ -673,20 +673,47 @@ class SendpinApp : Application(), ImageLoaderFactory {
         }
         val lastWasLocal = bootSettings.bootLastPlayer == "local"
         if (lastWasLocal) {
-            runCatching { localPlayer.restoreSaved() }
-                .onFailure { android.util.Log.w("SendpinApp", "could not restore the last queue", it) }
+            // The file is read off the main thread, and the queue is only *prepared*
+            // (buffered) when the app is actually on screen. This runs on every process
+            // start — a widget, a tile, Android Auto binding, a sticky service restart —
+            // and none of those should block onCreate on disk or fetch audio for nobody.
+            // Prepared once the app does come forward, because that is what puts the
+            // paused card up (see above).
+            appScope.launch {
+                val saved = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { localPlayer.loadSaved() }.getOrNull()
+                } ?: return@launch
+                val foreground = com.engabd.sendpin.service.AppLifecycleObserver.get()?.foreground
+                val onScreen = foreground?.value == true
+                val loaded = runCatching { localPlayer.applySaved(saved, prepare = onScreen) }
+                    .onFailure { android.util.Log.w("SendpinApp", "could not restore the last queue", it) }
+                    .getOrDefault(false)
+                if (loaded && !onScreen && foreground != null) {
+                    foreground.first { it }
+                    localPlayer.prepareIfIdle()
+                }
+            }
         }
         appScope.launch {
-            var retire: Job? = null
+            var pending: Job? = null
             playbackOwner.state
                 .map { (it.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.LOCAL) to it.localActive }
                 .distinctUntilChanged()
                 .collect { (owns, active) ->
-                    retire?.cancel(); retire = null
+                    pending?.cancel(); pending = null
                     when {
-                        owns -> LocalPlaybackService.start(this@SendpinApp)
+                        owns -> if (!LocalPlaybackService.start(this@SendpinApp)) {
+                            // Refused from the background (Android 12+). The session —
+                            // and with it the lock screen and the headset buttons — comes
+                            // up the next time the app is on screen, where it is allowed.
+                            pending = appScope.launch {
+                                com.engabd.sendpin.service.AppLifecycleObserver.get()?.foreground?.first { it }
+                                    ?: return@launch
+                                LocalPlaybackService.start(this@SendpinApp)
+                            }
+                        }
                         active -> LocalPlaybackService.stop(this@SendpinApp)
-                        else -> retire = appScope.launch {
+                        else -> pending = appScope.launch {
                             delay(SendspinService.IDLE_GRACE_MS)
                             LocalPlaybackService.stop(this@SendpinApp)
                         }
