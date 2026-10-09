@@ -1565,6 +1565,22 @@ class LocalPlayer(private val context: Context) {
     fun restoreSaved(): Boolean {
         if (_queue.value.isNotEmpty() || remote != null) return false
         val saved = queueStore.load() ?: return false
+        return applySaved(saved, prepare = true)
+    }
+
+    /** The saved queue, read from disk — for a caller that wants the read off the main thread. */
+    fun loadSaved(): SavedQueue? = queueStore.load()
+
+    /**
+     * Put an already-read [saved] queue into the player, paused, at its position.
+     * False when a queue is already loaded — this never replaces one.
+     *
+     * [prepare] false loads the items without buffering them. A process started with
+     * nothing on screen (a widget, a tile, a sticky service restart) has no business
+     * fetching audio; [resume] prepares from idle when play is actually pressed.
+     */
+    fun applySaved(saved: SavedQueue, prepare: Boolean): Boolean {
+        if (_queue.value.isNotEmpty() || remote != null) return false
         val tracks = saved.tracks.map { it.toLocalTrack() }
         sessionEpoch++
         _queue.value = tracks
@@ -1573,8 +1589,18 @@ class LocalPlayer(private val context: Context) {
         player.setMediaItems(tracks.map(::mediaItem), saved.index, saved.positionMs)
         setRepeatMode(saved.repeat)
         if (saved.shuffle) setShuffle(true)
-        player.prepare()
+        if (prepare) player.prepare()
         return true
+    }
+
+    /**
+     * Buffer a queue [applySaved] loaded without preparing — the app has come on
+     * screen, and the system's media card needs a *prepared* session to show this
+     * queue as paused (see SendpinApp's boot restore). A no-op otherwise.
+     */
+    fun prepareIfIdle() {
+        if (remote != null || _queue.value.isEmpty()) return
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
     }
 
     fun clear() {

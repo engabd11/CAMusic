@@ -104,15 +104,28 @@ class SendspinService : Service() {
         /** How long a session outlives its stream while there is still an item to resume. */
         const val PAUSED_KEEP_MS = 30L * 60_000L
 
-        /** Start the media notification (called when a stream starts). */
-        fun startMedia(context: android.content.Context) {
+        /**
+         * Start the media notification (called when a stream starts). False when
+         * Android refused.
+         *
+         * Guarded here rather than at each caller. Android 12+ throws
+         * `ForegroundServiceStartNotAllowedException` from `startForegroundService`
+         * itself when the app is in the background, and one caller — Playback's
+         * stream-start, on a background dispatcher with no handler — let that
+         * exception take the process down: a Home Assistant announcement arriving
+         * while the app was in the background crashed it, and the announcement was
+         * lost. A refusal is a degraded state (no notification yet), not a crash.
+         */
+        fun startMedia(context: android.content.Context): Boolean = runCatching {
             val intent = Intent(context, SendspinService::class.java).apply { action = ACTION_START_MEDIA }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
             }
-        }
+        }.onFailure {
+            android.util.Log.w("SendspinService", "couldn't start the media notification: ${it.message}")
+        }.isSuccess
 
         /**
          * Nothing is streaming — start the grace period.
@@ -531,10 +544,15 @@ class SendspinService : Service() {
         }
 
         override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-            // A toggle either way, matching the old onPlay()/onPause() - both of
-            // which routed to the exact same call regardless of which fired. Through
-            // [playbackOwner], not [route] — see that property's doc.
-            playbackOwner.playPause()
+            // The requested state, not a toggle. This used to toggle either way, so a
+            // stale pause — the lock screen or a head unit re-sending one after the
+            // music had already stopped — resumed it. Through [playbackOwner], not
+            // [route] — see that property's doc.
+            when (PlayIntent.of(playWhenReady, currentShade().isPlaying)) {
+                PlayIntent.PAUSE -> playbackOwner.pause()
+                PlayIntent.PLAY -> playbackOwner.playPause()
+                PlayIntent.NOTHING -> {}
+            }
             return Futures.immediateVoidFuture()
         }
 
