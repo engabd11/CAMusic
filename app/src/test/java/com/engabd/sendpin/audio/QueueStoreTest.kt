@@ -46,4 +46,17 @@ class QueueStoreTest {
         file.writeText("{ not json")
         assertNull(s.load())
     }
+
+    @Test
+    fun `a queue that played to its end is saved at the top, as Play would take it`() {
+        assertEquals(0 to 0L, ResumePoint.of(ended = true, index = 3, positionMs = 69_999))
+    }
+
+    @Test
+    fun `a paused or playing queue is saved where it is`() {
+        assertEquals(3 to 69_999L, ResumePoint.of(ended = false, index = 3, positionMs = 69_999))
+        assertEquals(1 to 42_000L, ResumePoint.of(ended = false, index = 1, positionMs = 42_000))
+        // Nothing selected yet, or a position the player reports as negative before it has one.
+        assertEquals(0 to 0L, ResumePoint.of(ended = false, index = -1, positionMs = -1))
+    }
 }
