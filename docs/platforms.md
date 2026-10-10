@@ -27,6 +27,9 @@ Where CAMusic runs and what each surface adds. [Back to the README](../README.md
 - **"Hey Google, play … on CAMusic"** plays the search result rather than just opening the app.
 - **Home-screen widget** with artwork and transport controls.
 - **Tablets and foldables** get an adaptive grid layout.
+- **Media controls with your buttons.** Optionally, a favourite heart, shuffle or repeat beside
+  play in the shade, on the lock screen and on a watch, for music playing on the phone (Settings →
+  Interface & Appearance → Now Playing & seek bar → Media controls; Android 13 and later).
 - **Everyday touches.** An optional mini player above the tabs while you browse (Settings →
   Appearance → Now Playing & seek bar), swipe a song off the queue with an **Undo**, and
   TalkBack that can read and move the sliders, toggles and seek bars and reorder the queue.
