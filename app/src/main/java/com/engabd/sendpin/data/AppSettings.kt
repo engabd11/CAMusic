@@ -310,6 +310,12 @@ class AppSettings(private val context: Context) {
          * phone's own output, which MA has never heard of.
          */
         private val LOCAL_DSP = stringPreferencesKey("local_dsp")
+        /**
+         * The equaliser's saved curves and its optional curve per output, as a JSON
+         * [com.engabd.sendpin.audio.EqProfiles]. Beside [LOCAL_DSP], which stays the
+         * one curve in use unless "a curve for each output" is on.
+         */
+        private val EQ_PROFILES = stringPreferencesKey("eq_profiles")
 
         /** Sound modes: vinyl surface noise, lo-fi and old radio. */
         private val VINYL_NOISE = stringPreferencesKey("vinyl_noise")
@@ -2559,6 +2565,27 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLocalDsp(config: LocalDsp.Config) {
         context.dataStore.edit { it[LOCAL_DSP] = LocalDsp.encode(config) }
+    }
+
+    /** Saved curves, and the curve per output. Empty until something is saved. */
+    val eqProfiles: Flow<com.engabd.sendpin.audio.EqProfiles> = pref { prefs ->
+        prefs[EQ_PROFILES]?.let { com.engabd.sendpin.audio.EqProfiles.decode(it) }
+            ?: com.engabd.sendpin.audio.EqProfiles()
+    }
+
+    /**
+     * Change the saved curves in one read-modify-write, so two quick edits (saving
+     * a curve while a slider still settles) cannot each start from the same old copy.
+     * A stored copy that cannot be read is left alone rather than replaced by an
+     * empty one built from scratch.
+     */
+    suspend fun updateEqProfiles(change: (com.engabd.sendpin.audio.EqProfiles) -> com.engabd.sendpin.audio.EqProfiles) {
+        context.dataStore.edit { prefs ->
+            val raw = prefs[EQ_PROFILES]
+            val current = if (raw == null) com.engabd.sendpin.audio.EqProfiles()
+            else com.engabd.sendpin.audio.EqProfiles.decode(raw) ?: return@edit
+            prefs[EQ_PROFILES] = com.engabd.sendpin.audio.EqProfiles.encode(change(current))
+        }
     }
 
     // --- Sound modes: vinyl noise and lo-fi ---

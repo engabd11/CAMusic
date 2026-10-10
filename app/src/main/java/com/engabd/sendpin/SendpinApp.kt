@@ -56,6 +56,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val maApi: MaApiClient by lazy { MaApiClient() }
 
+    /** The output music is playing from, for the equaliser's curve per output. */
+    val outputRoute: com.engabd.sendpin.audio.OutputRouteWatcher by lazy {
+        com.engabd.sendpin.audio.OutputRouteWatcher(this)
+    }
+
     /**
      * The standalone queue player (Navidrome-direct and offline downloads). Shared
      * process-wide: the library fills it, Now Playing reflects and drives it, and
@@ -915,9 +920,14 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // The local equaliser. One collector for the process: the processor sits in
         // a sink chain fixed when the player is built, so this is the only way a
         // slider move reaches it - and it reaches it on the next buffer rather than
-        // the next track.
+        // the next track. With "a curve for each output" on, the curve follows the
+        // output: putting on the headphones brings their curve with them.
+        outputRoute.start()
         appScope.launch {
-            AppSettings(this@SendpinApp).localDsp.collect { localPlayer.localDsp.setConfig(it) }
+            val settings = AppSettings(this@SendpinApp)
+            combine(settings.localDsp, settings.eqProfiles, outputRoute.current) { global, profiles, output ->
+                com.engabd.sendpin.audio.EqSelection.effective(global, profiles, output)
+            }.distinctUntilChanged().collect { localPlayer.localDsp.setConfig(it) }
         }
 
         // Show presets chosen for you: this song's own, else this song's genre.

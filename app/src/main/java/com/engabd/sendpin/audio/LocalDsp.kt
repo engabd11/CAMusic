@@ -69,6 +69,10 @@ class LocalDsp : BaseAudioProcessor() {
      * @param autoPreamp when true, [preampDb] is ignored and the headroom is
      *   computed from the bands. On by default because the failure it prevents —
      *   clipping — is one a listener would blame on the file rather than on the EQ.
+     * @param parametric whether the panel offers frequency, Q and type per band (an
+     *   AutoEQ import, or a curve someone built that way) rather than the ten fixed
+     *   sliders. Only the editor reads it; the processor runs any band list the same.
+     *   Absent from curves saved before it existed, which were all ten-band.
      */
     @Serializable
     data class Config(
@@ -76,6 +80,7 @@ class LocalDsp : BaseAudioProcessor() {
         val bands: List<Band> = defaultBands(),
         val preampDb: Float = 0f,
         val autoPreamp: Boolean = true,
+        val parametric: Boolean = false,
     ) {
         /** The gain actually applied ahead of the bands. */
         fun effectivePreampDb(): Float =
