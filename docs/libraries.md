@@ -52,6 +52,12 @@ set up at once and groups the answers by library; a slow server costs only its o
 chip in the search bar switches between *All* and *This library* for one search. Android Auto
 voice search always looks everywhere.
 
+**Sort and filter any category.** Albums, Artists, Songs, Playlists, Genres and Recently added
+each get a row of chips: sort by name (ignoring "The"), artist, year or at random, either way
+round, and narrow to favourites, what is on the phone, a genre or a decade. Only what the list's
+own tags support is offered, the choice is remembered per category, and Play all plays what is
+shown. It works on the list the library already sent, so it is the same on every server.
+
 **Playlists are yours to edit** (remove, reorder and rename) on Navidrome and the Subsonic family, Jellyfin, Emby, MPD (stored playlists, written over the protocol) and Downloads. A
 library that cannot keep playlists of its own, Plex among them, gets app-kept ones instead, so
 "Add to playlist" works everywhere. **Ratings** go back to the server where it has them (Subsonic
