@@ -310,6 +310,8 @@ class AppSettings(private val context: Context) {
          * phone's own output, which MA has never heard of.
          */
         private val LOCAL_DSP = stringPreferencesKey("local_dsp")
+        /** Sort and filter per library category, as JSON — see [com.engabd.sendpin.ma.LibraryOrder]. */
+        private val LIBRARY_ORDER = stringPreferencesKey("library_order")
 
         /** Sound modes: vinyl surface noise, lo-fi and old radio. */
         private val VINYL_NOISE = stringPreferencesKey("vinyl_noise")
@@ -2559,6 +2561,19 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLocalDsp(config: LocalDsp.Config) {
         context.dataStore.edit { it[LOCAL_DSP] = LocalDsp.encode(config) }
+    }
+
+    /** The sort and filter chosen for each library category; absent means as the server sends it. */
+    val libraryOrders: Flow<Map<String, com.engabd.sendpin.ma.LibraryOrder>> = pref { prefs ->
+        prefs[LIBRARY_ORDER]?.let { com.engabd.sendpin.ma.LibraryOrder.decode(it) } ?: emptyMap()
+    }
+
+    suspend fun setLibraryOrder(category: String, order: com.engabd.sendpin.ma.LibraryOrder) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[LIBRARY_ORDER]?.let { com.engabd.sendpin.ma.LibraryOrder.decode(it) } ?: emptyMap()
+            val next = if (order.isDefault) current - category else current + (category to order)
+            prefs[LIBRARY_ORDER] = com.engabd.sendpin.ma.LibraryOrder.encode(next)
+        }
     }
 
     // --- Sound modes: vinyl noise and lo-fi ---

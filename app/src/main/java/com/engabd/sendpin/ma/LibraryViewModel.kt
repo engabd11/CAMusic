@@ -174,6 +174,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val title: String,
         val items: List<MaItem>,
         val sections: List<Pair<String, List<MaItem>>> = emptyList(),
+        /**
+         * Which library category this page is ("albums", "tracks"…), or null for
+         * anything else (an album, an artist, a search). What the screen keys a
+         * saved sort and filter on — see [LibraryOrder].
+         */
+        val category: String? = null,
     )
 
     private val settings = AppSettings(app)
@@ -768,6 +774,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private data class Reload(
         val title: String,
+        val category: String? = null,
         val load: suspend ((List<MaItem>) -> Unit) -> Pair<List<MaItem>, List<Pair<String, List<MaItem>>>>,
     )
     private var reload: Reload? = null
@@ -806,7 +813,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         try {
             fun publish(items: List<MaItem>, sections: List<Pair<String, List<MaItem>>>) {
                 rememberFavorites(items)
-                _node.value = Node(target.title, items, sections)
+                _node.value = Node(target.title, items, sections, target.category)
             }
             val (items, sections) =
                 target.load { partial -> if (partial.isNotEmpty()) publish(partial, emptyList()) }
@@ -3456,7 +3463,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             pushSectionedNode(title) { onPartial -> maCollectionNode(id, onPartial) }
             return
         }
-        pushNode(title) { onPartial ->
+        pushNode(title, category = id) { onPartial ->
             if (_backend.value == Backend.MA) {
                 // Starred is not a page of one media type, so it is answered ahead of
                 // the paging table below. Music Assistant has had the filter all
@@ -3724,8 +3731,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun pushNode(
         title: String,
+        category: String? = null,
         loader: suspend ((List<MaItem>) -> Unit) -> List<MaItem>,
-    ) = pushSectionedNode(title, { onPartial -> loader(onPartial).let { it to emptyList() } })
+    ) = pushSectionedNode(title, category) { onPartial -> loader(onPartial).let { it to emptyList() } }
 
     /**
      * [pushNode] for a loader that also says how the page should be sectioned.
@@ -3742,6 +3750,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun pushSectionedNode(
         title: String,
+        category: String? = null,
         loader: suspend ((List<MaItem>) -> Unit) -> Pair<List<MaItem>, List<Pair<String, List<MaItem>>>>,
     ) {
         viewModelScope.launch {
@@ -3754,11 +3763,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     // Remember how *this* node was built, and park the parent's own
                     // loader so Back restores it. See [Reload].
                     reloadStack.addLast(reload)
-                    reload = Reload(title, loader)
+                    reload = Reload(title, category, loader)
                     pushed = true
                     _depth.value = stack.size
                 }
-                _node.value = Node(title, items, sections)
+                _node.value = Node(title, items, sections, category)
             }
             try {
                 val (items, sections) =
