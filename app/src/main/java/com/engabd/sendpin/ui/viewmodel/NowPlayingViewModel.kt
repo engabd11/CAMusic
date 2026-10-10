@@ -2282,7 +2282,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                     energy = scan?.intensity?.character,
                 ),
             )
-            dao.trimTo()
+            if (com.engabd.sendpin.data.PlayHistoryRetention.shared.dueAfterInsert()) dao.trimTo()
         } catch (e: Exception) {
             // Best-effort: a failed history write is not worth surfacing to the
             // listener, and must not be allowed to look like a playback problem.

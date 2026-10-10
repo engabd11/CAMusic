@@ -709,6 +709,15 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
     // to a separate activity, and the composition (with its remember state) is
     // what survives that round trip, not any local variable in the click handler.
     var exportPassword by remember { mutableStateOf<String?>(null) }
+    // Plays Stats has counted; the export offers to include them, off by default
+    // because a long history makes the file several megabytes.
+    var includeHistory by remember { mutableStateOf(false) }
+    var playCount by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        playCount = runCatching {
+            com.engabd.sendpin.local.db.LocalMediaDatabase.get(context).playHistoryDao().playCount(0)
+        }.getOrDefault(0)
+    }
 
     val createDoc = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         val password = exportPassword
@@ -716,7 +725,7 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
         if (uri == null || password == null) return@rememberLauncherForActivityResult
         scope.launch {
             status = try {
-                val blob = settings.exportSettings(password)
+                val blob = settings.exportSettings(password, includeHistory = includeHistory)
                 if (blob == null) {
                     "Export failed"
                 } else {
@@ -736,7 +745,7 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
 
     SettingsCard(
         title = "Backup & restore",
-        lead = "Every setting, including saved servers, to an encrypted file.",
+        lead = "Every setting, saved servers, your playlists and favourites, to an encrypted file.",
         info = "Export every setting, saved servers and their logins included, to a single " +
             "encrypted file. Restore it on a new install and the app comes back exactly as it " +
             "was.\n\nThe password is yours alone. It is not stored anywhere, not in the file " +
@@ -744,6 +753,14 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
             "take one before changing servers or reinstalling. It is the only copy of your Hue " +
             "pairing, which otherwise means pressing the button on the bridge again.",
     ) {
+        if (playCount > 0) {
+            ToggleRow(
+                title = "Include play history",
+                subtitle = "$playCount play${if (playCount == 1) "" else "s"}, for Stats on the new phone. Makes the file bigger.",
+                checked = includeHistory,
+                accent = accent,
+            ) { includeHistory = it }
+        }
         OledButton(text = "Export settings", accent = accent, outline = true) { exportPrompt = true }
         Spacer(Modifier.height(8.dp))
         OledButton(text = "Import settings", accent = accent, outline = true) {

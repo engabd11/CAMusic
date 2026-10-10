@@ -29,6 +29,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
 import com.engabd.sendpin.hue.CoverPaletteOverride
@@ -889,21 +890,30 @@ class AppSettings(private val context: Context) {
     // encrypted legacy fields are decrypted first and the *whole* resulting JSON
     // is what gets encrypted, so nothing here ever touches disk unencrypted.
 
-    /** Every setting, as a password-encrypted portable blob. Null if encryption fails. */
-    suspend fun exportSettings(password: String): String? {
+    /**
+     * Every setting, as a password-encrypted portable blob. Null if encryption fails.
+     *
+     * Beside the plain settings, [BackupExtras] carries what used to be left behind:
+     * number settings, the app's own playlists, local favourites, lyric offsets, game
+     * records, and (when [includeHistory]) every play Stats has counted.
+     */
+    suspend fun exportSettings(password: String, includeHistory: Boolean = false): String? {
         val prefs = context.dataStore.data.first()
+        val typed = mutableMapOf<String, Any>()
         val obj = buildJsonObject {
             prefs.asMap().forEach { (key, value) ->
                 if (key.name == SERVERS.name) return@forEach   // handled below, decrypted properly
                 when (val v = if (key.name in ENCRYPTED_KEY_NAMES) Crypto.decrypt(value as? String ?: "") else value) {
                     is String -> put(key.name, JsonPrimitive(v))
                     is Boolean -> put(key.name, JsonPrimitive(v))
-                    // This app has never stored an Int/Float/Long/Set<String> preference;
-                    // numeric settings are stringPreferencesKey. Nothing to handle here.
-                    else -> Unit
+                    // Ints, longs, floats and sets go with their type, in the extras: an
+                    // older build skips the extras whole, rather than reading a number
+                    // back as a string setting.
+                    else -> if (v != null) typed[key.name] = v
                 }
             }
             put(SERVERS_EXPORT_KEY, JsonPrimitive(serverJson.encodeToString(ListSerializer(ServerConfig.serializer()), storedServers(prefs))))
+            put(BackupExtras.KEY, collectExtras(typed, includeHistory))
         }
         // Off the caller's thread: 600,000 rounds of PBKDF2 is most of a second on
         // a phone, and the caller is a click handler.
@@ -931,7 +941,21 @@ class AppSettings(private val context: Context) {
         } catch (e: Exception) {
             return false
         }
+        val extras = obj[BackupExtras.KEY] as? JsonObject
         val imported = context.dataStore.edit { prefs ->
+            // Typed settings first, so a plain value of the same name (none today)
+            // would still win below.
+            BackupExtras.storeValues(extras?.get("settings")).forEach { (name, value) ->
+                when (value) {
+                    is Int -> prefs[intPreferencesKey(name)] = value
+                    is Long -> prefs[androidx.datastore.preferences.core.longPreferencesKey(name)] = value
+                    is Float -> prefs[androidx.datastore.preferences.core.floatPreferencesKey(name)] = value
+                    is Double -> prefs[androidx.datastore.preferences.core.doublePreferencesKey(name)] = value
+                    is Set<*> -> prefs[androidx.datastore.preferences.core.stringSetPreferencesKey(name)] =
+                        value.filterIsInstance<String>().toSet()
+                    else -> Unit
+                }
+            }
             obj.forEach { (name, element) ->
                 if (name == SERVERS_EXPORT_KEY) return@forEach
                 val primitive = element as? JsonPrimitive ?: return@forEach
@@ -950,7 +974,55 @@ class AppSettings(private val context: Context) {
             }
         }
         refreshBootMirrors(imported)
+        if (extras != null) restoreExtras(extras)
         return true
+    }
+
+    /** The extras object for an export. See [BackupExtras]. */
+    private suspend fun collectExtras(typed: Map<String, Any>, includeHistory: Boolean): JsonObject =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            buildJsonObject {
+                put("settings", BackupExtras.store(typed))
+                put("stores", buildJsonObject {
+                    BackupExtras.STORES.forEach { name ->
+                        put(name, BackupExtras.store(context.getSharedPreferences(name, Context.MODE_PRIVATE).all))
+                    }
+                })
+                if (includeHistory) {
+                    val rows = com.engabd.sendpin.local.db.LocalMediaDatabase.get(context).playHistoryDao().everything()
+                    put("history", JsonPrimitive(BackupExtras.encodeHistory(rows)))
+                }
+            }
+        }
+
+    /**
+     * Put a backup's extras back: each store's keys over this phone's (keys the backup
+     * does not mention are left alone), and its plays merged into this phone's history,
+     * each once, then trimmed to the cap.
+     */
+    private suspend fun restoreExtras(extras: JsonObject): Unit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        (extras["stores"] as? JsonObject)?.forEach { (name, element) ->
+            if (name !in BackupExtras.STORES) return@forEach
+            val editor = context.getSharedPreferences(name, Context.MODE_PRIVATE).edit()
+            BackupExtras.storeValues(element).forEach { (k, v) ->
+                when (v) {
+                    is String -> editor.putString(k, v)
+                    is Boolean -> editor.putBoolean(k, v)
+                    is Int -> editor.putInt(k, v)
+                    is Long -> editor.putLong(k, v)
+                    is Float -> editor.putFloat(k, v)
+                    is Set<*> -> editor.putStringSet(k, v.filterIsInstance<String>().toSet())
+                }
+            }
+            editor.commit()
+        }
+        (extras["history"] as? JsonPrimitive)?.contentOrNull?.let { raw ->
+            val dao = com.engabd.sendpin.local.db.LocalMediaDatabase.get(context).playHistoryDao()
+            val fresh = BackupExtras.newPlays(dao.playKeys().toSet(), BackupExtras.decodeHistory(raw))
+            fresh.chunked(500).forEach { dao.insertAll(it) }
+            if (fresh.isNotEmpty()) dao.trimTo()
+        }
+        Unit
     }
 
     /**
