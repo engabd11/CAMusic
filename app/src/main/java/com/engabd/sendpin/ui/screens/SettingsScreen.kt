@@ -452,6 +452,7 @@ private fun LazyListScope.sectionItems(
             }
             LOOK_PLAYER_ROUTE -> {
                 card("look_layout") { NowPlayingLayoutCard(settings, scope) }
+                card("look_widget") { WidgetCard(settings, scope) }
                 card("look_seekbar") { SeekBarCard(settings, scope) }
             }
             LOOK_LIBRARY_ROUTE -> {

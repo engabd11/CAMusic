@@ -136,6 +136,8 @@ class AppSettings(private val context: Context) {
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
+        /** The home-screen widget shows the cover. Off by default: a new look. */
+        private val WIDGET_COVER = booleanPreferencesKey("widget_cover")
         private val TAB_MINI_PLAYER = booleanPreferencesKey("tab_mini_player")
         private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" | "wave" (default) | "pill" | "glow"
         // The album/artist pages and the library's dress — see PageLook.kt. Each shelf
@@ -1483,6 +1485,13 @@ class AppSettings(private val context: Context) {
 
     suspend fun setNowPlayingLayout(layout: String) {
         context.dataStore.edit { it[NOW_PLAYING_LAYOUT] = layout }
+    }
+
+    /** The home-screen widget shows the cover of what is playing, when it is wide enough. */
+    val widgetCover: Flow<Boolean> = pref { it[WIDGET_COVER] ?: false }
+
+    suspend fun setWidgetCover(on: Boolean) {
+        context.dataStore.edit { it[WIDGET_COVER] = on }
     }
 
     suspend fun setSeekBarStyle(style: String) {

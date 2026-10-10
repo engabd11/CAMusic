@@ -549,6 +549,22 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
             }
         }
 
+        // A tab asked for from outside the app (a home-screen shortcut), taken once the
+        // NavHost has a destination to navigate from. `go` reads this composition's
+        // route and disabled tabs, so the latest one is called rather than the first.
+        val goLatest by rememberUpdatedState<(String) -> Unit> { go(it) }
+        val navReady = currentRoute != null
+        LaunchedEffect(navReady) {
+            if (!navReady) return@LaunchedEffect
+            val app = com.engabd.sendpin.SendpinApp.instance
+            app.appRoute.collect { route ->
+                if (route != null) {
+                    app.appRoute.value = null
+                    goLatest(route)
+                }
+            }
+        }
+
         // Switching the backend while standing on a tab that just went away would
         // leave the user looking at dead controls, so walk them back to the library.
         LaunchedEffect(disabledRoutes, currentRoute) {
