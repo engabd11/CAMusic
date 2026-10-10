@@ -135,7 +135,7 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
         SubPage(
             LOOK_PLAYER_ROUTE,
             "Now Playing & seek bar",
-            "A tab or an overlay, and how the progress line is drawn",
+            "A tab or an overlay, how the progress line is drawn, and the home-screen widget",
             Icons.Default.PlayCircle,
         ),
         SubPage(

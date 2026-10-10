@@ -225,6 +225,8 @@ class AppSettings(private val context: Context) {
         private val CAR_LAYOUT_PREVIEW = booleanPreferencesKey("car_layout_preview")
         private val DRIVING_ENABLED = booleanPreferencesKey("driving_enabled")
         private val DRIVING_MECHANISM = stringPreferencesKey("driving_mechanism") // pip | overlay
+        /** The home-screen widget shows the cover. Off by default: a new look. */
+        private val WIDGET_COVER = booleanPreferencesKey("widget_cover")
         private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
         private val DRIVING_CAR_NAME = stringPreferencesKey("driving_car_name")       // for the settings row
         private val PAUSE_FOR_CALLS = booleanPreferencesKey("pause_for_calls")        // auto-pause playback while the phone rings/is on a call
@@ -2295,6 +2297,13 @@ class AppSettings(private val context: Context) {
 
     suspend fun setDrivingMechanism(value: String) {
         context.dataStore.edit { it[DRIVING_MECHANISM] = value }
+    }
+
+    /** The home-screen widget shows the cover of what is playing, when it is wide enough. */
+    val widgetCover: Flow<Boolean> = pref { it[WIDGET_COVER] ?: false }
+
+    suspend fun setWidgetCover(on: Boolean) {
+        context.dataStore.edit { it[WIDGET_COVER] = on }
     }
 
     suspend fun setDrivingCar(address: String, name: String) {
