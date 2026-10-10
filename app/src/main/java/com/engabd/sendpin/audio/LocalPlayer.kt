@@ -1546,10 +1546,15 @@ class LocalPlayer(private val context: Context) {
         if (queueSaveJob?.isActive == true) return
         queueSaveJob = scope.launch {
             kotlinx.coroutines.delay(QUEUE_SAVE_THROTTLE_MS)
+            val (index, positionMs) = ResumePoint.of(
+                ended = livePlayer?.playbackState == Player.STATE_ENDED,
+                index = _index.value,
+                positionMs = livePlayer?.currentPosition ?: _positionMs.value,
+            )
             val snapshot = SavedQueue(
                 tracks = _queue.value.map(SavedTrack::of),
-                index = _index.value.coerceAtLeast(0),
-                positionMs = livePlayer?.currentPosition?.coerceAtLeast(0L) ?: _positionMs.value,
+                index = index,
+                positionMs = positionMs,
                 shuffle = _shuffle.value,
                 repeat = _repeatMode.value,
                 savedAtMs = System.currentTimeMillis(),

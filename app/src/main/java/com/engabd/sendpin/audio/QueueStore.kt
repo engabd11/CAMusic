@@ -28,6 +28,21 @@ data class SavedQueue(
     val current: SavedTrack? get() = tracks.getOrNull(index)
 }
 
+/**
+ * Where a saved queue picks up.
+ *
+ * A queue that played to its end was saved where it stopped: the last instant of its
+ * last track. Restored after a restart, the first Play played that instant and ended
+ * again, and only a second Play went back to the top. Live, Play on an ended queue
+ * already means "again, from the top" (see [LocalPlayer.resume]), so that is what
+ * gets saved.
+ */
+object ResumePoint {
+    /** The (index, position) to save. */
+    fun of(ended: Boolean, index: Int, positionMs: Long): Pair<Int, Long> =
+        if (ended) 0 to 0L else index.coerceAtLeast(0) to positionMs.coerceAtLeast(0L)
+}
+
 /** The parts of a [LocalTrack] needed to play it again. */
 @Serializable
 data class SavedTrack(
