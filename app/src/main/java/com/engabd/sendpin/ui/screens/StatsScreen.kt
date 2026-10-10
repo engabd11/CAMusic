@@ -105,6 +105,17 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 return@Column
             }
 
+            state.error?.let { message ->
+                Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(message, color = TextMuted, fontFamily = AppFont)
+                        Spacer(Modifier.height(14.dp))
+                        Pill("Retry", true) { viewModel.refresh() }
+                    }
+                }
+                return@Column
+            }
+
             if (state.totalListeningMs == 0L && state.topArtists.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
