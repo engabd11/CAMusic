@@ -571,6 +571,20 @@ class MpdClient(
      * (10k+ tracks) this is a known limitation; the first page is as expensive
      * as the last.
      */
+    /**
+     * One folder of MPD's music directory: its sub-folders (by path) and its songs.
+     * `lsinfo` is read-only; "" is the top.
+     */
+    suspend fun folder(path: String): Pair<List<String>, List<MaItem>> {
+        val (dirs, songs) = splitListing(command(if (path.isEmpty()) "lsinfo" else "lsinfo ${quote(path)}"))
+        return dirs to parseTracks(songs)
+    }
+
+    /** Every song under a folder, however deep (`listallinfo`), capped like [tracks]. */
+    suspend fun folderTracks(path: String, cap: Int = 2_000): List<MaItem> =
+        parseTracks(splitListing(command(if (path.isEmpty()) "listallinfo" else "listallinfo ${quote(path)}")).second)
+            .take(cap)
+
     suspend fun tracks(offset: Int = 0, limit: Int = 500): List<MaItem> {
         val response = command("listallinfo")
         return parseTracks(response).drop(offset).take(limit)
@@ -1056,6 +1070,26 @@ class MpdClient(
      * MPD returns flat key-value lines, where each track's metadata is a run
      * of consecutive lines starting with "file:".
      */
+    /**
+     * A listing (`lsinfo`, `listallinfo`) into its directories and the lines of its
+     * songs. A directory's own lines (its `Last-Modified`) and stored playlists are
+     * dropped, so they cannot attach themselves to the song before them.
+     */
+    internal fun splitListing(response: List<Pair<String, String>>): Pair<List<String>, List<Pair<String, String>>> {
+        val dirs = mutableListOf<String>()
+        val songs = mutableListOf<Pair<String, String>>()
+        var inSong = false
+        for ((key, value) in response) {
+            when (key) {
+                "directory" -> { dirs += value; inSong = false }
+                "playlist" -> inSong = false
+                "file" -> { inSong = true; songs += key to value }
+                else -> if (inSong) songs += key to value
+            }
+        }
+        return dirs to songs
+    }
+
     internal fun parseTracks(response: List<Pair<String, String>>): List<MaItem> =
         parseSongs(response).map(::buildTrack)
 

@@ -102,6 +102,12 @@ interface MusicSource {
     suspend fun children(item: MaItem): List<MaItem>
 
     /**
+     * The top of the library's folders: folders first, then any tracks that sit at the
+     * top. Empty unless the source declares [Capability.FOLDERS].
+     */
+    suspend fun folderRoot(): List<MaItem> = emptyList()
+
+    /**
      * Every track under [item], however deep. What a download or a "play all" needs:
      * a track is itself, an album or playlist is its entries, an artist is everything.
      */
@@ -376,6 +382,12 @@ enum class Capability {
     PLAYLIST_WRITE,
     /** Every song in the library can be listed — see [MusicSource.tracks]. */
     TRACKS,
+    /**
+     * The library can be walked by folder — see [MusicSource.folderRoot]. A folder is
+     * an [MaItem] with `mediaType = "folder"`, opened with [MusicSource.children] and
+     * played (every track under it, however deep) with [MusicSource.tracksUnder].
+     */
+    FOLDERS,
     /** Original files can be fetched for offline playback. */
     DOWNLOAD,
     LYRICS,

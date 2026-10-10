@@ -52,6 +52,13 @@ set up at once and groups the answers by library; a slow server costs only its o
 chip in the search bar switches between *All* and *This library* for one search. Android Auto
 voice search always looks everywhere.
 
+**Browse by folder** on Navidrome and the Subsonic family, MPD and this device: a Folders
+category beside Artists and Albums. Gonic, Airsonic, LMS and MPD show the folders on disk (MPD
+through its read-only `lsinfo`); Navidrome shows its own folder view, which is artist, then
+album, then songs; this device's folders are rebuilt from where each file sits, starting at the
+first folder with a choice in it. Hold a folder to play or queue everything under it, however
+deep.
+
 **Playlists are yours to edit** (remove, reorder and rename) on Navidrome and the Subsonic family, Jellyfin, Emby, MPD (stored playlists, written over the protocol) and Downloads. A
 library that cannot keep playlists of its own, Plex among them, gets app-kept ones instead, so
 "Add to playlist" works everywhere. **Ratings** go back to the server where it has them (Subsonic

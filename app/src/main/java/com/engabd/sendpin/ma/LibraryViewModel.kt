@@ -3521,6 +3521,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     "newest" -> sc.recentlyAdded(200)
                     "playlists" -> sc.playlists()
                     "genres" -> sc.genres()
+                    "folders" -> sc.folderRoot()
                     // Ordered by type, and the screen keeps them that way: a starred
                     // list is the one browse node that genuinely mixes artists,
                     // albums, playlists and tracks, and it used to arrive as one
@@ -4065,6 +4066,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     add(category("playlists", "Playlists"))
                 }
                 if (src == null || src.has(Capability.GENRES)) add(category("genres", "Genres"))
+                // Gated on the capability, not offered blind: only a source that can
+                // walk its folders gets the category.
+                if (src != null && src.has(Capability.FOLDERS)) add(category("folders", "Folders"))
                 if (src == null || src.has(Capability.FAVORITES)) add(category("starred", "Starred"))
                 add(category("newest", "Recently Added"))
                 add(category("random", "Shuffle all"))
