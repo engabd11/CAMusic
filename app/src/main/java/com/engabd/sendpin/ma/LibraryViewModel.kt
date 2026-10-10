@@ -411,6 +411,25 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _node = MutableStateFlow(Node("Library", emptyList())); val node: StateFlow<Node> = _node
     private val _loading = MutableStateFlow(false); val loading: StateFlow<Boolean> = _loading
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
+
+    /**
+     * Home shelves whose last load failed for real - the server unreachable, a refused
+     * sign-in - as opposed to a server that simply lacks the shelf. Every shelf used to
+     * fall back to empty either way, so a library that had gone away emptied the home
+     * screen with nothing on it to say why. See [LibraryErrorPolicy].
+     */
+    private val _shelfFailures = MutableStateFlow<Set<String>>(emptySet())
+    val shelfFailures: StateFlow<Set<String>> = _shelfFailures
+
+    /** One home shelf's load: its items, or empty with a real failure noted. */
+    private suspend fun <T> shelfLoad(key: String, block: suspend () -> List<T>): List<T> = try {
+        block().also { _shelfFailures.value = _shelfFailures.value - key }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        if (com.engabd.sendpin.library.LibraryErrorPolicy.isFailure(e)) _shelfFailures.value = _shelfFailures.value + key
+        emptyList()
+    }
     private val _search = MutableStateFlow<MaSearchResults?>(null)
 
     /**
@@ -783,6 +802,21 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * the root: a search re-runs, a browsed node re-fetches in place (no push, so
      * Back still goes where it did), and the root reloads every shelf.
      */
+    /**
+     * The Retry on an error. It used to reconnect, whatever had failed: a folder that
+     * timed out on a perfectly good connection was answered with a fresh sign-in and a
+     * jump back to the top. A library that is answering gets the failed page reloaded;
+     * one that is not gets reconnected.
+     */
+    fun retry() {
+        _error.value = null
+        val answering = when (_backend.value) {
+            Backend.MA -> maApi.state.value == com.engabd.sendpin.ma.MaApiClient.State.CONNECTED
+            else -> source != null && !_offline.value
+        }
+        if (answering) refresh() else connect()
+    }
+
     fun refresh() {
         if (refreshJob?.isActive == true) return
         refreshJob = viewModelScope.launch {
@@ -3470,24 +3504,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // allowed to fail on its own — a server that cannot answer for
                 // playlists should still show the starred albums.
                 if (id == "starred") {
+                    val failed = java.util.concurrent.atomic.AtomicInteger(0)
+                    var lastFailure: Throwable? = null
                     return@pushNode coroutineScope {
                         val artists = async {
                             // Not album-artists-only: this list is what the user
                             // starred, and a featured artist they starred deliberately
                             // is exactly as starred as a headliner.
-                            runCatching { maRepo.favoriteArtists(limit = 200, albumArtistsOnly = false) }
+                            runCatching { maRepo.favoriteArtists(limit = 200, albumArtistsOnly = false) }.onFailure { failed.incrementAndGet(); lastFailure = it }
                                 .getOrDefault(emptyList())
                         }
                         val albums = async {
-                            runCatching { maRepo.favoriteAlbums(limit = 200) }.getOrDefault(emptyList())
+                            runCatching { maRepo.favoriteAlbums(limit = 200) }.onFailure { failed.incrementAndGet(); lastFailure = it }.getOrDefault(emptyList())
                         }
                         val playlists = async {
-                            runCatching { maRepo.favoritePlaylists() }.getOrDefault(emptyList())
+                            runCatching { maRepo.favoritePlaylists() }.onFailure { failed.incrementAndGet(); lastFailure = it }.getOrDefault(emptyList())
                         }
                         val tracks = async {
-                            runCatching { maRepo.favoriteTracks() }.getOrDefault(emptyList())
+                            runCatching { maRepo.favoriteTracks() }.onFailure { failed.incrementAndGet(); lastFailure = it }.getOrDefault(emptyList())
                         }
-                        artists.await() + albums.await() + playlists.await() + tracks.await()
+                        val parts = listOf(artists, albums, playlists, tracks).map { it.await() }
+                        // Each failing on its own is still right; all four failing is
+                        // not "nothing starred", it is Music Assistant not answering -
+                        // which read as "No results / Try a different search".
+                        if (failed.get() == parts.size) throw lastFailure ?: IllegalStateException("Music Assistant didn't answer")
+                        if (failed.get() > 0) _toast.tryEmit("Some starred items couldn't load")
+                        parts.flatten()
                     }
                 }
                 // Paged, and published as the pages land: a large library used to be a
@@ -3812,7 +3854,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadRecent(): Job? {
         if (_offline.value) { _recent.value = emptyList(); return null }
         return viewModelScope.launch {
-            _recent.value = try {
+            _recent.value = shelfLoad("recent") {
                 // A longer list than a single shelf needs, because on MA this one feeds
                 // two: [shelves] splits the songs out of it into "Continue listening".
                 // At the default twelve, a listener who plays single tracks left
@@ -3820,7 +3862,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // with ten, which is a worse page than either shelf alone.
                 if (_backend.value == Backend.MA) maRepo.recentlyPlayed(MA_RECENT_LIMIT)
                 else source?.recentlyPlayed(12).orEmpty()
-            } catch (_: Exception) { emptyList() }
+            }
             // The only loader that used to skip this, which is why "Recently played"
             // was the one shelf whose hearts never came up filled.
             rememberFavorites(_recent.value)
@@ -3830,10 +3872,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadFavoriteAlbums(): Job? {
         if (_offline.value) { _favoriteAlbums.value = emptyList(); return null }
         return viewModelScope.launch {
-            _favoriteAlbums.value = try {
+            _favoriteAlbums.value = shelfLoad("favoriteAlbums") {
                 if (_backend.value == Backend.MA) maRepo.favoriteAlbums()
                 else source?.favorites()?.albums?.take(12).orEmpty()
-            } catch (_: Exception) { emptyList() }
+            }
             rememberFavorites(_favoriteAlbums.value)
         }
     }
@@ -3841,10 +3883,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadFavoriteArtists(): Job? {
         if (_offline.value) { _favoriteArtists.value = emptyList(); return null }
         return viewModelScope.launch {
-            _favoriteArtists.value = try {
+            _favoriteArtists.value = shelfLoad("favoriteArtists") {
                 if (_backend.value == Backend.MA) maRepo.favoriteArtists()
                 else source?.favorites()?.artists?.take(12).orEmpty()
-            } catch (_: Exception) { emptyList() }
+            }
             rememberFavorites(_favoriteArtists.value)
         }
     }
@@ -3852,10 +3894,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadRecentlyAdded(): Job? {
         if (_offline.value) { _recentlyAdded.value = emptyList(); return null }
         return viewModelScope.launch {
-            _recentlyAdded.value = try {
+            _recentlyAdded.value = shelfLoad("recentlyAdded") {
                 if (_backend.value == Backend.MA) maRepo.recentlyAdded()
                 else source?.recentlyAdded(12).orEmpty()
-            } catch (_: Exception) { emptyList() }
+            }
             rememberFavorites(_recentlyAdded.value)
         }
     }
@@ -3864,10 +3906,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadRecommendations(): Job? {
         if (_offline.value) { _recommendations.value = emptyList(); return null }
         return viewModelScope.launch {
-            _recommendations.value = try {
+            _recommendations.value = shelfLoad("recommendations") {
                 if (_backend.value == Backend.MA) maRepo.recommendations()
                 else source?.randomAlbums(12).orEmpty()
-            } catch (_: Exception) { emptyList() }
+            }
             rememberFavorites(_recommendations.value)
         }
     }
@@ -3896,7 +3938,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadDiscoverRows(): Job? {
         if (_backend.value != Backend.MA || _offline.value) { _discover.value = emptyList(); return null }
         return viewModelScope.launch {
-            val rows = try { maRepo.recommendationRows() } catch (_: Exception) { emptyList() }
+            val rows = shelfLoad("discover") { maRepo.recommendationRows() }
             val wanted = rows.filter { it.enabledByDefault && it.itemId !in DISCOVER_COVERED_ELSEWHERE }
             if (wanted.isEmpty()) { _discover.value = emptyList(); return@launch }
             _discover.value = emptyList()
@@ -3939,9 +3981,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadInProgress(): Job? {
         if (_offline.value) { _inProgress.value = emptyList(); return null }
         return viewModelScope.launch {
-            _inProgress.value = try {
+            _inProgress.value = shelfLoad("inProgress") {
                 if (_backend.value == Backend.MA) maRepo.inProgress() else source?.continueListening(12).orEmpty()
-            } catch (_: Exception) { emptyList() }
+            }
             rememberFavorites(_inProgress.value)
         }
     }
@@ -3949,7 +3991,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadFrequent(): Job? {
         if (_backend.value != Backend.SUBSONIC) { _frequent.value = emptyList(); return null }
         return viewModelScope.launch {
-            _frequent.value = try { source?.mostPlayed(12).orEmpty() } catch (_: Exception) { emptyList() }
+            _frequent.value = shelfLoad("frequent") { source?.mostPlayed(12).orEmpty() }
             rememberFavorites(_frequent.value)
         }
     }

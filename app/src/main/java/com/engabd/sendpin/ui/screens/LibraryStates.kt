@@ -226,6 +226,7 @@ internal fun SkeletonRow() {
 internal fun SearchEmptyState(
     title: String = "No results",
     body: String = "Try a different search, or check your spelling.",
+    icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Default.Search,
 ) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 80.dp),
@@ -235,7 +236,7 @@ internal fun SearchEmptyState(
             Modifier.size(64.dp).clip(RoundedCornerShape(20.dp)).background(Glass)
                 .border(1.dp, Hairline, RoundedCornerShape(20.dp)),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Default.Search, null, tint = TextFaint, modifier = Modifier.size(26.dp)) }
+        ) { Icon(icon, null, tint = TextFaint, modifier = Modifier.size(26.dp)) }
         Spacer(Modifier.height(16.dp))
         Text(title, color = inkOn(0.75f), fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Spacer(Modifier.height(6.dp))
@@ -268,6 +269,30 @@ internal fun SearchErrorState(message: String, onRetry: () -> Unit) {
         Box(
             Modifier.clip(RoundedCornerShape(100)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(100))
                 .clickable(onClick = onRetry).padding(horizontal = 22.dp, vertical = 11.dp),
+        ) { Text("Retry", color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+    }
+}
+
+/**
+ * A failure that is not the whole page: one line, with Retry, above whatever did load.
+ */
+@Composable
+internal fun InlineRetryBanner(message: String, onRetry: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(ErrorRed.a(0.08f))
+            .border(1.dp, ErrorRed.a(0.25f), RoundedCornerShape(14.dp))
+            .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.ErrorOutline, null, tint = ErrorRed, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(10.dp))
+        Text(
+            message, color = TextSecondary, style = MaterialTheme.typography.bodySmall,
+            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        Box(
+            Modifier.clip(RoundedCornerShape(100)).clickable(onClick = onRetry)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
         ) { Text("Retry", color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
     }
 }
