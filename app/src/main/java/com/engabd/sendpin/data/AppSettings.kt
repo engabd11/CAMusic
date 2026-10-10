@@ -181,6 +181,11 @@ class AppSettings(private val context: Context) {
         private val PREFERRED_AUDIO_DEVICE_ID = stringPreferencesKey("preferred_audio_device_id") // USB DAC routing
         private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
+        /** "Fetch ahead": how many upcoming songs to cache while playing. 0 = off. */
+        private val PRECACHE_AHEAD = intPreferencesKey("precache_ahead")
+        private val PRECACHE_WIFI_ONLY = booleanPreferencesKey("precache_wifi_only")
+        /** The stream cache's size in MB; mirrored to [bootPrefs] for the cache's first open. */
+        private val MEDIA_CACHE_MB = intPreferencesKey("media_cache_mb")
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // keep the music going past the queue
         private val SEARCH_ALL_LIBRARIES = booleanPreferencesKey("search_all_libraries") // library search asks every server
         // Scrobbling to ListenBrainz / Last.fm (see scrobble/). Tokens are encrypted.
@@ -1306,6 +1311,35 @@ class AppSettings(private val context: Context) {
 
     /** Only download over Wi-Fi, skip on mobile data. */
     val downloadWifiOnly: Flow<Boolean> = pref { it[DOWNLOAD_WIFI_ONLY] ?: false }
+
+    /** How many upcoming songs "fetch ahead" caches while playing; 0 (off) by default. */
+    val precacheAhead: Flow<Int> = pref { prefs ->
+        prefs[PRECACHE_AHEAD]?.takeIf { it in com.engabd.sendpin.audio.PreCachePlan.AHEAD_CHOICES } ?: 0
+    }
+
+    suspend fun setPrecacheAhead(value: Int) {
+        context.dataStore.edit { it[PRECACHE_AHEAD] = value }
+    }
+
+    /** Fetch ahead only on Wi-Fi (an unmetered network). On by default. */
+    val precacheWifiOnly: Flow<Boolean> = pref { it[PRECACHE_WIFI_ONLY] ?: true }
+
+    suspend fun setPrecacheWifiOnly(value: Boolean) {
+        context.dataStore.edit { it[PRECACHE_WIFI_ONLY] = value }
+    }
+
+    /** The stream cache's size in MB; 512 by default, the size it always had. */
+    val mediaCacheMb: Flow<Int> = pref { com.engabd.sendpin.audio.PreCachePlan.sizeMb(it[MEDIA_CACHE_MB]) }
+
+    /** The same, readable synchronously before DataStore is, for the cache's first open. */
+    val bootMediaCacheMb: Int
+        get() = com.engabd.sendpin.audio.PreCachePlan.sizeMb(bootPrefs.getInt("media_cache_mb", com.engabd.sendpin.audio.PreCachePlan.DEFAULT_SIZE_MB))
+
+    suspend fun setMediaCacheMb(value: Int) {
+        val mb = com.engabd.sendpin.audio.PreCachePlan.sizeMb(value)
+        bootPrefs.edit().putInt("media_cache_mb", mb).apply()
+        context.dataStore.edit { it[MEDIA_CACHE_MB] = mb }
+    }
 
     /**
      * Whether to keep the Sendspin connection alive in the background for HA TTS

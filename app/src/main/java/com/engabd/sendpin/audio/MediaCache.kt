@@ -7,7 +7,6 @@ import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheKeyFactory
-import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
 
@@ -21,7 +20,9 @@ import java.io.File
  * stream to the server.
  *
  * Bounded and least-recently-used, in the cache directory, so the system may clear it
- * and it never competes with downloads, which are the thing meant to be kept.
+ * and it never competes with downloads, which are the thing meant to be kept. The
+ * bound is a setting (Settings › Downloads & storage), and "fetch ahead" fills it
+ * with the next songs before they are reached — see [PreCacher].
  *
  * One [SimpleCache] per process and per directory is a hard media3 rule — two
  * instances over one folder throw — which is why this is an object.
@@ -29,19 +30,74 @@ import java.io.File
 @OptIn(UnstableApi::class)
 object MediaCache {
 
-    /** Enough for a few hours of lossless audio, and small beside a phone's storage. */
-    private const val MAX_BYTES = 512L * 1024 * 1024
+    /** What every stream request calls itself, the player's and a fetch-ahead alike. */
+    val USER_AGENT: String = "CAMusic/${com.engabd.sendpin.BuildConfig.VERSION_NAME} (Android)"
 
     @Volatile private var cache: SimpleCache? = null
+    @Volatile private var evictor: AdjustableLruEvictor? = null
 
+    /**
+     * Built on first use at the size last chosen. Read from the boot mirror rather
+     * than DataStore because the first track can ask for this before any coroutine
+     * has had a chance to read a preference.
+     */
     private fun cache(context: Context): SimpleCache =
         cache ?: synchronized(this) {
-            cache ?: SimpleCache(
-                File(context.applicationContext.cacheDir, "media"),
-                LeastRecentlyUsedCacheEvictor(MAX_BYTES),
-                StandaloneDatabaseProvider(context.applicationContext),
-            ).also { cache = it }
+            cache ?: run {
+                val app = context.applicationContext
+                val lru = AdjustableLruEvictor(mb(com.engabd.sendpin.data.AppSettings(app).bootMediaCacheMb))
+                SimpleCache(File(app.cacheDir, "media"), lru, StandaloneDatabaseProvider(app))
+                    .also { evictor = lru; cache = it }
+            }
         }
+
+    private fun mb(value: Int): Long = value.toLong() * 1024 * 1024
+
+    /** Change the size; shrinking evicts the least recently heard audio at once. */
+    fun setMaxMb(context: Context, value: Int) {
+        val c = cache(context)
+        evictor?.setMaxBytes(c, mb(value))
+    }
+
+    /** Bytes of audio held now. */
+    fun usedBytes(context: Context): Long = runCatching { cache(context).cacheSpace }.getOrDefault(0L)
+
+    /**
+     * Empty it, except for whatever [keepUrl] is (the song playing), which is being
+     * read as this runs.
+     */
+    fun clear(context: Context, keepUrl: String?) {
+        val c = cache(context)
+        val keep = keepUrl?.let(::cacheKey)
+        for (key in c.keys.toList()) {
+            if (key != keep) runCatching { c.removeResource(key) }
+        }
+    }
+
+    /** Whether all of [url] is already on the phone, so fetching it again would be waste. */
+    fun isFullyCached(context: Context, url: String): Boolean {
+        val c = cache(context)
+        val key = cacheKey(url)
+        val length = androidx.media3.datasource.cache.ContentMetadata.getContentLength(c.getContentMetadata(key))
+        return length > 0 && c.isCached(key, 0, length)
+    }
+
+    /**
+     * The HTTP source every stream is fetched with: the app's own client, and the
+     * player's User-Agent. One definition, so a pre-fetched file is fetched exactly as
+     * the player would have fetched it.
+     */
+    fun httpUpstream(): DataSource.Factory =
+        androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(com.engabd.sendpin.data.Http.stream())
+            .setUserAgent(USER_AGENT)
+
+    /** A source that writes into the cache, for [PreCacher]'s CacheWriter. */
+    fun writingSource(context: Context): CacheDataSource =
+        CacheDataSource.Factory()
+            .setCache(cache(context))
+            .setUpstreamDataSourceFactory(httpUpstream())
+            .setCacheKeyFactory(KEY_FACTORY)
+            .createDataSource()
 
     /**
      * [upstream] (the HTTP factory) with the cache in front of it. Only ever handed

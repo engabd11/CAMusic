@@ -495,8 +495,11 @@ private fun LazyListScope.sectionItems(
         }
 
         SettingsSection.SYSTEM_ABOUT -> when (detail) {
-            SYS_STORAGE_ROUTE -> card("sys_storage") {
-                DownloadsSection(libraryViewModel, settings, accent, scope, onOpenDownloads)
+            SYS_STORAGE_ROUTE -> {
+                card("sys_storage") {
+                    DownloadsSection(libraryViewModel, settings, accent, scope, onOpenDownloads)
+                }
+                card("sys_stream_cache") { StreamCacheCard(settings, accent, scope) }
             }
             SYS_BACKUP_ROUTE -> card("sys_backup") { BackupSection(settings, accent, scope) }
             SYS_DIAGNOSTICS_ROUTE -> {
