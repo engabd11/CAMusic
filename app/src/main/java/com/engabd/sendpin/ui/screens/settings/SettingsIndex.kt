@@ -96,7 +96,7 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
         SubPage(
             AUDIO_EQ_ROUTE,
             "Equaliser",
-            "Ten bands here, and Music Assistant's own parametric DSP for its players",
+            "Ten bands or parametric, AutoEQ, a curve per output, and Music Assistant's DSP",
             Icons.Default.Equalizer,
         ),
         SubPage(
