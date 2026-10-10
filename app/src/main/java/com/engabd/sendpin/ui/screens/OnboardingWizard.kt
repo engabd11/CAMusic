@@ -99,6 +99,13 @@ fun OnboardingWizard(
 
     var step by remember { mutableStateOf(0) }
     var chosenKind by remember { mutableStateOf<ServerKind?>(null) }
+    // Restoring a backup instead of setting up by hand: the file picked, then its
+    // password, then whether it worked.
+    var restoreUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var restoreStatus by remember { mutableStateOf<String?>(null) }
+    val pickBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) { restoreUri = uri; restoreStatus = null }
+    }
     var serverConfig by remember { mutableStateOf<ServerConfig?>(null) }
 
     // Registering this phone as a Music Assistant speaker only means anything on the
@@ -224,11 +231,53 @@ fun OnboardingWizard(
             }
 
             Spacer(Modifier.height(20.dp))
+            // A new phone usually has an old one behind it. The backup could only be
+            // restored from Settings, so the way in was to skip setup first, which
+            // records the setup as skipped and leaves the wizard's work undone for
+            // nothing. Offered on the first step only: past it, the user has chosen
+            // to set up by hand.
+            if (step == 0) {
+                TextButton("Restore from a backup", accent = accent) {
+                    pickBackup.launch(arrayOf("application/json", "*/*"))
+                }
+                restoreStatus?.let {
+                    Text(it, color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 12.dp))
+                }
+            }
             TextButton(
                 "Skip setup",
                 accent = accent,
             ) { finish(skipped = true) }
         }
+    }
+
+    restoreUri?.let { uri ->
+        PasswordPromptDialog(
+            title = "Restore from a backup",
+            note = "The password the backup was exported with. Your servers, settings and " +
+                "everything else in it come back on this phone.",
+            confirmLabel = "Restore",
+            onDismiss = { restoreUri = null },
+            onConfirm = { password ->
+                restoreUri = null
+                restoreStatus = "Restoring…"
+                scope.launch {
+                    val text = runCatching {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    }.getOrNull()
+                    val ok = text != null && runCatching { settings.importSettings(text, password) }.getOrDefault(false)
+                    if (ok) {
+                        android.widget.Toast.makeText(
+                            context, "Restored. A few settings take effect after a restart.", android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                        finish()
+                    } else {
+                        restoreStatus = if (text == null) "Couldn't read that file."
+                        else "That didn't open: a wrong password, or not a CAMusic backup."
+                    }
+                }
+            },
+        )
     }
 }
 
