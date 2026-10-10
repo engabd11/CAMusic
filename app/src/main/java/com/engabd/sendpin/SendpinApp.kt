@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
@@ -62,6 +63,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * instance meant the phone could be playing something no other screen knew
      * about — and that nothing but the Library tab could pause.
      */
+    /** "Fetch ahead": the next songs into the stream cache. See [com.engabd.sendpin.audio.PreCacher]. */
+    val preCacher: com.engabd.sendpin.audio.PreCacher by lazy {
+        com.engabd.sendpin.audio.PreCacher(this, localPlayer)
+    }
+
     val localPlayer: LocalPlayer by lazy {
         LocalPlayer(this).also { player ->
             // Announce a takeover to the Sendspin side rather than letting the two
@@ -623,6 +629,14 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // download manager, which has no business holding a reference to the player.
         appScope.launch {
             localPlayer.current.collect { downloads.protectedId = it?.id }
+        }
+        // "Fetch ahead" (off unless chosen) and the stream cache's size, both from the
+        // process so they work with no screen open. See PreCacher and MediaCache.
+        preCacher.start(appScope)
+        appScope.launch {
+            AppSettings(this@SendpinApp).mediaCacheMb.drop(1).collect { mb ->
+                withContext(Dispatchers.IO) { com.engabd.sendpin.audio.MediaCache.setMaxMb(this@SendpinApp, mb) }
+            }
         }
         // Reporting plays to the library servers, and to Stats, from the process rather
         // than from a screen — see PlaybackReporter.

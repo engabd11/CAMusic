@@ -1793,6 +1793,33 @@ class LocalPlayer(private val context: Context) {
     }
 
     /**
+     * Where the next [limit] songs will be played from, in the order they will play:
+     * the player's own order (shuffle mode reads the list out of order) and, under
+     * repeat-all, round past the end. Repeat-one has nothing new to come. Empty when
+     * the queue plays on its own box (MPD). Main thread, like everything that reads
+     * the player.
+     */
+    fun upcomingSources(limit: Int): List<String?> {
+        if (remote != null || limit <= 0) return emptyList()
+        val p = livePlayer ?: return emptyList()
+        val timeline = p.currentTimeline
+        if (timeline.isEmpty) return emptyList()
+        val repeat = if (p.repeatMode == Player.REPEAT_MODE_ALL) Player.REPEAT_MODE_ALL else Player.REPEAT_MODE_OFF
+        val out = mutableListOf<String?>()
+        var at = p.currentMediaItemIndex
+        while (out.size < limit) {
+            val next = timeline.getNextWindowIndex(at, repeat, p.shuffleModeEnabled)
+            if (next == C.INDEX_UNSET || next == p.currentMediaItemIndex) break
+            out += _queue.value.getOrNull(next)?.let(::sourceOf)
+            at = next
+        }
+        return out
+    }
+
+    /** Where the current song is being played from, or null. */
+    fun currentSource(): String? = _current.value?.let(::sourceOf)
+
+    /**
      * Carry on into whatever was appended after the queue had already run out.
      *
      * Deliberately `seekToNextMediaItem` rather than an index: with shuffle mode on
@@ -2651,7 +2678,7 @@ class LocalPlayer(private val context: Context) {
          * ExoPlayer opens stream URLs without the app's OkHttp interceptors, so this
          * is the only place a Navidrome or Jellyfin log gets to see who was asking.
          */
-        val USER_AGENT: String = "CAMusic/${BuildConfig.VERSION_NAME} (Android)"
+        val USER_AGENT: String get() = MediaCache.USER_AGENT
 
         /**
          * How often the published playhead is refreshed.

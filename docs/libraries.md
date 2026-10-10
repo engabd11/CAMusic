@@ -67,6 +67,12 @@ server as well as track, so two servers' track 42 stay separate; a download resu
 stopped, survives the app being closed, and is offered only for libraries that actually hand a
 file over. A playlist downloads as a playlist and stays one in Downloads.
 
+**Fetch ahead** (off by default, Settings → System, Storage & About → Downloads & storage →
+Streaming cache) downloads the next one, three or five songs into the streaming cache while
+the current one plays, on Wi-Fi only unless you allow mobile data. A fetched song starts at
+once and plays on through a tunnel, a lift or the server going away. The cache itself can be
+256 MB to 2 GB (512 MB as before), and emptied from the same card.
+
 **A stream format for mobile data** sits beside the Wi-Fi one on each server's page, so the
 phone can pull a smaller transcode away from home and the original on the sofa.
 

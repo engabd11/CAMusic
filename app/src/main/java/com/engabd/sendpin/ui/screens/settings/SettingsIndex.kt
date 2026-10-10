@@ -183,7 +183,7 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
         SubPage(
             SYS_STORAGE_ROUTE,
             "Downloads & storage",
-            "Music kept on the phone, when to fetch it, and how much space it may take",
+            "Downloads, the streaming cache and fetching ahead, and the space they take",
             Icons.Default.Storage,
         ),
         SubPage(
