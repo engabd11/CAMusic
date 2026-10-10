@@ -50,6 +50,7 @@ class SubsonicSource(
             // Every Subsonic server, back to the original, has these.
             add(Capability.SEARCH)
             add(Capability.GENRES)
+            add(Capability.FOLDERS)
             add(Capability.FAVORITES)
             add(Capability.STAR)
             add(Capability.RATING)
@@ -113,6 +114,7 @@ class SubsonicSource(
     override suspend fun playlistTracks(id: String): List<MaItem> = client.playlistTracks(id)
     override suspend fun tracks(offset: Int, limit: Int): List<MaItem> = client.allSongs(offset, limit)
     override suspend fun children(item: MaItem): List<MaItem> = client.children(item)
+    override suspend fun folderRoot(): List<MaItem> = client.folderRoot()
     override suspend fun tracksUnder(item: MaItem): List<MaItem> = client.tracksUnder(item)
     override suspend fun song(id: String): MaItem? = client.song(id)
 

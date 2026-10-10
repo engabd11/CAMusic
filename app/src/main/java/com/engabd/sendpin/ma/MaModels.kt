@@ -206,7 +206,7 @@ data class MaItem(
          * Assistant fills from `music/in_progress_items`, i.e. *entirely* with
          * podcasts and audiobooks — a shelf where every tap did nothing at all.
          */
-        private val BROWSABLE = setOf("artist", "album", "playlist", "genre", "podcast", "audiobook")
+        private val BROWSABLE = setOf("artist", "album", "playlist", "genre", "podcast", "audiobook", "folder")
 
         /** Types that can be handed to a player directly. */
         private val PLAYABLE =

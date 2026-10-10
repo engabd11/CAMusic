@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import com.engabd.sendpin.library.Capability
+import com.engabd.sendpin.library.FolderTree
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.ma.MaAudioFormat
@@ -67,6 +68,8 @@ class LocalMediaSource(
         add(Capability.TRACKS)
         add(Capability.GENRES)
         add(Capability.PLAYLIST_READ)
+        // MediaStore lists files flat; the folders are rebuilt from where each sits.
+        add(Capability.FOLDERS)
         // The two columns the quality badge needs arrived in Android 14; before
         // that MediaStore has a codec and a bitrate and nothing else.
         if (Build.VERSION.SDK_INT >= 34) add(Capability.RICH_FORMAT)
@@ -163,6 +166,27 @@ class LocalMediaSource(
 
     /** When each track's file arrived, for [recentlyAdded]. Filled by the scan. */
     @Volatile private var dateAdded: Map<String, Long> = emptyMap()
+
+    /** The folder each track's file sits in (MediaStore's RELATIVE_PATH). Filled by the scan. */
+    @Volatile private var folderOf: Map<String, String> = emptyMap()
+
+    private suspend fun folderEntries(): List<Pair<String, MaItem>> {
+        val tracks = reachableTracks()
+        val folders = folderOf
+        return tracks.mapNotNull { t -> folders[t.itemId]?.let { it to t } }
+    }
+
+    private fun folderItem(path: String) = MaItem(
+        itemId = "folder:" + FolderTree.clean(path), provider = PROVIDER, name = FolderTree.name(path), uri = null,
+        mediaType = "folder", subtitle = null, image = null, duration = null,
+    )
+
+    private suspend fun folderLevel(path: String): List<MaItem> {
+        val (folders, tracks) = FolderTree.level(path, folderEntries())
+        return folders.map(::folderItem) + tracks
+    }
+
+    override suspend fun folderRoot(): List<MaItem> = folderLevel(FolderTree.start(folderEntries()))
 
     private suspend fun reachableTracks(): List<MaItem> {
         Changes.watch(context)
@@ -266,11 +290,13 @@ class LocalMediaSource(
         "album" -> albumDetail(item.itemId).second
         "playlist" -> playlistTracks(item.itemId)
         "genre" -> songsByGenre(item.itemId)
+        "folder" -> folderLevel(item.itemId.removePrefix("folder:"))
         else -> emptyList()
     }
 
     override suspend fun tracksUnder(item: MaItem): List<MaItem> = when (item.mediaType) {
         "track" -> listOf(item)
+        "folder" -> FolderTree.under(item.itemId.removePrefix("folder:"), folderEntries())
         "album" -> albumDetail(item.itemId).second
         "artist" -> reachableTracks().filter { it.subtitle.equals(item.name, ignoreCase = true) }
         else -> children(item)
@@ -456,6 +482,7 @@ class LocalMediaSource(
         }.toTypedArray()
         val tracks = mutableListOf<MaItem>()
         val added = HashMap<String, Long>()
+        val folders = HashMap<String, String>()
         var cursor: Cursor? = null
         if (!hasAudioPermission(context)) {
             permissionDenied = true
@@ -509,6 +536,7 @@ class LocalMediaSource(
                     val mime = c.getString(mimeCol)
                     val size = c.getLong(sizeCol)
                     if (addedCol >= 0) added[itemId] = c.getLong(addedCol)
+                    if (relPath != null) folders[itemId] = relPath
                     val genres = if (genreCol >= 0) LocalTags.genres(c.getString(genreCol)) else emptyList()
                     val bitrate = if (bitrateCol >= 0) c.getInt(bitrateCol) else 0
                     val rate = if (rateCol >= 0) c.getInt(rateCol) else 0
@@ -553,6 +581,7 @@ class LocalMediaSource(
             cursor?.close()
         }
         dateAdded = added
+        folderOf = folders
         return tracks
     }
 }
