@@ -26,7 +26,26 @@ import java.util.concurrent.CopyOnWriteArraySet
  * player exactly.
  */
 @OptIn(UnstableApi::class)
-class UsbVolumePlayer(player: Player) : ForwardingPlayer(player) {
+class UsbVolumePlayer(
+    player: Player,
+    /**
+     * Shuffle and repeat set from outside the app - a lock screen, a watch, Assistant,
+     * a Bluetooth head unit - routed to [com.engabd.sendpin.audio.LocalPlayer] rather
+     * than straight onto ExoPlayer. Set directly, they skipped the player's own shuffle
+     * state, its artist-spread play order and the saved queue, so the app's shuffle
+     * button and the queue disagreed with what was playing.
+     */
+    private val onShuffle: ((Boolean) -> Unit)? = null,
+    private val onRepeat: ((Int) -> Unit)? = null,
+) : ForwardingPlayer(player) {
+
+    override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) {
+        onShuffle?.invoke(shuffleModeEnabled) ?: super.setShuffleModeEnabled(shuffleModeEnabled)
+    }
+
+    override fun setRepeatMode(repeatMode: Int) {
+        onRepeat?.invoke(repeatMode) ?: super.setRepeatMode(repeatMode)
+    }
 
     private val listeners = CopyOnWriteArraySet<Player.Listener>()
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())

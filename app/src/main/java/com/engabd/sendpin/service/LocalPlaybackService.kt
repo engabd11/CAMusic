@@ -158,7 +158,19 @@ class LocalPlaybackService : Service() {
         } else {
             // Volume keys to the DAC's own volume while USB bit-perfect holds it; the
             // ExoPlayer exactly, otherwise. See UsbVolumePlayer.
-            com.engabd.sendpin.usb.UsbVolumePlayer(player.exoPlayer).also { usbVolumePlayer = it }
+            com.engabd.sendpin.usb.UsbVolumePlayer(
+                player.exoPlayer,
+                onShuffle = { on -> player.setShuffle(on) },
+                onRepeat = { mode ->
+                    player.setRepeatMode(
+                        when (mode) {
+                            Player.REPEAT_MODE_ALL -> "all"
+                            Player.REPEAT_MODE_ONE -> "one"
+                            else -> "off"
+                        },
+                    )
+                },
+            ).also { usbVolumePlayer = it }
         }
         mediaSession = MediaSession.Builder(this, target).setId("local").build()
         // The posted notification carries this session's token inside its
@@ -278,7 +290,7 @@ class LocalPlaybackService : Service() {
                 listOfNotNull(track?.artist, track?.album).joinToString(" - ")
                     .ifBlank { if (track?.offline == true) "Offline" else "" }
             )
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(com.engabd.sendpin.R.drawable.ic_stat_camusic)
             .setContentIntent(open)
             .setOngoing(isPlaying)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -305,7 +317,9 @@ class LocalPlaybackService : Service() {
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID, "Offline & Navidrome playback", NotificationManager.IMPORTANCE_LOW,
+                // Renamed in place (same id): "Offline & Navidrome playback" predates
+                // every other library this player now plays.
+                CHANNEL_ID, "Music playing on this phone", NotificationManager.IMPORTANCE_LOW,
             ).apply {
                 description = "Controls for music playing on this phone"
                 setShowBadge(false)
