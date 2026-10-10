@@ -229,6 +229,9 @@ fun SettingsScreen(
     // Light Sync section, so navigating into the bridge page and back doesn't lose a
     // half-typed token.
     var haUrl by remember { mutableStateOf("") }
+    // What the index's search field holds. Saveable, so rotating the phone mid-search
+    // keeps the results.
+    var settingsQuery by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     var haToken by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         haUrl = settings.haUrl.first()
@@ -288,6 +291,37 @@ fun SettingsScreen(
                         item(key = "get-started") {
                             GetStartedCard(accent) { onSection(SettingsSection.PROVIDERS); onDetail(null) }
                         }
+                    }
+                    // Search. Typing what you want beats guessing which of seven
+                    // sections someone filed it under. See [SettingsSearch].
+                    item(key = "settings-search", contentType = "search") {
+                        OledField(
+                            value = settingsQuery,
+                            onChange = { settingsQuery = it },
+                            label = "Search settings",
+                            placeholder = "e.g. crossfade, ReplayGain, Hue, theme",
+                            accent = accent,
+                        )
+                    }
+                    if (settingsQuery.isNotBlank()) {
+                        val results = SettingsSearch.search(settingsQuery, where = { searchWhere(it) })
+                        if (results.isEmpty()) {
+                            item(key = "settings-search-none") {
+                                Note("Nothing in Settings matches \u201c${settingsQuery.trim()}\u201d.")
+                            }
+                        }
+                        itemsIndexed(results, key = { _, e -> "result:" + e.section.name + e.route + e.title }) { i, entry ->
+                            val tint = LocalPalette.current.swatch(entry.section.ordinal)
+                            NavRow(entry.section.icon, entry.title, searchWhere(entry), tint) {
+                                // A control that only shows with Advanced on would open
+                                // onto a page without it.
+                                if (entry.advanced && !advanced) scope.launch { settings.setAdvancedSettings(true) }
+                                settingsQuery = ""
+                                onSection(entry.section)
+                                onDetail(entry.route)
+                            }
+                        }
+                        return@LazyColumn
                     }
                     // The index. Every row says what is behind it *right now* — a static
                     // description of a category is a definition, and the reader already
@@ -690,6 +724,20 @@ private fun headerTitle(section: SettingsSection?, detail: String?, servers: Lis
     else -> subPageTitle(section, detail) ?: section.title
 }
 
+
+/** Where a search result lives, as the reader would walk to it: "Audio Engine & DSP › Volume & gain". */
+private fun searchWhere(entry: SettingsEntry): String {
+    val page = when (entry.route) {
+        null -> null
+        PICK_ROUTE -> "Add a server"
+        BRIDGE_ROUTE -> "Hue Bridge"
+        HA_ROUTE -> "Home Assistant"
+        ANALYSIS_ROUTE -> "Track analysis"
+        LISTEN_ROUTE -> "Phone audio"
+        else -> subPageTitle(entry.section, entry.route)
+    }
+    return listOfNotNull(entry.section.title, page).joinToString(" \u203a ")
+}
 
 // ── Backup & Restore section ─────────────────────────────────────────────
 
