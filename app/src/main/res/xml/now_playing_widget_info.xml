@@ -11,11 +11,14 @@
 
   `resizeMode="horizontal|vertical"` because the layout is a title over a row of
   controls: it degrades gracefully in both directions, and refusing to resize would
-  strand it at whatever size the launcher chose.
+  strand it at whatever size the launcher chose. `minResize*` lets it go down to one
+  row high, where NowPlayingWidget switches to its single-row layout.
 -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:minWidth="180dp"
     android:minHeight="80dp"
+    android:minResizeWidth="150dp"
+    android:minResizeHeight="40dp"
     android:targetCellWidth="3"
     android:targetCellHeight="2"
     android:resizeMode="horizontal|vertical"

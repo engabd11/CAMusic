@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -529,6 +530,79 @@ class SendpinApp : Application(), ImageLoaderFactory {
      *
      * An empty query is the platform's "just play something": resume what is loaded.
      */
+    /**
+     * A screen to open, asked for from outside the app (a home-screen shortcut). Held
+     * until the UI takes it, because a cold start asks before there is any UI.
+     */
+    val appRoute = MutableStateFlow<String?>(null)
+
+    private var widgetJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Keep the home-screen widget current.
+     *
+     * The widget follows the player by itself only while Glance keeps its session
+     * open, which ends soon after it is drawn. After that only its own buttons
+     * repainted it, so a song changed in the app, in the car or from headphones left
+     * it showing the last one. This repaints every placed widget on each change of
+     * song or play state, half a second after things settle, and loads the cover
+     * first when the widget shows one.
+     *
+     * Started when a widget is placed (and after a restart) by its receiver, and at
+     * launch if one is already on a home screen. It stops once the last one is
+     * removed, so a phone without the widget pays nothing for it.
+     */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    fun watchWidget() {
+        appScope.launch {
+            if (widgetJob?.isActive == true) return@launch
+            widgetJob = appScope.launch {
+                combine(
+                    unifiedNowPlaying.state
+                        .map { Triple(it.title to it.artist, it.artworkUrl, it.isPlaying) }
+                        .distinctUntilChanged(),
+                    AppSettings(this@SendpinApp).widgetCover,
+                ) { song, cover -> song to cover }
+                    .debounce(WIDGET_REFRESH_DEBOUNCE_MS)
+                    .collect { (song, cover) ->
+                        if (!com.engabd.sendpin.widget.NowPlayingWidget.isPlaced(this@SendpinApp)) {
+                            com.engabd.sendpin.widget.WidgetArt.load(this@SendpinApp, null)
+                            widgetJob?.cancel()
+                            return@collect
+                        }
+                        com.engabd.sendpin.widget.WidgetArt.load(this@SendpinApp, song.second.takeIf { cover })
+                        com.engabd.sendpin.widget.NowPlayingWidget.refresh(this@SendpinApp)
+                    }
+            }
+        }
+    }
+
+    /**
+     * Long-press the app icon: Resume, Library, Lights. Published from code rather
+     * than declared in XML, so they open this install (a side-by-side test build
+     * too) and never appear on a TV.
+     */
+    private fun publishShortcuts() {
+        appScope.launch(Dispatchers.IO) {
+            fun shortcut(id: String, label: String, icon: Int, action: String) =
+                androidx.core.content.pm.ShortcutInfoCompat.Builder(this@SendpinApp, id)
+                    .setShortLabel(label)
+                    .setIcon(androidx.core.graphics.drawable.IconCompat.createWithResource(this@SendpinApp, icon))
+                    .setIntent(android.content.Intent(this@SendpinApp, MainActivity::class.java).setAction(action))
+                    .build()
+            runCatching {
+                androidx.core.content.pm.ShortcutManagerCompat.setDynamicShortcuts(
+                    this@SendpinApp,
+                    listOf(
+                        shortcut("resume", "Resume", R.drawable.ic_shortcut_play, MainActivity.ACTION_RESUME),
+                        shortcut("library", "Library", R.drawable.ic_shortcut_library, MainActivity.ACTION_OPEN_LIBRARY),
+                        shortcut("lights", "Lights", R.drawable.ic_shortcut_lights, MainActivity.ACTION_OPEN_LIGHTS),
+                    ),
+                )
+            }.onFailure { android.util.Log.w("SendpinApp", "Couldn't publish shortcuts", it) }
+        }
+    }
+
     fun playFromVoice(query: String?) {
         appScope.launch {
             val q = query?.trim().orEmpty()
@@ -623,6 +697,12 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // download manager, which has no business holding a reference to the player.
         appScope.launch {
             localPlayer.current.collect { downloads.protectedId = it?.id }
+        }
+        if (!Platform.isTelevision(this)) {
+            appScope.launch(Dispatchers.IO) {
+                if (com.engabd.sendpin.widget.NowPlayingWidget.isPlaced(this@SendpinApp)) watchWidget()
+            }
+            publishShortcuts()
         }
         // Reporting plays to the library servers, and to Stats, from the process rather
         // than from a screen — see PlaybackReporter.
@@ -1169,6 +1249,8 @@ class SendpinApp : Application(), ImageLoaderFactory {
             .joinToString("") { "%02x".format(it) }
 
     companion object {
+        private const val WIDGET_REFRESH_DEBOUNCE_MS = 500L
+
         lateinit var instance: SendpinApp
             private set
 

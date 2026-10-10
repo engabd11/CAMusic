@@ -25,7 +25,10 @@ Where CAMusic runs and what each surface adds. [Back to the README](../README.md
   permission-free default, with a full-width overlay behind it, triggered by the car's Bluetooth.
   The speed alert shares that trigger: it watches only while the phone is connected to the car you nominate (GPS at a fix a second is far too expensive to run on "audio is playing") and warns with a sound, a buzz and an on-screen notification at once.
 - **"Hey Google, play … on CAMusic"** plays the search result rather than just opening the app.
-- **Home-screen widget** with artwork and transport controls.
+- **Home-screen widget** with what's playing and previous, play and next. Tap it to open the
+  app. Made one row high it puts the song beside the buttons, and it can show the cover
+  (Settings → Interface & Appearance → Now Playing & seek bar → Home-screen widget).
+- **Shortcuts.** Long-press the app icon for Resume, Library and Lights.
 - **Tablets and foldables** get an adaptive grid layout.
 - **Everyday touches.** An optional mini player above the tabs while you browse (Settings →
   Appearance → Now Playing & seek bar), swipe a song off the queue with an **Undo**, and
