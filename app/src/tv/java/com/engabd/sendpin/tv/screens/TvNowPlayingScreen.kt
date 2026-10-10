@@ -113,8 +113,11 @@ fun TvNowPlayingScreen(viewModel: NowPlayingViewModel = viewModel()) {
             }
 
             androidx.compose.foundation.layout.Spacer(Modifier.height(28.dp))
+            // Two rows: the transport, then the modes. As one row of eight it needed
+            // about 500 dp, twice what this column has beside the cover on a 960 dp
+            // television, and the last buttons (Repeat, the heart) were drawn off the
+            // edge of the screen.
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                TvIconButton(Icons.Default.Shuffle, "Shuffle", active = state.shuffle) { viewModel.toggleShuffle() }
                 TvIconButton(Icons.Default.SkipPrevious, "Previous") { viewModel.previous() }
                 TvIconButton(Icons.Default.FastRewind, "Seek back 10s") {
                     seekBySeconds(viewModel, -10)
@@ -124,6 +127,10 @@ fun TvNowPlayingScreen(viewModel: NowPlayingViewModel = viewModel()) {
                     seekBySeconds(viewModel, 10)
                 }
                 TvIconButton(Icons.Default.SkipNext, "Next") { viewModel.next() }
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                TvIconButton(Icons.Default.Shuffle, "Shuffle", active = state.shuffle) { viewModel.toggleShuffle() }
                 TvIconButton(
                     if (state.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
                     "Repeat", active = state.repeatMode != "off",

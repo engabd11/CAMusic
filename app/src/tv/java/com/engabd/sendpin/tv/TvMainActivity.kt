@@ -67,6 +67,8 @@ class TvMainActivity : ComponentActivity() {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        if (savedInstanceState == null) handleVoiceSearch(intent)
+
         setContent {
             // The theme the TV's own Settings screen offers. This used to be a bare
             // SendspinTheme {}, i.e. always OLED black, so choosing Light or Dark in
@@ -77,5 +79,24 @@ class TvMainActivity : ComponentActivity() {
                 TvApp()
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleVoiceSearch(intent)
+    }
+
+    /**
+     * "Play ... on CAMusic", said to the TV's assistant. The phone activity reads this
+     * request and the TV build removes that activity, so on a TV the request opened
+     * nothing at all. Plays the best match, or carries on with what was playing when
+     * nothing was named, and shows Now Playing.
+     */
+    private fun handleVoiceSearch(intent: android.content.Intent?) {
+        if (intent?.action != android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
+        (application as com.engabd.sendpin.SendpinApp)
+            .playFromVoice(intent.getStringExtra(android.app.SearchManager.QUERY))
+        TvRequests.tab.value = TvTab.NOW_PLAYING
     }
 }
