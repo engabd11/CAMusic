@@ -61,10 +61,12 @@ internal fun EqualiserCard(accent: Color) {
 
     SettingsCard(
         title = "Equaliser",
-        lead = "Ten bands and a preamp, for the music this phone plays itself.",
+        lead = "Ten bands or parametric, for the music this phone plays itself.",
         info = "A graphic equaliser: ten fixed bands from bass to air, each cut or boosted by " +
             "up to twelve decibels, with a preamp to take back the headroom a boost " +
-            "costs.\n\nIt runs in this phone's own audio pipeline, so it shapes Navidrome, " +
+            "costs. Or parametric, with the type, frequency and Q of each band, which is " +
+            "what an AutoEQ correction for your headphones imports as. Curves can be saved " +
+            "by name, and kept one per output.\n\nIt runs in this phone's own audio pipeline, so it shapes Navidrome, " +
             "Jellyfin, Plex, local files and downloads. Music Assistant is shaped by Music " +
             "Assistant's own DSP instead — on the server, per player — which is the second " +
             "card on this page whenever a Music Assistant server is set up. MPD decodes on " +

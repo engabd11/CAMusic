@@ -6,9 +6,13 @@ How CAMusic plays, from the equaliser to a USB DAC, and where synced lyrics come
 
 Playback is built to be worth good headphones and a good DAC.
 
-- **A ten band equaliser** for everything this phone plays, built on RBJ biquads in a
-  zero latency cascade, with automatic headroom so a boosted band stays clean on loud
-  masters. Music Assistant's own parametric DSP is exposed separately for the rooms it runs.
+- **An equaliser** for everything this phone plays, built on RBJ biquads in a zero latency
+  cascade, with automatic headroom so a boosted band stays clean on loud masters. Ten bands,
+  or parametric with the type, frequency and Q of each band. Import a correction for your
+  headphones from [AutoEQ](https://autoeq.app) (its `ParametricEQ.txt`, chosen or pasted),
+  save curves by name, and optionally keep a curve for each output: the headphones' curve
+  comes back when they reconnect, and the speaker keeps its own. Music Assistant's own
+  parametric DSP is exposed separately for the rooms it runs.
 - **The real signal path**, reported a stage at a time: what the file declares, what the
   decoder handed over, what the sink was configured with, and whether the high resolution
   float path is engaged. Where resolution is being lost, the card says so in a sentence.
