@@ -123,6 +123,11 @@ class SubsonicClient(
     companion object {
         /** The provider tag every item from this client carries. */
         const val PROVIDER = "subsonic"
+        /** A music folder's id among directory ids, which are the server's own. */
+        private const val MUSIC_FOLDER = "mf:"
+        /** Playing the top of a big library should start, not walk ten thousand folders. */
+        private const val FOLDER_TRACK_CAP = 2_000
+        private const val FOLDER_REQUEST_CAP = 400
 
         /**
          * One client for every Subsonic call in the app.
@@ -770,8 +775,71 @@ class SubsonicClient(
         "album" -> albumTracks(item.itemId)
         "playlist" -> playlistTracks(item.itemId)
         "genre" -> songsByGenre(item.itemId)
+        "folder" -> folderChildren(item.itemId)
         else -> emptyList()
     }
+
+    // --- folders -------------------------------------------------------------
+    //
+    // The folder view every Subsonic server has had since the first one:
+    // getMusicFolders, getIndexes, getMusicDirectory. Gonic, Airsonic and LMS answer
+    // with the real directories on disk; Navidrome answers with artist, then album,
+    // then songs, built from tags. Either way it is the server's own folder view.
+
+    /** The top: the music folders when there are several, else the first one's index. */
+    suspend fun folderRoot(): List<MaItem> {
+        val folders = get("getMusicFolders")["musicFolders"]?.jsonObject?.get("musicFolder")?.jsonArray.orEmptyArray()
+            .map { it.jsonObject }
+        if (folders.size > 1) {
+            return folders.map { folderItem(MUSIC_FOLDER + (it.str("id") ?: ""), it.str("name") ?: "Music folder") }
+        }
+        return indexItems(get("getIndexes", folders.firstOrNull()?.str("id")?.let { mapOf("musicFolderId" to it) } ?: emptyMap()))
+    }
+
+    private suspend fun folderChildren(id: String): List<MaItem> =
+        if (id.startsWith(MUSIC_FOLDER)) indexItems(get("getIndexes", mapOf("musicFolderId" to id.removePrefix(MUSIC_FOLDER))))
+        else directoryItems(get("getMusicDirectory", mapOf("id" to id)))
+
+    /** A getIndexes answer: its entries as folders, then any files at the top. */
+    internal fun indexItems(response: JsonObject): List<MaItem> {
+        val idx = response["indexes"]?.jsonObject ?: return emptyList()
+        val dirs = idx["index"]?.jsonArray.orEmptyArray()
+            .flatMap { it.jsonObject["artist"]?.jsonArray.orEmptyArray() }
+            .map { it.jsonObject }
+            .map { folderItem(it.str("id") ?: "", it.str("name") ?: "Folder", coverUrl(it.str("coverArt"))) }
+        val files = idx["child"]?.jsonArray.orEmptyArray().map { songItem(it.jsonObject) }
+        return dirs + files
+    }
+
+    /** A getMusicDirectory answer: sub-folders, then songs (videos left out). */
+    internal fun directoryItems(response: JsonObject): List<MaItem> {
+        val children = response["directory"]?.jsonObject?.get("child")?.jsonArray.orEmptyArray().map { it.jsonObject }
+        val (dirs, files) = children.partition { it["isDir"]?.jsonPrimitive?.booleanOrNull == true }
+        return dirs.map { folderItem(it.str("id") ?: "", it.str("title") ?: it.str("album") ?: "Folder", coverUrl(it.str("coverArt"))) } +
+            files.filter { it["isVideo"]?.jsonPrimitive?.booleanOrNull != true }.map { songItem(it) }
+    }
+
+    /**
+     * Every song under a folder, however deep, in folder order. Walked breadth first
+     * and capped, because the top of a large library is the whole library.
+     */
+    private suspend fun folderTracks(id: String): List<MaItem> {
+        val out = mutableListOf<MaItem>()
+        val queue = ArrayDeque(listOf(id))
+        var requests = 0
+        while (queue.isNotEmpty() && out.size < FOLDER_TRACK_CAP && requests < FOLDER_REQUEST_CAP) {
+            val next = queue.removeFirst()
+            requests++
+            val items = if (next.isEmpty()) folderRoot() else folderChildren(next)
+            items.forEach { if (it.mediaType == "folder") queue.addLast(it.itemId) else out += it }
+        }
+        return out.take(FOLDER_TRACK_CAP)
+    }
+
+    private fun folderItem(id: String, name: String, image: String? = null) = MaItem(
+        itemId = id, provider = PROVIDER, name = name, uri = null, mediaType = "folder",
+        subtitle = null, image = image, duration = null,
+    )
 
     /**
      * Every track under an item, in play order — what "play this album" and
@@ -782,6 +850,7 @@ class SubsonicClient(
         "track" -> listOf(item)
         "album", "playlist", "genre" -> children(item)
         "artist" -> artistAlbums(item.itemId).flatMap { albumTracks(it.itemId) }
+        "folder" -> folderTracks(item.itemId)
         else -> emptyList()
     }
 

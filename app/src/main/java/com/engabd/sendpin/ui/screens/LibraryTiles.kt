@@ -195,6 +195,7 @@ internal fun categoryHueOf(id: String): Int = when (id) {
     "radios" -> 1
     "podcasts" -> 3
     "downloads" -> 2
+    "folders" -> 3
     else -> 0
 }
 
@@ -212,6 +213,7 @@ internal fun categoryIconOf(id: String): ImageVector = when (id) {
     "genres" -> Icons.Default.Category
     "starred" -> Icons.Default.Star
     "random" -> Icons.Default.Shuffle
+    "folders" -> Icons.Default.Folder
     else -> Icons.AutoMirrored.Filled.QueueMusic
 }
 
@@ -646,6 +648,7 @@ private fun mediaIcon(mediaType: String): ImageVector = when (mediaType) {
     "radio" -> Icons.Default.Radio
     "podcast", "podcast_episode" -> Icons.Default.Podcasts
     "audiobook", "chapter" -> Icons.AutoMirrored.Filled.MenuBook
+    "folder" -> Icons.Default.Folder
     else -> Icons.Default.MusicNote
 }
 

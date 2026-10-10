@@ -315,6 +315,7 @@ private val ALL_CATEGORIES: List<Triple<String, String, String>> = listOf(
     Triple("starred", "Starred", "Libraries with favourites"),
     Triple("newest", "Recently Added", "Self-hosted libraries"),
     Triple("random", "Shuffle all", "Self-hosted libraries"),
+    Triple("folders", "Folders", "Navidrome and Subsonic servers, MPD and this device"),
     Triple("radios", "Radio stations", "Music Assistant"),
     Triple("podcasts", "Podcasts", "Music Assistant"),
     Triple("downloads", "Downloads", "Offline, when no server answers"),

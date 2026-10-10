@@ -61,6 +61,13 @@ paged to the end rather than stopping at the server's first 200 or 500.
 **This device** is a library like the others: scanned off the main thread, rescanned when
 files change, with embedded or folder art, genres from the tags, and `.m3u` playlists.
 
+**Browse by folder** on Navidrome and the Subsonic family, MPD and this device: a Folders
+category beside Artists and Albums. Gonic, Airsonic, LMS and MPD show the folders on disk (MPD
+through its read-only `lsinfo`); Navidrome shows its own folder view, which is artist, then
+album, then songs; this device's folders are rebuilt from where each file sits, starting at the
+first folder with a choice in it. Hold a folder to play or queue everything under it, however
+deep.
+
 **Downloads you can trust.** Anything can be taken offline for the train, with a storage cap
 and a Wi-Fi only option, and downloads browse as a library of their own. Files are keyed by
 server as well as track, so two servers' track 42 stay separate; a download resumes where it

@@ -443,7 +443,7 @@ internal fun itemKey(section: String, index: Int, item: MaItem) =
 private val ArtfulTypes = setOf("album", "playlist", "podcast", "audiobook")
 private val DownloadableTypes = setOf("track", "album", "playlist")
 internal val LongPressableTypes =
-    setOf("track", "album", "artist", "playlist", "radio", "podcast", "podcast_episode", "audiobook")
+    setOf("track", "album", "artist", "playlist", "radio", "podcast", "podcast_episode", "audiobook", "folder")
 private val SubsonicActionTypes = setOf("track", "album", "artist")
 private val MaActionTypes =
     setOf("track", "album", "artist", "playlist", "podcast", "podcast_episode", "audiobook")

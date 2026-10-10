@@ -86,6 +86,8 @@ class MpdSource(
         add(Capability.PLAYLIST_WRITE)
         add(Capability.PLAYLIST_EDIT)
         add(Capability.TRACKS)
+        // MPD's own music directory, walked with the read-only `lsinfo`.
+        add(Capability.FOLDERS)
         // In MPD's own sticker database, so any MPD client that reads the `rating`
         // sticker sees it. Needs `sticker_file` in mpd.conf; see [MpdClient.rating].
         add(Capability.RATING)
@@ -135,7 +137,20 @@ class MpdSource(
         "artist" -> marked(client.albums(artist = item.itemId))
         "album" -> albumDetail(item.itemId).second
         "playlist" -> playlistTracks(item.itemId)
+        "folder" -> folder(item.itemId)
         else -> emptyList()
+    }
+
+    override suspend fun folderRoot(): List<MaItem> = folder("")
+
+    private suspend fun folder(path: String): List<MaItem> {
+        val (dirs, songs) = client.folder(path)
+        return dirs.map { dir ->
+            MaItem(
+                itemId = dir, provider = MpdClient.PROVIDER, name = FolderTree.name(dir), uri = null,
+                mediaType = "folder", subtitle = null, image = null, duration = null,
+            )
+        } + marked(songs)
     }
 
     override suspend fun tracksUnder(item: MaItem): List<MaItem> = when (item.mediaType) {
@@ -145,6 +160,7 @@ class MpdSource(
         "artist" -> client.albums(artist = item.itemId).flatMap { album ->
             client.albumDetail(album.itemId).second
         }
+        "folder" -> client.folderTracks(item.itemId)
         else -> emptyList()
     }
 
