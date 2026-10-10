@@ -15,7 +15,12 @@ import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.common.Player
+import android.os.Bundle
+import androidx.media3.session.CommandButton
+import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.media3.session.MediaStyleNotificationHelper
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
@@ -73,6 +78,10 @@ class LocalPlaybackService : Service() {
         }
 
         private const val ART_PX = 512
+
+        private const val CMD_FAVOURITE = "com.engabd.sendpin.media.FAVOURITE"
+        private const val CMD_SHUFFLE = "com.engabd.sendpin.media.SHUFFLE"
+        private const val CMD_REPEAT = "com.engabd.sendpin.media.REPEAT"
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -160,7 +169,13 @@ class LocalPlaybackService : Service() {
             // ExoPlayer exactly, otherwise. See UsbVolumePlayer.
             com.engabd.sendpin.usb.UsbVolumePlayer(player.exoPlayer).also { usbVolumePlayer = it }
         }
-        mediaSession = MediaSession.Builder(this, target).setId("local").build()
+        releaseNotificationController()
+        mediaSession = MediaSession.Builder(this, target)
+            .setId("local")
+            .setCallback(sessionCallback)
+            .build()
+        connectNotificationController()
+        publishButtons()
         // The posted notification carries this session's token inside its
         // MediaStyle, so one built against the session just released would leave the
         // shade's own transport addressing a dead session until the next track
@@ -188,6 +203,154 @@ class LocalPlaybackService : Service() {
         // through playback resumption instead (a media button, the car, the system's
         // media controls), and that path starts this service from somewhere allowed to.
         return START_NOT_STICKY
+    }
+
+    // ── Extra buttons in the system media controls ─────────────────────────────
+
+    /**
+     * The custom commands behind the buttons. Granted to every controller, which is
+     * what lets a watch or a head unit press them too.
+     */
+    private val sessionCallback = object : MediaSession.Callback {
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult = MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+            .setAvailableSessionCommands(
+                MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                    .add(SessionCommand(CMD_FAVOURITE, Bundle.EMPTY))
+                    .add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
+                    .add(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+                    .build(),
+            )
+            .build()
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): com.google.common.util.concurrent.ListenableFuture<SessionResult> {
+            when (customCommand.customAction) {
+                CMD_SHUFFLE -> player.setShuffle(!player.shuffle.value)
+                CMD_REPEAT -> player.cycleRepeat()
+                CMD_FAVOURITE -> toggleFavourite()
+            }
+            return com.google.common.util.concurrent.Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+        }
+    }
+
+    /**
+     * A standalone session (this service is not a MediaSessionService) only hands its
+     * buttons to the platform session — the one the shade, the lock screen and a watch
+     * read — once a "media notification controller" of its own app is connected and has
+     * been granted their commands. A MediaSessionService does this by itself; media3
+     * documents [MediaController.KEY_MEDIA_NOTIFICATION_CONTROLLER_FLAG] for doing the
+     * same by hand. Without it the buttons were set and never appeared.
+     */
+    private var notificationController: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
+
+    private fun connectNotificationController() {
+        val session = mediaSession ?: return
+        notificationController = MediaController.Builder(this, session.token)
+            .setConnectionHints(Bundle().apply { putBoolean(MediaController.KEY_MEDIA_NOTIFICATION_CONTROLLER_FLAG, true) })
+            .buildAsync()
+    }
+
+    private fun releaseNotificationController() {
+        notificationController?.let { MediaController.releaseFuture(it) }
+        notificationController = null
+    }
+
+    private var buttonsJob: Job? = null
+
+    /** The favourite state of the track playing now, read once per track. */
+    @Volatile private var favourite: Pair<String, Boolean>? = null
+
+    /** Follow the setting, the track and the modes, and redraw the buttons on any change. */
+    private fun publishButtons() {
+        buttonsJob?.cancel()
+        buttonsJob = scope.launch {
+            kotlinx.coroutines.flow.combine(
+                com.engabd.sendpin.data.AppSettings(this@LocalPlaybackService).mediaButtons,
+                player.current,
+                player.shuffle,
+                player.repeatMode,
+            ) { setting, track, shuffle, repeat -> ButtonInputs(setting, track, shuffle, repeat) }
+                .collect { inputs ->
+                    val item = LocalFavourite.itemFor(inputs.track)
+                    if (item != null && SessionButton.FAVOURITE in SessionButtons.chosen(inputs.setting) &&
+                        favourite?.first != item.itemId
+                    ) {
+                        // Only when a heart is shown: a request per track for a button
+                        // nobody asked for would be data spent on nothing.
+                        favourite = item.itemId to (LocalFavourite.isFavourite(item) ?: false)
+                    }
+                    applyButtons(inputs, item)
+                }
+        }
+    }
+
+    private data class ButtonInputs(
+        val setting: String,
+        val track: com.engabd.sendpin.audio.LocalTrack?,
+        val shuffle: Boolean,
+        val repeat: String,
+    )
+
+    private var lastInputs: ButtonInputs? = null
+
+    private fun applyButtons(inputs: ButtonInputs, item: com.engabd.sendpin.ma.MaItem?) {
+        lastInputs = inputs
+        val session = mediaSession ?: return
+        val buttons = SessionButtons.shown(inputs.setting, canFavourite = item != null).map { kind ->
+            when (kind) {
+                SessionButton.FAVOURITE -> {
+                    val on = favourite?.takeIf { it.first == item?.itemId }?.second == true
+                    CommandButton.Builder(if (on) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
+                        .setDisplayName(if (on) "Remove from favourites" else "Add to favourites")
+                        .setSessionCommand(SessionCommand(CMD_FAVOURITE, Bundle.EMPTY))
+                        .build()
+                }
+                SessionButton.SHUFFLE ->
+                    CommandButton.Builder(if (inputs.shuffle) CommandButton.ICON_SHUFFLE_ON else CommandButton.ICON_SHUFFLE_OFF)
+                        .setDisplayName(if (inputs.shuffle) "Shuffle on" else "Shuffle off")
+                        .setSessionCommand(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
+                        .build()
+                SessionButton.REPEAT ->
+                    CommandButton.Builder(
+                        when (inputs.repeat) {
+                            "all" -> CommandButton.ICON_REPEAT_ALL
+                            "one" -> CommandButton.ICON_REPEAT_ONE
+                            else -> CommandButton.ICON_REPEAT_OFF
+                        },
+                    )
+                        .setDisplayName(
+                            when (inputs.repeat) {
+                                "all" -> "Repeat all"
+                                "one" -> "Repeat one"
+                                else -> "Repeat off"
+                            },
+                        )
+                        .setSessionCommand(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+                        .build()
+            }
+        }
+        session.setMediaButtonPreferences(buttons)
+    }
+
+    private fun toggleFavourite() {
+        val item = LocalFavourite.itemFor(player.current.value) ?: return
+        val now = favourite?.takeIf { it.first == item.itemId }?.second == true
+        // Shown at once; put back if the library refuses.
+        favourite = item.itemId to !now
+        lastInputs?.let { applyButtons(it, item) }
+        scope.launch {
+            if (!LocalFavourite.set(item, !now)) {
+                favourite = item.itemId to now
+                lastInputs?.let { applyButtons(it, item) }
+            }
+        }
     }
 
     private fun observe() {
@@ -316,6 +479,8 @@ class LocalPlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        buttonsJob?.cancel()
+        releaseNotificationController()
         artworkJob?.cancel()
         remoteActiveJob?.cancel()
         player.removePlayerRebuiltListener(onPlayerRebuilt)

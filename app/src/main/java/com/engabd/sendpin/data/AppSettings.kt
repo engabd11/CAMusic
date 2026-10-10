@@ -225,6 +225,8 @@ class AppSettings(private val context: Context) {
         private val CAR_LAYOUT_PREVIEW = booleanPreferencesKey("car_layout_preview")
         private val DRIVING_ENABLED = booleanPreferencesKey("driving_enabled")
         private val DRIVING_MECHANISM = stringPreferencesKey("driving_mechanism") // pip | overlay
+        /** Extra buttons in the system media controls; see [com.engabd.sendpin.service.SessionButtons]. */
+        private val MEDIA_BUTTONS = stringPreferencesKey("media_buttons")
         private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
         private val DRIVING_CAR_NAME = stringPreferencesKey("driving_car_name")       // for the settings row
         private val PAUSE_FOR_CALLS = booleanPreferencesKey("pause_for_calls")        // auto-pause playback while the phone rings/is on a call
@@ -2295,6 +2297,14 @@ class AppSettings(private val context: Context) {
 
     suspend fun setDrivingMechanism(value: String) {
         context.dataStore.edit { it[DRIVING_MECHANISM] = value }
+    }
+
+    /** Extra buttons in the system media controls. Off by default. */
+    val mediaButtons: Flow<String> =
+        pref { it[MEDIA_BUTTONS] ?: com.engabd.sendpin.service.SessionButtons.OFF }
+
+    suspend fun setMediaButtons(value: String) {
+        context.dataStore.edit { it[MEDIA_BUTTONS] = value }
     }
 
     suspend fun setDrivingCar(address: String, name: String) {
