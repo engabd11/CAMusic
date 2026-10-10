@@ -1,5 +1,13 @@
 package com.engabd.sendpin.ui.screens
 
+import kotlinx.coroutines.launch
+
+import androidx.compose.runtime.rememberCoroutineScope
+
+import androidx.compose.runtime.mutableLongStateOf
+
+import com.engabd.sendpin.ma.LibraryOrder
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
@@ -488,7 +496,7 @@ private fun Browse(
     onLongPress: (MaItem) -> Unit,
     onManageDownloads: (() -> Unit)? = null,
 ) {
-    val node by viewModel.node.collectAsStateWithLifecycle()
+    val rawNode by viewModel.node.collectAsStateWithLifecycle()
     val depth by viewModel.depth.collectAsStateWithLifecycle()
     val loading by viewModel.loading.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
@@ -531,6 +539,24 @@ private fun Browse(
             gridCols,
         )
     }
+
+    // Sort and filter for a category page (Albums, Songs…), kept per category. The
+    // page below is drawn from the ordered list, so Play all, Download all and the
+    // count all act on what is on screen. See [LibraryOrder].
+    val orders by settings.libraryOrders.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val orderCategory = rawNode.category?.takeIf { it in LibraryOrder.SORTABLE && depth > 0 && !searchOpen }
+    val order = orderCategory?.let { orders[it] } ?: LibraryOrder()
+    var shuffleSeed by remember(orderCategory) { mutableLongStateOf(System.nanoTime()) }
+    val isFavouriteItem: (MaItem) -> Boolean = remember(favorites) { { it.favorite || it.itemId in favorites } }
+    val isDownloadedItem: (MaItem) -> Boolean = remember(downloadedIds) { { it.itemId in downloadedIds } }
+    val orderOptions = remember(rawNode.items, orderCategory, favorites, downloadedIds) {
+        if (orderCategory == null) null else LibraryOrder.options(rawNode.items, isFavouriteItem, isDownloadedItem)
+    }
+    val node = remember(rawNode, order, shuffleSeed, favorites, downloadedIds) {
+        if (orderCategory == null || order.isDefault) rawNode
+        else rawNode.copy(items = LibraryOrder.apply(rawNode.items, order, isFavouriteItem, isDownloadedItem, shuffleSeed))
+    }
+    val orderScope = rememberCoroutineScope()
 
     // DJ Radio's button sits at the very top of the root, above the categories —
     // see [DjRadioCard] for why it looks nothing like the rest of the page.
@@ -804,6 +830,25 @@ private fun Browse(
             }
             shelfRows.forEach { spec -> shelfCarousel(spec, openItem, onLongPress, gridCols) }
             return@LazyVerticalGrid
+        }
+
+        if (orderCategory != null && orderOptions != null && rawNode.items.size > 1) {
+            item(key = "order", span = { full(gridCols) }, contentType = { "order" }) {
+                LibraryOrderBar(
+                    order = order,
+                    options = orderOptions,
+                    shown = node.items.size,
+                    total = rawNode.items.size,
+                    onChange = { next -> orderScope.launch { settings.setLibraryOrder(orderCategory, next) } },
+                    onReshuffle = { shuffleSeed = System.nanoTime() },
+                )
+            }
+            if (node.items.isEmpty()) {
+                item(span = { full(gridCols) }) {
+                    SearchEmptyState(title = "Nothing matches", body = "No ${rawNode.title.lowercase()} fit these filters. Reset them above.")
+                }
+                return@LazyVerticalGrid
+            }
         }
 
         // Creating a playlist belongs where playlists are, not on the root — and
