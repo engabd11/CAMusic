@@ -3,6 +3,7 @@ package com.engabd.sendpin.tv.design
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.focus.FocusDirection
@@ -99,8 +100,17 @@ fun TvButton(
             disabledContainerColor = Glass,
             disabledContentColor = TextMuted,
         ),
-        content = content,
-    )
+    ) {
+        // tv-material hands the label its colour through its *own* LocalContentColor,
+        // and every TV screen writes its labels with material3's Text, which reads
+        // material3's. So an unfocused button's label fell back to material3's
+        // default, near-black on the dark glass: "Connect", "Back" and "Continue"
+        // could only be read once focused. Bridging the two fixes every button.
+        val row = this
+        CompositionLocalProvider(
+            androidx.compose.material3.LocalContentColor provides androidx.tv.material3.LocalContentColor.current,
+        ) { row.content() }
+    }
 }
 
 /**

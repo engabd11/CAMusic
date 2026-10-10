@@ -15,8 +15,12 @@ Where CAMusic runs and what each surface adds. [Back to the README](../README.md
 - **Android Automotive.** For a car with the app installed on its own built-in head unit,
   rather than projected from a phone: a two-pane layout puts the player and the library
   side by side, sized and inset for a driver's glance rather than a phone screen.
-- **Android TV.** A dedicated `tv` flavour with a D-pad Now Playing, Library, Queue, Light Sync,
-  onboarding and Settings, compiled from the same business logic as the phone app.
+- **Android TV.** A dedicated `tv` flavour with a D-pad Now Playing, Library, Search, Queue,
+  Light Sync, onboarding and Settings, compiled from the same business logic as the phone app.
+  The library opens on its categories (artists, albums, genres and the rest) above its shelves,
+  albums and playlists are track lists with Play and Shuffle, and "play … on CAMusic" to the
+  TV's assistant plays the match. The layout keeps inside the TV safe area, and the D-pad focus
+  stays where you are: Back returns to the tile you opened.
 - **LG webOS.** A native webOS television app with a ten-foot UI and multi-library playback,
   and the panel itself as the lamp: scenes, the Hue colour schemes and a luminance clamp for a
   dark room. Hue Entertainment from the TV waits for DTLS support in the webOS service (the bridge streams over DTLS), so for now the panel is the lamp, and the Hue tab says so rather than pretending to connect. See [webos/README.md](../webos/README.md).
