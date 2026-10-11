@@ -60,10 +60,19 @@
         <activity
             android:name=".tv.TvMainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.CAMusic">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <!-- "Play ... on CAMusic" to the TV's assistant. MainActivity holds this
+                 filter on a phone and is removed above, which took the request with
+                 it. singleTask so a request while the app is open reaches onNewIntent
+                 instead of stacking a second copy. -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 

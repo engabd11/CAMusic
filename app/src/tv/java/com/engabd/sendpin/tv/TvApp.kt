@@ -18,10 +18,25 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.foundation.focusGroup
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +56,7 @@ import com.engabd.sendpin.tv.screens.TvLightSyncScreen
 import com.engabd.sendpin.tv.screens.TvNowPlayingScreen
 import com.engabd.sendpin.tv.screens.TvOnboardingScreen
 import com.engabd.sendpin.tv.screens.TvQueueScreen
+import com.engabd.sendpin.tv.screens.TvSearchScreen
 import com.engabd.sendpin.tv.screens.TvSettingsScreen
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.theme.Glass
@@ -49,9 +65,10 @@ import com.engabd.sendpin.ui.theme.Ink2
 import com.engabd.sendpin.ui.theme.TextMuted
 import com.engabd.sendpin.ui.theme.TextPrimary
 
-private enum class TvTab(val label: String, val icon: ImageVector) {
+internal enum class TvTab(val label: String, val icon: ImageVector) {
     NOW_PLAYING("Now Playing", Icons.Default.PlayArrow),
     LIBRARY("Library", Icons.Default.LibraryMusic),
+    SEARCH("Search", Icons.Default.Search),
     QUEUE("Queue", Icons.AutoMirrored.Filled.QueueMusic),
     LIGHT_SYNC("Light Sync", Icons.Default.Lightbulb),
     SETTINGS("Settings", Icons.Default.Settings),
@@ -89,43 +106,133 @@ fun TvApp() {
     // sub-screens) still wins, and this only fires once none of them wants it.
     BackHandler(enabled = tab != TvTab.NOW_PLAYING) { tab = TvTab.NOW_PLAYING }
 
-    Row(Modifier.fillMaxSize().background(Ink)) {
-        TvRail(selected = tab, onSelect = { tab = it })
+    // Focus: the rail takes it at launch, on the tab that is open; the content keeps
+    // track of where it was, so Left then Right comes back to the same tile; and a
+    // control that removes itself (opening an album, a settings page) hands the focus
+    // back to the content rather than to the top of the rail. See [TvFocus].
+    val railSelected = remember { FocusRequester() }
+
+    // A voice request ("play ... on CAMusic") lands on Now Playing. See TvMainActivity.
+    // The focus goes with it: left where it was, it sat on the tab the user had been
+    // on, and the next OK went straight back there.
+    LaunchedEffect(Unit) {
+        TvRequests.tab.collect { asked ->
+            if (asked != null) {
+                tab = asked
+                TvRequests.tab.value = null
+                withFrameNanos { }
+                runCatching { railSelected.requestFocus() }
+            }
+        }
+    }
+
+    val content = remember { FocusRequester() }
+    var lastKey by remember { mutableStateOf(Key.Unknown) }
+    var tabAtKey by remember { mutableStateOf(tab) }
+    var contentHasFocus by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { runCatching { railSelected.requestFocus() } }
+
+    Row(
+        Modifier.fillMaxSize().background(Ink).onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown) {
+                lastKey = event.key
+                tabAtKey = tab
+            }
+            false
+        },
+    ) {
+        TvRail(
+            selected = tab,
+            onSelect = { tab = it },
+            selectedRequester = railSelected,
+            onFocusArrived = {
+                if (TvFocus.returnToContent(lastKey, tabChanged = tabAtKey != tab)) {
+                    scope.launch {
+                        // The screen that replaced the control is composed but may not
+                        // be laid out yet; a frame later it can take the focus. A screen
+                        // that already placed it itself (the library, returning to the
+                        // tile it opened) keeps its choice.
+                        withFrameNanos { }
+                        if (!contentHasFocus) runCatching { content.requestFocus() }
+                    }
+                }
+            },
+        )
         Box(Modifier.fillMaxHeight().width(1.dp).background(Glass))
         Box(Modifier.fillMaxSize()) {
-            when (tab) {
-                // The wash goes in first so it sits behind the screen rather than
-                // over it. Only under this tab: it is the album's colour, and the
-                // album is what this tab is about.
-                TvTab.NOW_PLAYING -> {
-                    TvAmbientBackground()
-                    TvNowPlayingScreen()
+            // The wash goes in first so it sits behind the screen rather than over
+            // it, and outside the safe-area inset below, so it still reaches the edge.
+            // Only under this tab: it is the album's colour, and the album is what
+            // this tab is about.
+            if (tab == TvTab.NOW_PLAYING) TvAmbientBackground()
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    // The rest of the TV safe area (48 dp a side): the screens already
+                    // pad themselves by 32 to 40 dp.
+                    .padding(end = 16.dp)
+                    .focusRequester(content)
+                    .onFocusChanged { contentHasFocus = it.hasFocus }
+                    .focusRestorer()
+                    .focusGroup(),
+            ) {
+                when (tab) {
+                    TvTab.NOW_PLAYING -> TvNowPlayingScreen()
+                    TvTab.LIBRARY -> TvLibraryScreen()
+                    TvTab.SEARCH -> TvSearchScreen()
+                    TvTab.QUEUE -> TvQueueScreen()
+                    TvTab.LIGHT_SYNC -> TvLightSyncScreen()
+                    TvTab.SETTINGS -> TvSettingsScreen()
                 }
-                TvTab.LIBRARY -> TvLibraryScreen()
-                TvTab.QUEUE -> TvQueueScreen()
-                TvTab.LIGHT_SYNC -> TvLightSyncScreen()
-                TvTab.SETTINGS -> TvSettingsScreen()
             }
         }
     }
 }
 
+/**
+ * The tabs, inside the TV safe area: a television may crop up to about 5% of each
+ * edge (48 dp across, 27 dp down), so the rail's colour runs to the edge and its
+ * items start inside that margin. They used to sit 12 dp from the corner.
+ */
 @Composable
-private fun TvRail(selected: TvTab, onSelect: (TvTab) -> Unit) {
+private fun TvRail(
+    selected: TvTab,
+    onSelect: (TvTab) -> Unit,
+    selectedRequester: FocusRequester,
+    onFocusArrived: () -> Unit,
+) {
     val accent = LocalAccent.current
+    var hadFocus by remember { mutableStateOf(false) }
     Column(
-        Modifier.fillMaxHeight().width(96.dp).background(Ink2).padding(vertical = 24.dp),
+        Modifier
+            .fillMaxHeight()
+            .background(Ink2)
+            .padding(start = 36.dp)
+            .width(96.dp)
+            .padding(vertical = 27.dp)
+            .onFocusChanged {
+                if (it.hasFocus && !hadFocus) onFocusArrived()
+                hadFocus = it.hasFocus
+            }
+            // Coming back to the rail lands on the tab that is open, not on whichever
+            // item happens to be nearest the control the focus left.
+            .focusRestorer(selectedRequester)
+            .focusGroup(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         TvTab.entries.forEach { entry ->
             val on = entry == selected
             TvTile(
                 onClick = { onSelect(entry) },
-                modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth(),
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .fillMaxWidth()
+                    .then(if (on) Modifier.focusRequester(selectedRequester) else Modifier),
                 shape = RoundedCornerShape(14.dp),
             ) {
                 Column(
-                    Modifier.padding(vertical = 14.dp).fillMaxWidth(),
+                    Modifier.padding(vertical = 12.dp).fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
