@@ -108,6 +108,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val currentQueueItemId: String? = null,
         val playbackSpeed: Float = 1f,
         val dontStopTheMusic: Boolean = false,
+        /** The MA queue's crossfade; null when the server has no per-queue switch. */
+        val crossfade: Boolean? = null,
         val powered: Boolean = true,
         /** The player exposes a power switch, so the control is worth showing. */
         val canPower: Boolean = false,
@@ -643,6 +645,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             currentQueueItemId = queue?.currentQueueItemId,
             playbackSpeed = queue?.playbackSpeed ?: 1f,
             dontStopTheMusic = queue?.dontStopTheMusic == true,
+            crossfade = queue?.crossfadeEnabled,
             powered = p?.powered ?: true,
             canPower = p?.let { "power" in it.supportedFeatures } ?: false,
             radioMode = _radioMode.value,
@@ -1163,6 +1166,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val next = !state.value.dontStopTheMusic
         _queues.update { list -> list.map { if (it.queueId == q) it.copy(dontStopTheMusic = next) else it } }
         act(toastOnError = "Couldn't change Don't stop the music") { repo.setDontStopTheMusic(q, next) }
+    }
+
+    fun toggleCrossfade() {
+        if (isLocal) return
+        val current = state.value.crossfade ?: return
+        val q = streamQueueId()
+        val next = !current
+        _queues.update { list -> list.map { if (it.queueId == q) it.copy(crossfadeEnabled = next) else it } }
+        act(toastOnError = "Couldn't change crossfade") { repo.setCrossfade(q, next) }
     }
 
     // --- radio mode ---------------------------------------------------------

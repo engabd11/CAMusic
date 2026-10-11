@@ -138,6 +138,18 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                         checked = st.dontStopTheMusic,
                         onChange = { viewModel.toggleDontStopTheMusic() },
                     )
+                    // The same queue switch the official Music Assistant app puts beside
+                    // its autoplay badge. Hidden on a server with no per-queue crossfade
+                    // (`crossfade_enabled` absent) rather than shown doing nothing.
+                    st.crossfade?.let { on ->
+                        OptionRow(
+                            icon = Icons.Default.JoinFull,
+                            title = "Crossfade",
+                            subtitle = "Blend the end of each track into the next",
+                            checked = on,
+                            onChange = { viewModel.toggleCrossfade() },
+                        )
+                    }
                 } else {
                     // The same promise on the Navidrome path, kept by different means:
                     // no server to hand the queue to, so the app picks the next few
