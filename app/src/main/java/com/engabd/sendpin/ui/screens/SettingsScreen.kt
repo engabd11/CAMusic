@@ -920,7 +920,7 @@ private fun AdvancedPill(advanced: Boolean, accent: Color, onToggle: () -> Unit)
 }
 
 @Composable
-private fun PasswordPromptDialog(
+internal fun PasswordPromptDialog(
     title: String,
     note: String,
     confirmLabel: String,
