@@ -393,15 +393,26 @@ fun ArtistDetailScreen(
                 }
             }
 
-            // Long-press an album: queue it without leaving the artist.
+            // Long-press an album or a top track: queue it without leaving the artist.
             actionsFor?.let { picked ->
+                // A top track opens this sheet too. Sending it to [playAlbum] worked on
+                // Music Assistant, which takes any uri, and failed on every library this
+                // phone plays itself, which looked the track's id up as an album.
+                val isTrack = picked.mediaType == "track"
                 MediaActionsSheet(
                     item = picked,
                     onClose = { actionsFor = null },
-                    onPlayNow = { viewModel.playAlbum(picked, "replace") },
-                    onPlayNext = { viewModel.playAlbum(picked, "next") },
-                    onAddToQueue = { viewModel.playAlbum(picked, "add") },
-                    onDownload = if (viewModel.canDownload) {
+                    onPlayNow = {
+                        if (isTrack) viewModel.playTrack(picked) else viewModel.playAlbum(picked, "replace")
+                    },
+                    onPlayNext = {
+                        if (isTrack) viewModel.enqueueTrack(picked, "next") else viewModel.playAlbum(picked, "next")
+                    },
+                    onAddToQueue = {
+                        if (isTrack) viewModel.enqueueTrack(picked, "add") else viewModel.playAlbum(picked, "add")
+                    },
+                    // Album-only: [downloadAlbum] resolves its argument as an album.
+                    onDownload = if (viewModel.canDownload && !isTrack) {
                         { viewModel.downloadAlbum(picked) }
                     } else null,
                 )

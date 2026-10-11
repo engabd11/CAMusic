@@ -297,8 +297,16 @@ fun LibraryScreen(
                 item = picked,
                 onClose = { actionsFor = null },
                 onPlayNow = { viewModel.play(picked, "replace") },
-                onPlayNext = { viewModel.play(picked, "next") },
-                onAddToQueue = { viewModel.play(picked, "add") },
+                // A track queues on its own, as the row's swipe does. Through [play]
+                // it queued every track in the list it was held in.
+                onPlayNext = {
+                    if (picked.mediaType == "track") viewModel.enqueueTrack(picked, "next")
+                    else viewModel.play(picked, "next")
+                },
+                onAddToQueue = {
+                    if (picked.mediaType == "track") viewModel.enqueueTrack(picked, "add")
+                    else viewModel.play(picked, "add")
+                },
                 // Offered wherever the library can hand the file over — the same
                 // rule the row's own download button uses, and the same one the
                 // "Download all" bar at the top of the list has used all along.
