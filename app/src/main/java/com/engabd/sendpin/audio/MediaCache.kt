@@ -91,11 +91,16 @@ object MediaCache {
         androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(com.engabd.sendpin.data.Http.stream())
             .setUserAgent(USER_AGENT)
 
-    /** A source that writes into the cache, for [PreCacher]'s CacheWriter. */
+    /**
+     * A source that writes into the cache, for [PreCacher]'s CacheWriter. Guarded like
+     * [factory]: a song fetched ahead from a server that answers with an error document
+     * would otherwise be stored as that document, and played as it, for as long as it
+     * stays in the cache.
+     */
     fun writingSource(context: Context): CacheDataSource =
         CacheDataSource.Factory()
             .setCache(cache(context))
-            .setUpstreamDataSourceFactory(httpUpstream())
+            .setUpstreamDataSourceFactory(NotAudioGuard.Factory(httpUpstream()))
             .setCacheKeyFactory(KEY_FACTORY)
             .createDataSource()
 
