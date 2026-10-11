@@ -329,9 +329,14 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
                 val result = app.imageLoader.execute(req)
                 if (result is SuccessResult) {
                     val bmp = result.drawable.toBitmap()
-                    artworkBytes = ByteArrayOutputStream().use { out ->
-                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        out.toByteArray()
+                    // Off the main thread, and JPEG: a cover is opaque, and a 512 px
+                    // PNG at full quality was encoded on the main thread and then sent
+                    // over binder with every state the car asked for.
+                    artworkBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        ByteArrayOutputStream().use { out ->
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                            out.toByteArray()
+                        }
                     }
                     invalidateState()
                 }

@@ -215,11 +215,41 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         val requested = mediaItems.getOrNull(startIndex) ?: mediaItems.firstOrNull()
         val query = requested?.requestMetadata?.searchQuery
         when {
-            !query.isNullOrBlank() -> bridge.playSearch(query)
+            !query.isNullOrBlank() -> if (!bridge.playSearch(query)) {
+                // Nothing matched. Answering as if it had let media3 go on to play(),
+                // which resumed whatever was there before: ask for one song, hear
+                // another, with no word of why. A failed request does neither, and the
+                // error says why, for as long as it takes to read.
+                reportNoMatch(mediaSession, query)
+                throw NoSuchElementException("Nothing found for \u201C$query\u201D")
+            }
             requested != null -> bridge.play(requested.mediaId)
         }
         MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs)
     }
+
+    /**
+     * Put "Nothing found" on the car's screen, then take it down again: an error left
+     * standing keeps the session in an error state the next real play has to clear.
+     */
+    private fun reportNoMatch(mediaSession: MediaSession, query: String) {
+        runCatching {
+            mediaSession.setPlaybackException(
+                androidx.media3.common.PlaybackException(
+                    "Nothing found for \u201C$query\u201D",
+                    null,
+                    androidx.media3.session.SessionError.ERROR_NOT_SUPPORTED,
+                ),
+            )
+        }
+        noMatchClear?.cancel()
+        noMatchClear = scope.launch {
+            kotlinx.coroutines.delay(NO_MATCH_SHOWN_MS)
+            runCatching { mediaSession.setPlaybackException(null) }
+        }
+    }
+
+    private var noMatchClear: kotlinx.coroutines.Job? = null
 
     /**
      * The slice of this list that `page`/`pageSize` asked for.
@@ -266,6 +296,9 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
 
     private companion object {
         const val DEFAULT_ROOT_CHILDREN_LIMIT = 4
+
+        /** How long "Nothing found" stays on the car's screen. */
+        const val NO_MATCH_SHOWN_MS = 5_000L
 
         /**
          * `MediaBrowserServiceCompat.BrowserRoot.EXTRA_MEDIA_ART_SIZE_HINT_PIXELS`.
