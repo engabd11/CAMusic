@@ -5,6 +5,11 @@ import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaSearchResults
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -69,6 +74,9 @@ class MpdClient(
 
         /** Songs per `playlistadd` command list — see [addToPlaylist]. */
         private const val PLAYLIST_CHUNK = 200
+
+        /** What the app follows over [idleEvents]: transport, volume, queue and modes. */
+        const val IDLE_SUBSYSTEMS = "player mixer playlist options"
 
         /** The MPD protocol's response terminator for a successful command. */
         private const val OK = "OK"
@@ -298,6 +306,61 @@ class MpdClient(
                 try { socket.close() } catch (_: Exception) {}
             }
         }
+
+    /**
+     * MPD's own change notifications: one long-lived connection parked in `idle`,
+     * emitting the subsystems that changed (`player`, `mixer`, `playlist`,
+     * `options`) each time MPD answers, then idling again.
+     *
+     * This is how MPD clients are meant to follow the server. The alternative — a
+     * fresh connection every second for `status` — is what this app did, paused or
+     * not. MPD exempts a client in `idle` from its connection timeout, so the socket
+     * has no read timeout; cancelling the collector closes it, which is what unblocks
+     * the read. Any failure ends the flow with an [MpdException]; the caller decides
+     * when to try again.
+     */
+    fun idleEvents(subsystems: String = IDLE_SUBSYSTEMS): Flow<Set<String>> = callbackFlow {
+        val socket = Socket()
+        val reader = launch(Dispatchers.IO) {
+            try {
+                val (host, port) = hostPort
+                socket.connect(InetSocketAddress(host, port), 5000)
+                socket.soTimeout = 0
+                val input = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+                val output = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+                val greeting = input.readLine()
+                if (greeting == null || !greeting.startsWith("OK")) {
+                    throw MpdException("That address didn't answer like an MPD server")
+                }
+                if (password.isNotBlank()) {
+                    output.write("password ${quote(password)}\n")
+                    output.flush()
+                    val auth = input.readLine()
+                    if (auth == null || auth.startsWith(ACK)) throw MpdException("MPD rejected the password", isAuth = true)
+                }
+                while (isActive) {
+                    output.write("idle $subsystems\n")
+                    output.flush()
+                    val changed = mutableSetOf<String>()
+                    while (true) {
+                        val line = input.readLine() ?: throw MpdException("MPD closed the connection")
+                        if (line == OK) break
+                        if (line.startsWith(ACK)) throw MpdException(parseAck(line))
+                        parseLine(line)?.takeIf { it.first == "changed" }?.let { changed += it.second }
+                    }
+                    if (changed.isNotEmpty()) send(changed)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                close(e as? MpdException ?: MpdException(e.message ?: "Lost the connection to ${base()}"))
+            }
+        }
+        awaitClose {
+            runCatching { socket.close() }
+            reader.cancel()
+        }
+    }
 
     /**
      * Quote a string per MPD's quoting rules.

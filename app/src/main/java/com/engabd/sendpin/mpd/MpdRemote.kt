@@ -29,6 +29,30 @@ import com.engabd.sendpin.audio.RemoteState
 class MpdRemote(private val client: MpdClient) : RemotePlayback {
 
     /**
+     * MPD's idle notifications as "look again" signals, kept alive across drops: a
+     * lost connection is retried with a growing pause (1 s up to 30 s), and a working
+     * one resets it. Polling covers the gaps — see [com.engabd.sendpin.audio.RemotePollPolicy].
+     */
+    override fun changes(): kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flow {
+        var failures = 0
+        while (true) {
+            try {
+                client.idleEvents().collect {
+                    failures = 0
+                    emit(Unit)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                failures++
+            }
+            // A server that answered and then went away is told the same as one that
+            // never answered: wait, then try again.
+            kotlinx.coroutines.delay(com.engabd.sendpin.audio.RemotePollPolicy.retryAfterMs(failures.coerceAtLeast(1)))
+        }
+    }
+
+    /**
      * The MPD path for a track, or null when it isn't MPD's to play.
      *
      * `scrobbleId` rather than `id`: `id` is whatever the queue built the entry

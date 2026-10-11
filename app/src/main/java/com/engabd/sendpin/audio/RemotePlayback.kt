@@ -93,6 +93,17 @@ interface RemotePlayback {
      * position on by hand until an answer comes back.
      */
     suspend fun poll(): RemoteState?
+
+    /**
+     * The player telling us it changed — a track change, a pause, a seek or a volume
+     * change made anywhere, on this phone or on the box itself — or null when it has
+     * no way to say so and has to be polled.
+     *
+     * Each emission is only "look again"; [poll] is still what says what changed.
+     * With this, [LocalPlayer] polls rarely and re-reads at once on a push; without
+     * it, it polls on a timer as it always has.
+     */
+    fun changes(): kotlinx.coroutines.flow.Flow<Unit>? = null
 }
 
 /** One reading of a [RemotePlayback]'s transport. */
