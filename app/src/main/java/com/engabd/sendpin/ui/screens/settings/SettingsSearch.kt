@@ -51,6 +51,7 @@ internal object SettingsSearch {
         SettingsEntry("Signal path", "format sample rate bit depth codec quality decoder sink", AUDIO, AUDIO_OUTPUT_ROUTE),
         SettingsEntry("Output sample rate", "44.1 48 96 192 khz resample rate", AUDIO, AUDIO_OUTPUT_ROUTE),
         SettingsEntry("Digital volume on DACs", "usb dac volume hardware software", AUDIO, AUDIO_OUTPUT_ROUTE),
+        SettingsEntry("USB bit-perfect when a DAC is plugged in", "usb dac plug in automatic switch auto bit-perfect bitperfect", AUDIO, AUDIO_OUTPUT_ROUTE),
         SettingsEntry("Play at original quality", "music assistant original transcode bypass resample", AUDIO, AUDIO_OUTPUT_ROUTE),
         SettingsEntry("Equaliser", "eq equalizer bass treble ten band graphic presets parametric autoeq", AUDIO, AUDIO_EQ_ROUTE),
         SettingsEntry("Automatic headroom", "preamp clipping distortion eq", AUDIO, AUDIO_EQ_ROUTE),

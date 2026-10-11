@@ -712,6 +712,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
             appScope.launch {
                 AppSettings(this@SendpinApp).usbBitperfect.collect { usbDacWatcher.bitperfectSelected = it }
             }
+            appScope.launch {
+                AppSettings(this@SendpinApp).usbAutoSwitch.collect { usbDacWatcher.autoSwitchEnabled = it }
+            }
             // The DAC CAMusic was playing through was unplugged: pause, as for unplugged
             // headphones, rather than play on into nothing (or out of the speaker).
             appScope.launch {

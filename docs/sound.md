@@ -59,6 +59,9 @@ Playback is built to be worth good headphones and a good DAC.
     CAMusic" there and it stops asking. For a DAC with a microphone (the BTD 700 has one),
     Android only shows that box to apps allowed to use the microphone; the USB bit-perfect
     setting says so and offers the permission. CAMusic never records from the DAC.
+  - **Switching to it by itself**: plugging a USB DAC in switches to USB bit-perfect once
+    Android lets CAMusic use it, and unplugging it switches back to the mode you had after
+    20 s. A mode you pick yourself stays picked. Turn it off under Output & signal path.
   - **Asynchronous DACs**: the driver streams at the file's exact rate and does not follow
     a DAC's own clock yet, so on a long session an asynchronous DAC may click now and then.
     The signal path says when a DAC is asynchronous.

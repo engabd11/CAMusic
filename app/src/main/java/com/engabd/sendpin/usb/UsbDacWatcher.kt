@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.asSharedFlow
  * - The same DAC back within seconds (a DAC that restarted itself; see [UsbDacReturn])
  *   is announced on [returned] once CAMusic may use it, so the song carries on through
  *   it without anyone pressing play.
+ * - A DAC plugged in, once allowed, switches the output to USB bit-perfect, and its
+ *   unplugging switches back ([UsbOutputAutoSwitch]), when that setting is on.
  * - [recoverOrphans] hands a DAC back to Android when a previous run died holding it.
  *
  * Permission on plug-in is Android's own business here: with USB bit-perfect selected,
@@ -49,9 +51,23 @@ class UsbDacWatcher(private val context: Context) {
     var bitperfectSelected = false
         set(value) {
             field = value
-            setAttachEntryEnabled(value)
+            setAttachEntryEnabled(value || autoSwitchEnabled)
             if (!value) dropouts.cancel()
         }
+
+    /**
+     * Whether plugging a DAC in switches to USB bit-perfect ([UsbOutputAutoSwitch]); set by
+     * the app from the setting. Needs the attach entry too: it is what lets Android ask,
+     * or with "always" simply allow, at the moment the DAC goes in.
+     */
+    @Volatile
+    var autoSwitchEnabled = false
+        set(value) {
+            field = value
+            setAttachEntryEnabled(value || bitperfectSelected)
+        }
+
+    private val autoSwitch = UsbOutputAutoSwitch(context)
 
     private val usb = context.getSystemService(UsbManager::class.java)
 
@@ -70,10 +86,13 @@ class UsbDacWatcher(private val context: Context) {
                     // Not held any more is no proof it was not playing: a stream that
                     // died a moment before this broadcast already failed over and
                     // closed its session. UsbBitperfectOutput reports that loss itself.
+                    autoSwitch.onDacDetached()
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    if (!bitperfectSelected) return
                     val permitted = usb?.hasPermission(device) == true
+                    // Not yet allowed, Android asks, and UsbAttachActivity switches after.
+                    if (permitted) autoSwitch.onDacAllowed()
+                    if (!bitperfectSelected) return
                     if (dropouts.attached(keyOf(device), SystemClock.elapsedRealtime(), permitted)) {
                         Log.i(TAG, "${device.productName} is back: carrying on")
                         _returned.tryEmit(Unit)
@@ -106,7 +125,9 @@ class UsbDacWatcher(private val context: Context) {
      * Android's dialog, or chose "always" before. Either way it is allowed now.
      */
     fun onAttachHandled(device: UsbDevice) {
-        if (!bitperfectSelected || usb?.hasPermission(device) != true) return
+        if (usb?.hasPermission(device) != true) return
+        autoSwitch.onDacAllowed()
+        if (!bitperfectSelected) return
         if (dropouts.permitted(keyOf(device), SystemClock.elapsedRealtime())) {
             Log.i(TAG, "${device.productName} allowed again: carrying on")
             _returned.tryEmit(Unit)
@@ -142,9 +163,9 @@ class UsbDacWatcher(private val context: Context) {
 
     /**
      * The manifest's USB-attach entry ([UsbAttachActivity]) is enabled only while USB
-     * bit-perfect is selected. With it enabled, Android offers to open CAMusic for the DAC,
-     * and "always" makes the USB permission stick; with it disabled, plugging a DAC in
-     * never involves CAMusic.
+     * bit-perfect is selected or a DAC switches to it ([autoSwitchEnabled]). With it
+     * enabled, Android offers to open CAMusic for the DAC, and "always" makes the USB
+     * permission stick; with it disabled, plugging a DAC in never involves CAMusic.
      */
     private fun setAttachEntryEnabled(enabled: Boolean) {
         runCatching {

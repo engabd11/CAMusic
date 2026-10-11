@@ -13,9 +13,10 @@ import com.engabd.sendpin.SendpinApp
  * to open for a USB device, answering that dialog grants the USB permission, and choosing
  * "always" there is the one way to make the permission stick across unplugging — so USB
  * bit-perfect does not ask again every time the DAC goes back in. Android starts this
- * once the DAC is allowed, which is the moment a song paused by a dropout can carry on;
- * see [UsbDacWatcher.onAttachHandled]. It shows nothing and closes at once. Enabled only
- * while USB bit-perfect is selected; see [UsbDacWatcher.bitperfectSelected].
+ * once the DAC is allowed, which is the moment to switch to USB bit-perfect and for a song
+ * paused by a dropout to carry on; see [UsbDacWatcher.onAttachHandled]. It shows nothing
+ * and closes at once. Enabled only while USB bit-perfect is selected or switched to on
+ * plug-in; see [UsbDacWatcher.bitperfectSelected] and [UsbDacWatcher.autoSwitchEnabled].
  */
 class UsbAttachActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
