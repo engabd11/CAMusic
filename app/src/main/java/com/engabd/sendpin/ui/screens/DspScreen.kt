@@ -676,42 +676,13 @@ private fun SaveErrorNotice(message: String) {
 
 private fun fmtDb(gain: Float): String = "%+.1f dB".format(gain)
 
-private fun fmtFreq(hz: Float): String = when {
-    hz >= 1000f -> "%.1f kHz".format(hz / 1000f)
-    else -> "%.0f Hz".format(hz)
-}
-
-/** 20 Hz → 0, 20 kHz → 1, logarithmic. */
-private fun freqToSlider(hz: Float): Float {
-    val minHz = 20.0
-    val maxHz = 20_000.0
-    val clamped = hz.toDouble().coerceIn(minHz, maxHz)
-    return (Math.log(clamped / minHz) / Math.log(maxHz / minHz)).toFloat().coerceIn(0f, 1f)
-}
-
-private fun sliderToFreq(s: Float): Float {
-    val minHz = 20.0
-    val maxHz = 20_000.0
-    return (minHz * Math.pow(maxHz / minHz, s.toDouble())).toFloat()
-}
+// fmtFreq, freqToSlider/sliderToFreq and qToSlider/sliderToQ are shared with this
+// phone's own equaliser: see EqControls.kt.
 
 /** -12 dB → 0, 0 dB → 0.5, +12 dB → 1. */
 private fun gainToSlider(db: Float): Float = ((db + 12f) / 24f).coerceIn(0f, 1f)
 private fun sliderToGain(s: Float): Float = (s * 24f - 12f)
 
-/** 0.1 → 0, 1.0 → 0.5, 10.0 → 1, logarithmic. */
-private fun qToSlider(q: Float): Float {
-    val minQ = 0.1
-    val maxQ = 10.0
-    val clamped = q.toDouble().coerceIn(minQ, maxQ)
-    return (Math.log(clamped / minQ) / Math.log(maxQ / minQ)).toFloat().coerceIn(0f, 1f)
-}
-
-private fun sliderToQ(s: Float): Float {
-    val minQ = 0.1
-    val maxQ = 10.0
-    return (minQ * Math.pow(maxQ / minQ, s.toDouble())).toFloat()
-}
 
 /**
  * Everything in DSP below the title bar.

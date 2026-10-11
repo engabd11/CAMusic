@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -22,7 +24,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.engabd.sendpin.audio.AutoEqParser
 import com.engabd.sendpin.audio.Biquad
+import com.engabd.sendpin.audio.EqPreset
+import com.engabd.sendpin.audio.EqProfiles
+import com.engabd.sendpin.audio.EqSelection
 import com.engabd.sendpin.audio.LocalDsp
 import com.engabd.sendpin.audio.OutputMode
 import com.engabd.sendpin.audio.SignalPath
@@ -40,11 +46,11 @@ private const val RANGE_DB = 12f
 /**
  * The equaliser for audio this phone decodes.
  *
- * A ten-band graphic EQ rather than the parametric editor the Music Assistant
- * panel offers, and that is a deliberate difference rather than a shortfall: MA's
- * DSP is a server-side pipeline someone sets up once for a room, while this is the
- * thing you reach for on a train because the headphones are thin. Ten sliders and a
- * preset is the right shape for that; frequency and Q per band is not.
+ * Ten sliders first, because that is the thing you reach for on a train when the
+ * headphones are thin. Parametric (type, frequency and Q per band) is one switch
+ * away, and is what an AutoEQ correction for a particular headphone arrives as.
+ * Curves can be saved by name, and kept one per output, so the headphones' curve
+ * comes back when they reconnect and the speaker stays flat.
  *
  * Writes straight to settings on every change. The processor picks the new curve up
  * at the top of the next buffer, so a slider moves the sound under the finger.
@@ -67,12 +73,18 @@ private const val RANGE_DB = 12f
  * wanted, and the settings card simply lets it size itself inside the padding a
  * [com.engabd.sendpin.ui.screens.settings.SettingsCard] already applies.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LocalEqBody(accent: Color, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val settings = remember(context) { AppSettings(context) }
     val scope = rememberCoroutineScope()
-    val config by settings.localDsp.collectAsStateWithLifecycle(initialValue = LocalDsp.Config())
+    val global by settings.localDsp.collectAsStateWithLifecycle(initialValue = LocalDsp.Config())
+    val profiles by settings.eqProfiles.collectAsStateWithLifecycle(initialValue = EqProfiles())
+    val output by com.engabd.sendpin.SendpinApp.instance.outputRoute.current.collectAsStateWithLifecycle()
+    // The curve on screen is the one running: this output's own when there is one.
+    val config = EqSelection.effective(global, profiles, output)
+    val forOutput = EqSelection.editsOutput(profiles, output)
     // Some output modes build the player with no processors at all — see
     // TapRenderersFactory and ExclusiveOutput — so this curve has nothing to run
     // on while one is selected. Kept visible rather than hidden: it still edits the
@@ -87,9 +99,20 @@ fun LocalEqBody(accent: Color, modifier: Modifier = Modifier) {
     // reached the audio.
     val signal by SignalPath.state.collectAsStateWithLifecycle()
     val bypassed = signal.processorsBypassed
+    val live = config.enabled && !bypassed
 
+    var saving by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
+    var managing by remember { mutableStateOf<EqPreset?>(null) }
+
+    // An edit lands where the curve on screen came from: this output's own curve
+    // when "a curve for each output" is on (made from the shared one on first use),
+    // the shared curve otherwise.
     fun update(next: LocalDsp.Config) {
-        scope.launch { settings.setLocalDsp(next) }
+        scope.launch {
+            if (forOutput) settings.updateEqProfiles { it.withOutputCurve(output, next) }
+            else settings.setLocalDsp(next)
+        }
     }
 
     Column(
@@ -110,10 +133,11 @@ fun LocalEqBody(accent: Color, modifier: Modifier = Modifier) {
 
         ToggleRow(
             title = "Equaliser",
-            subtitle = if (bypassed)
-                "Inert on ${OutputMode.PURE.title} output — see the note above"
-            else
-                "Ten bands, applied to music this phone plays itself",
+            subtitle = when {
+                bypassed -> "Inert on ${OutputMode.PURE.title} output — see the note above"
+                config.parametric -> "${config.bands.count { it.enabled }} parametric bands, on music this phone plays itself"
+                else -> "Ten bands, applied to music this phone plays itself"
+            },
             checked = config.enabled,
             accent = accent,
             enabled = !bypassed,
@@ -128,29 +152,81 @@ fun LocalEqBody(accent: Color, modifier: Modifier = Modifier) {
                 "clipping.",
         ) { update(config.copy(enabled = it)) }
 
-        // The sliders. Vertical would look more like a rack, and would give each
-        // band about eighteen pixels of travel on a phone — so they are horizontal
-        // rows, which is also what makes the frequency and the gain readable.
-        // Still drawn while Exclusive output is on - see the note at the top of
-        // this column - just disabled, same as the toggle above.
-        config.bands.forEachIndexed { i, band ->
-            BandRow(
-                band = band,
-                accent = accent,
-                enabled = config.enabled && !bypassed,
-                onGain = { db ->
-                    update(config.copy(bands = config.bands.toMutableList().also {
-                        it[i] = band.copy(gainDb = db)
-                    }))
-                },
-            )
+        ToggleRow(
+            title = "A curve for each output",
+            subtitle = when {
+                !profiles.perOutput -> "One curve, whatever is playing the music"
+                profiles.byOutput.containsKey(output.id) -> "Now: ${output.label}"
+                else -> "Now: ${output.label}. Using the shared curve until you change it"
+            },
+            checked = profiles.perOutput,
+            accent = accent,
+            info = "Headphones, a Bluetooth speaker, a USB DAC and the phone's own " +
+                "speaker each keep their own curve, and it comes back by itself when " +
+                "that output does.\n\nAn output starts from the shared curve, and gets " +
+                "its own the first time you change something while it is playing.\n\n" +
+                "Bluetooth devices are told apart by address when Android shares it " +
+                "(it needs the nearby-devices permission), by name otherwise.",
+        ) { on -> scope.launch { settings.updateEqProfiles { it.copy(perOutput = on) } } }
+
+        // Ten fixed sliders, or a band list with type, frequency and Q.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            EqChip("Ten bands", accent, highlighted = !config.parametric) {
+                if (config.parametric) {
+                    // The ten sliders only mean anything on their own centres, so a
+                    // parametric curve does not carry over: back to ten flat bands.
+                    update(config.copy(parametric = false, bands = LocalDsp.Config.defaultBands(), autoPreamp = true))
+                }
+            }
+            EqChip("Parametric", accent, highlighted = config.parametric) {
+                if (!config.parametric) update(config.copy(parametric = true))
+            }
+        }
+
+        if (!config.parametric) {
+            // The sliders. Vertical would look more like a rack, and would give each
+            // band about eighteen pixels of travel on a phone — so they are horizontal
+            // rows, which is also what makes the frequency and the gain readable.
+            // Still drawn while Exclusive output is on - see the note at the top of
+            // this column - just disabled, same as the toggle above.
+            config.bands.forEachIndexed { i, band ->
+                BandRow(
+                    band = band,
+                    accent = accent,
+                    enabled = live,
+                    onGain = { db ->
+                        update(config.copy(bands = config.bands.toMutableList().also {
+                            it[i] = band.copy(gainDb = db)
+                        }))
+                    },
+                )
+            }
+        } else {
+            config.bands.forEachIndexed { i, band ->
+                ParametricBandRow(
+                    band = band,
+                    accent = accent,
+                    enabled = live,
+                    onChange = { changed ->
+                        update(config.copy(bands = config.bands.toMutableList().also { it[i] = changed }))
+                    },
+                    onRemove = {
+                        update(config.copy(bands = config.bands.toMutableList().also { it.removeAt(i) }))
+                    },
+                )
+            }
+            if (config.bands.size < AutoEqParser.MAX_BANDS) {
+                EqChip("Add a band", accent) {
+                    update(config.copy(bands = config.bands + LocalDsp.Band(frequency = 1_000f, q = 1f)))
+                }
+            }
         }
 
         val preamp = config.effectivePreampDb()
         ToggleRow(
             title = "Automatic headroom",
             subtitle = when {
-                !config.autoPreamp -> "Off. A boosted curve on a loud track will clip."
+                !config.autoPreamp -> "Off. Set by hand below; a boosted curve on a loud track can clip."
                 preamp < 0f -> "Pulling back ${"%.1f".format(-preamp)} dB so the boosts do not clip"
                 else -> "Nothing to pull back - no band is boosted"
             },
@@ -164,17 +240,82 @@ fun LocalEqBody(accent: Color, modifier: Modifier = Modifier) {
                 "signal down by roughly what the boosts add, so the shape of the curve " +
                 "survives and the peaks do not.\n\nTip: leave it on. Turning it off is " +
                 "for someone who has measured their own headroom and wants the level " +
-                "back.",
-        ) { update(config.copy(autoPreamp = it)) }
+                "back. An AutoEQ import turns it off and brings its own preamp.",
+        ) { update(config.copy(autoPreamp = it, preampDb = if (it) config.preampDb else preamp)) }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            EqPreset("Flat", accent) { update(config.copy(bands = LocalDsp.Config.defaultBands())) }
-            EqPreset("Bass", accent) { update(config.copy(bands = curve(listOf(6f, 5f, 3f, 1f, 0f, 0f, 0f, 0f, 0f, 0f)))) }
-            EqPreset("Vocal", accent) { update(config.copy(bands = curve(listOf(-2f, -2f, 0f, 1f, 3f, 4f, 3f, 1f, 0f, 0f)))) }
-            EqPreset("Bright", accent) { update(config.copy(bands = curve(listOf(0f, 0f, 0f, 0f, 0f, 1f, 2f, 4f, 5f, 5f)))) }
+        if (!config.autoPreamp) {
+            EqLabelSlider("Preamp", "%+.1f dB".format(config.preampDb), dbToSlider(config.preampDb, -20f, 6f), live) {
+                update(config.copy(preampDb = sliderToDb(it, -20f, 6f)))
+            }
+        }
+
+        // Presets, your saved curves, and the two ways to add one.
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            EqChip("Flat", accent) { update(config.copy(parametric = false, bands = LocalDsp.Config.defaultBands())) }
+            EqChip("Bass", accent) { update(config.copy(parametric = false, bands = curve(listOf(6f, 5f, 3f, 1f, 0f, 0f, 0f, 0f, 0f, 0f)))) }
+            EqChip("Vocal", accent) { update(config.copy(parametric = false, bands = curve(listOf(-2f, -2f, 0f, 1f, 3f, 4f, 3f, 1f, 0f, 0f)))) }
+            EqChip("Bright", accent) { update(config.copy(parametric = false, bands = curve(listOf(0f, 0f, 0f, 0f, 0f, 1f, 2f, 4f, 5f, 5f)))) }
+            profiles.saved.forEach { preset ->
+                EqChip(preset.name, accent, highlighted = sameCurve(preset.config, config)) { managing = preset }
+            }
+            EqChip("Save…", accent) { saving = true }
+            EqChip("Import AutoEQ…", accent) { importing = true }
+        }
+
+        if (profiles.perOutput && profiles.byOutput.isNotEmpty()) {
+            // The playing output by the name Android gives it now (a renamed headset
+            // shows its new name), the rest by the name they had when last heard.
+            val names = profiles.byOutput.keys.map { id ->
+                if (id == output.id) "${output.label} (playing now)" else profiles.outputNames[id] ?: id
+            }
+            com.engabd.sendpin.ui.screens.settings.Note("Own curves: " + names.joinToString(", "))
+            if (profiles.byOutput.containsKey(output.id)) {
+                EqChip("Forget this output's curve", accent) {
+                    scope.launch { settings.updateEqProfiles { it.withoutOutputCurve(output.id) } }
+                }
+            }
         }
     }
+
+    if (saving) {
+        SaveEqDialog(accent, profiles.saved, onDismiss = { saving = false }) { name ->
+            saving = false
+            scope.launch { settings.updateEqProfiles { it.withSaved(name, config.copy(enabled = true)) } }
+        }
+    }
+    if (importing) {
+        ImportAutoEqDialog(accent, onDismiss = { importing = false }) { name, result ->
+            importing = false
+            update(result.config)
+            scope.launch { settings.updateEqProfiles { it.withSaved(name, result.config) } }
+            if (result.skipped > 0) {
+                android.widget.Toast.makeText(
+                    context,
+                    "Imported. ${result.skipped} filter${if (result.skipped == 1) "" else "s"} of a kind this equaliser has no section for were left out.",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+    }
+    managing?.let { preset ->
+        ManageEqDialog(
+            preset, accent,
+            onDismiss = { managing = null },
+            onUse = {
+                managing = null
+                update(preset.config.copy(enabled = true))
+            },
+            onDelete = {
+                managing = null
+                scope.launch { settings.updateEqProfiles { it.withoutSaved(preset.name) } }
+            },
+        )
+    }
 }
+
+/** Whether two curves sound the same, ignoring the on switch. */
+private fun sameCurve(a: LocalDsp.Config, b: LocalDsp.Config): Boolean =
+    a.copy(enabled = true) == b.copy(enabled = true)
 
 /** A named curve as bands, on the default centres. */
 private fun curve(gains: List<Float>): List<LocalDsp.Band> =
@@ -228,21 +369,6 @@ private fun BandRow(
             modifier = Modifier.width(40.dp),
         )
     }
-}
-
-@Composable
-private fun EqPreset(label: String, accent: Color, onClick: () -> Unit) {
-    Text(
-        label,
-        color = TextSecondary, fontFamily = AppFont,
-        fontWeight = FontWeight.Bold, fontSize = 12.sp,
-        modifier = Modifier
-            .clip(RoundedCornerShape(100))
-            .background(Glass)
-            .border(1.dp, Hairline, RoundedCornerShape(100))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp, vertical = 7.dp),
-    )
 }
 
 /**
