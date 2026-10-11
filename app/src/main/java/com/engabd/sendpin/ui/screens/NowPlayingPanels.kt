@@ -246,7 +246,7 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
 
     when (val l = load) {
         is Load.Loading, Load.Idle -> PanelSpinner()
-        is Load.Failed -> PanelMessage(Icons.Default.CloudOff, l.message)
+        is Load.Failed -> PanelMessage(Icons.Default.CloudOff, l.message) { viewModel.loadQueue() }
         is Load.Ready -> {
             if (l.value.isEmpty()) {
                 PanelMessage(Icons.AutoMirrored.Filled.QueueMusic, "The queue is empty.")
@@ -563,7 +563,7 @@ private fun ColumnScope.SimilarPanel(viewModel: NowPlayingViewModel) {
 
     when (val l = load) {
         is Load.Loading, Load.Idle -> PanelSpinner()
-        is Load.Failed -> PanelMessage(Icons.Default.CloudOff, l.message)
+        is Load.Failed -> PanelMessage(Icons.Default.CloudOff, l.message) { viewModel.loadSimilar() }
         is Load.Ready -> {
             if (l.value.isEmpty()) {
                 // Two different nothings, said as one: no server answer, and nothing
@@ -817,7 +817,7 @@ private fun ColumnScope.PanelSpinner() {
 }
 
 @Composable
-private fun ColumnScope.PanelMessage(icon: ImageVector, message: String) {
+private fun ColumnScope.PanelMessage(icon: ImageVector, message: String, onRetry: (() -> Unit)? = null) {
     Column(
         Modifier.weight(1f).fillMaxWidth().padding(horizontal = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -829,5 +829,11 @@ private fun ColumnScope.PanelMessage(icon: ImageVector, message: String) {
             message, color = TextMuted, fontFamily = AppFont, fontSize = 12.sp, lineHeight = 18.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
+        // A failed load used to be a sentence and nothing else: the only way to ask
+        // again was to close the sheet and open it.
+        if (onRetry != null) {
+            Spacer(Modifier.height(14.dp))
+            Pill("Retry", true, onClick = onRetry)
+        }
     }
 }

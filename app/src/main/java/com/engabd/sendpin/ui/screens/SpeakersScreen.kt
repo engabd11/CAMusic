@@ -81,7 +81,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
             }
 
             if (error != null) {
-                ErrorRow(error!!)
+                ErrorRow(error!!, onRetry = viewModel::manualRefresh)
             }
 
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = navBarInset() + 16.dp)) {
@@ -164,14 +164,19 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
 }
 
 @Composable
-private fun ErrorRow(msg: String) {
+private fun ErrorRow(msg: String, onRetry: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp).clip(RoundedCornerShape(12.dp))
-            .background(WarnAmber.a(0.12f)).border(1.dp, WarnAmber.a(0.3f), RoundedCornerShape(12.dp)).padding(14.dp),
+            .background(WarnAmber.a(0.12f)).border(1.dp, WarnAmber.a(0.3f), RoundedCornerShape(12.dp))
+            .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Icon(Icons.Default.CloudOff, null, tint = WarnAmber, modifier = Modifier.size(16.dp))
-        Text(msg, color = TextSecondary, fontSize = 12.sp)
+        Text(msg, color = TextSecondary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+        Box(
+            Modifier.clip(RoundedCornerShape(100)).clickable(onClick = onRetry)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) { Text("Retry", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
     }
 }
 

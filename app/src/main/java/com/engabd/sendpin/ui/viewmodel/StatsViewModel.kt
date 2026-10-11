@@ -64,6 +64,8 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         val losslessShare: Float? = null,
         /** Oldest row, so "all time" can say how far back it goes. */
         val earliest: Long? = null,
+        /** The history could not be read; the screen offers a retry. */
+        val error: String? = null,
     )
 
     private val _state = MutableStateFlow(State())
@@ -81,8 +83,24 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         viewModelScope.launch {
+            // A query that throws (a database being migrated, a disk full) used to end
+            // this coroutine with the screen stuck on "Loading…" for good - or take the
+            // app down with it. It is said instead, with a retry.
+            try {
+                load()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("Stats", "couldn't read listening history", e)
+                _state.value = _state.value.copy(loading = false, error = "Couldn't read your listening history.")
+            }
+        }
+    }
+
+    private suspend fun load() {
+        run {
             val window = _state.value.window
-            _state.value = _state.value.copy(loading = true)
+            _state.value = _state.value.copy(loading = true, error = null)
             val since = window.since(System.currentTimeMillis())
 
             val artists = dao.topArtists(since, limit = 12)

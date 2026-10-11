@@ -499,6 +499,8 @@ private fun Browse(
     val shelves by viewModel.shelves.collectAsStateWithLifecycle()
     val jobs by viewModel.downloadJobs.collectAsStateWithLifecycle()
     val offline by viewModel.offline.collectAsStateWithLifecycle()
+    val shelfFailures by viewModel.shelfFailures.collectAsStateWithLifecycle()
+    val refreshingNow by viewModel.refreshing.collectAsStateWithLifecycle()
 
     // Collected once for the whole grid. These used to be read *inside* ItemRow and
     // its children, so every visible row stood up three flow collectors of its own,
@@ -638,247 +640,275 @@ private fun Browse(
         }
     }
 
-    LazyVerticalGrid(
-        state = gridState,
-        columns = GridCells.Fixed(gridCols),
-        modifier = Modifier.fillMaxSize().imePadding(),
-        contentPadding = PaddingValues(start = LibraryEdge, end = LibraryEdge, top = 4.dp, bottom = navBarInset() + 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    // Pull down to reload what is on screen - the same as the refresh button, where a
+    // thumb already is. Nothing else about the grid changes.
+    androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+        isRefreshing = refreshingNow,
+        onRefresh = { viewModel.refresh() },
+        modifier = Modifier.fillMaxSize(),
     ) {
-        // Running on downloads alone is a working state, not a failure — say so
-        // once, at the top, and let the rest of the screen behave normally.
-        if (offline) {
-            item(span = { full(gridCols) }) { OfflineNotice(activeConfig?.displayName) { viewModel.connect() } }
-        }
-        // Something another device left mid-track. An offer, not an interruption:
-        // it sits above the shelves and goes away when dismissed or superseded.
-        savedQueue?.let { saved ->
-            item(span = { full(gridCols) }, key = "resume") {
-                ResumeCard(
-                    saved = saved,
-                    onResume = { viewModel.resumeSavedQueue() },
-                    onDismiss = { viewModel.dismissSavedQueue() },
-                )
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Fixed(gridCols),
+            modifier = Modifier.fillMaxSize().imePadding(),
+            contentPadding = PaddingValues(start = LibraryEdge, end = LibraryEdge, top = 4.dp, bottom = navBarInset() + 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // Running on downloads alone is a working state, not a failure — say so
+            // once, at the top, and let the rest of the screen behave normally.
+            if (offline) {
+                item(span = { full(gridCols) }) { OfflineNotice(activeConfig?.displayName) { viewModel.connect() } }
             }
-        }
-        if (error != null) {
-            item(span = { full(gridCols) }) { SearchErrorState(error!!) { viewModel.connect() } }
-            return@LazyVerticalGrid
-        }
-        if (loading) {
-            items(6, span = { full(gridCols) }, contentType = { "skeleton" }) { SkeletonRow() }
-            return@LazyVerticalGrid
-        }
-
-        // Which libraries this search asks — only when there is more than one to ask.
-        if (searchOpen && canSearchAll) {
-            item(key = "search_scope", span = { full(gridCols) }, contentType = { "scope" }) {
-                androidx.compose.foundation.layout.Row(
-                    Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
-                ) {
-                    ToggleChip("This library", !searchAll) { viewModel.setSearchScope(false) }
-                    ToggleChip("All libraries", searchAll) { viewModel.setSearchScope(true) }
-                }
-            }
-        }
-
-        // The first query of a session has no previous results to hold on to, and
-        // falling through to the browse shelves under a search header reads as the
-        // search having done nothing. Every query after this one keeps its old results
-        // on screen instead — see the spinner in the search field.
-        if (searchOpen && s == null && searching) {
-            items(6, span = { full(gridCols) }, contentType = { "skeleton" }) { SkeletonRow() }
-            return@LazyVerticalGrid
-        }
-
-        if (s != null) {
-            searchSection("Artists", s.artists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
-            searchSection("Albums", s.albums, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
-            searchSection("Tracks", s.tracks, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
-            searchSection("Playlists", s.playlists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
-            if (s.artists.isEmpty() && s.albums.isEmpty() && s.tracks.isEmpty() && s.playlists.isEmpty()) {
-                item(span = { full(gridCols) }) { SearchEmptyState() }
-            }
-            return@LazyVerticalGrid
-        }
-
-        if (isDownloads) {
-            downloadsSection(node.items, jobs, viewModel, rows, gridCols)
-            return@LazyVerticalGrid
-        }
-
-        // Files still arriving, at the top of the Downloads library where they are
-        // the one thing on screen about to change. This is all that survives of the
-        // bespoke flat rendering the library replaced.
-        if (isDownloadsLibrary) {
-            downloadJobsSection(jobs, viewModel, gridCols)
-            if (depth == 0 && onManageDownloads != null) {
-                item(key = "dl_manage", span = { full(gridCols) }, contentType = { "manage" }) {
-                    ManageDownloadsRow(onManageDownloads)
-                }
-            }
-        }
-
-        if (depth == 0 && spotlight != null) {
-            val pick = spotlight
-            item(key = "spotlight", span = { full(gridCols) }, contentType = { "spotlight" }) {
-                SpotlightCard(
-                    item = pick,
-                    onOpen = { onAlbumClick(pick) },
-                    onPlay = { viewModel.play(pick) },
-                )
-            }
-        }
-        if (depth == 0) {
-            // Above the categories, because it is the one thing here that answers
-            // "I want music" rather than "I want to find something" — and a listener
-            // who wanted to browse is already scrolling past it either way. Hidden
-            // on Music Assistant, which builds and decodes its queue server-side and
-            // so can do neither half of this — see [LibraryViewModel.djRadioAvailable].
-            if (djRadioAvailable) {
-                item(key = "dj_radio", span = { full(gridCols) }, contentType = { "dj" }) {
-                    DjRadioCard(
-                        running = djRadio,
-                        crossfadeSeconds = djCrossfade,
-                        smartFade = djSmartFade,
-                        moodTitle = djMood?.title,
-                        // The tap opens the choice rather than making it — see
-                        // [DjRadioPickerSheet]. Stop is still one tap.
-                        onStart = viewModel::openDjPicker,
-                        onStop = viewModel::stopDjRadio,
-                        modifier = Modifier.padding(bottom = 4.dp),
+            // Something another device left mid-track. An offer, not an interruption:
+            // it sits above the shelves and goes away when dismissed or superseded.
+            savedQueue?.let { saved ->
+                item(span = { full(gridCols) }, key = "resume") {
+                    ResumeCard(
+                        saved = saved,
+                        onResume = { viewModel.resumeSavedQueue() },
+                        onDismiss = { viewModel.dismissSavedQueue() },
                     )
                 }
             }
-            // Root shelf: the category grid, then dynamic shelves of content.
-            // The user's order and selection applied to whatever this library
-            // actually offers — never a replacement for it. See [categoryOrder].
-            val shownCategories = run {
-                val byId = node.items.associateBy { it.itemId }
-                categoryOrder(node.items.map { it.itemId }, categoryOrderPref, categoryHidden)
-                    .mapNotNull { byId[it] }
+            // An error with nothing to show is the whole page. With items - a paged list
+            // that failed part way, a folder that loaded before a refresh failed - it is a
+            // line above them: the view model keeps the partial result on purpose, and
+            // returning here used to throw it away.
+            val hasContent = node.items.isNotEmpty() || search != null
+            if (error != null && !hasContent) {
+                item(span = { full(gridCols) }) { SearchErrorState(error!!) { viewModel.retry() } }
+                return@LazyVerticalGrid
             }
-            if (categoryMetrics.wrapping) {
-                // Chips are intrinsically sized and wrap, so they are one full-width
-                // cell that lays itself out rather than N equal grid cells.
-                item(span = { full(gridCols) }, contentType = "categoryChips") {
-                    CategoryChipRow(
-                        shownCategories,
-                        categoryMetrics,
-                        Modifier.animateItem(placementSpec = Motion.itemPlacement()),
-                    ) { viewModel.open(it) }
-                }
-            } else {
-                itemsIndexed(
-                    shownCategories,
-                    key = { i, cat -> itemKey("cat", i, cat) },
-                    contentType = { _, _ -> "category" },
-                    span = { _, _ -> GridItemSpan(categoryMetrics.span) },
-                ) { _, cat ->
-                    // Categories come and go with the backend — switching to Music
-                    // Assistant adds Radio and Podcasts, switching away removes them —
-                    // and without this they popped in and out. Same modifier the shelves
-                    // below already use.
-                    CategoryEntry(
-                        item = cat,
-                        style = categoryStyle,
-                        metrics = categoryMetrics,
-                        modifier = Modifier.animateItem(placementSpec = Motion.itemPlacement()),
-                        mosaicArt = if (categoryStyle == CategoryStyle.MOSAIC) {
-                            mosaicArtFor(cat.itemId, shelves)
-                        } else {
-                            emptyList()
-                        },
-                    ) { viewModel.open(cat) }
+            if (error != null) {
+                item(span = { full(gridCols) }, key = "error_banner") { InlineRetryBanner(error!!) { viewModel.retry() } }
+            }
+            if (depth == 0 && !searchOpen && shelfFailures.isNotEmpty() && !offline) {
+                item(span = { full(gridCols) }, key = "shelf_failures") {
+                    InlineRetryBanner("Some shelves couldn't load") { viewModel.refresh() }
                 }
             }
-            val openItem: (MaItem) -> Unit = { item ->
-                when (item.mediaType) {
-                    "album" -> onAlbumClick(item)
-                    "artist" -> onArtistClick(item)
-                    "playlist" -> onPlaylistClick(item)
-                    else -> viewModel.open(item)
-                }
+            if (loading) {
+                items(6, span = { full(gridCols) }, contentType = { "skeleton" }) { SkeletonRow() }
+                return@LazyVerticalGrid
             }
-            shelfRows.forEach { spec -> shelfCarousel(spec, openItem, onLongPress, gridCols) }
-            return@LazyVerticalGrid
-        }
 
-        // Creating a playlist belongs where playlists are, not on the root — and
-        // it has to come before the empty-state return, or a library with no
-        // playlists yet would be the one place you can't make one.
-        val inPlaylists = !searchOpen && node.title == "Playlists"
-        if (inPlaylists) {
-            item(span = { full(gridCols) }) { NewPlaylistRow(viewModel::openCreatePlaylist) }
-        }
-
-        if (node.items.isEmpty()) {
-            item(span = { full(gridCols) }) { if (inPlaylists) Unit else SearchEmptyState() }
-            return@LazyVerticalGrid
-        }
-
-        // A list that reads as sections rather than as one run of rows: Starred, which
-        // holds several kinds of thing, and Podcasts and Radio stations, where the
-        // loader knows which ones you follow. See [typedGroups] and [Node.sections].
-        if (groups.isNotEmpty()) {
-            groups.forEach { (title, list) ->
-                typedSection(
-                    title = title,
-                    list = list,
-                    viewModel = viewModel,
-                    rows = rows,
-                    onAlbumClick = onAlbumClick,
-                    onArtistClick = onArtistClick,
-                    onPlaylistClick = onPlaylistClick,
-                    onLongPress = onLongPress,
-                    gridCols = gridCols,
-                )
-            }
-            return@LazyVerticalGrid
-        }
-
-        if (artful) {
-            itemsIndexed(
-                node.items,
-                key = { i, entry -> itemKey("t", i, entry) },
-                contentType = { _, _ -> "cover" },
-                span = { _, _ -> GridItemSpan(2) },
-            ) { _, entry ->
-                CoverTile(entry, onLongPress = { onLongPress(entry) }) {
-                    when (entry.mediaType) {
-                        "album" -> onAlbumClick(entry)
-                        "artist" -> onArtistClick(entry)
-                        "playlist" -> onPlaylistClick(entry)
-                        else -> viewModel.open(entry)
+            // Which libraries this search asks — only when there is more than one to ask.
+            if (searchOpen && canSearchAll) {
+                item(key = "search_scope", span = { full(gridCols) }, contentType = { "scope" }) {
+                    androidx.compose.foundation.layout.Row(
+                        Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                    ) {
+                        ToggleChip("This library", !searchAll) { viewModel.setSearchScope(false) }
+                        ToggleChip("All libraries", searchAll) { viewModel.setSearchScope(true) }
                     }
                 }
             }
-        } else {
-            if (tracks.size > 1) {
-                item(key = "playall", span = { full(gridCols) }, contentType = { "playall" }) {
-                    PlayAllBar(
-                        count = tracks.size,
-                        onPlayAll = { viewModel.playAll(tracks) },
-                        onDownloadAll = if (downloadable.isEmpty()) null
-                        else ({ viewModel.downloadAll(downloadable) }),
+
+            // The first query of a session has no previous results to hold on to, and
+            // falling through to the browse shelves under a search header reads as the
+            // search having done nothing. Every query after this one keeps its old results
+            // on screen instead — see the spinner in the search field.
+            if (searchOpen && s == null && searching) {
+                items(6, span = { full(gridCols) }, contentType = { "skeleton" }) { SkeletonRow() }
+                return@LazyVerticalGrid
+            }
+
+            if (s != null) {
+                searchSection("Artists", s.artists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
+                searchSection("Albums", s.albums, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
+                searchSection("Tracks", s.tracks, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
+                searchSection("Playlists", s.playlists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
+                if (s.artists.isEmpty() && s.albums.isEmpty() && s.tracks.isEmpty() && s.playlists.isEmpty()) {
+                    item(span = { full(gridCols) }) { SearchEmptyState() }
+                }
+                return@LazyVerticalGrid
+            }
+
+            if (isDownloads) {
+                downloadsSection(node.items, jobs, viewModel, rows, gridCols)
+                return@LazyVerticalGrid
+            }
+
+            // Files still arriving, at the top of the Downloads library where they are
+            // the one thing on screen about to change. This is all that survives of the
+            // bespoke flat rendering the library replaced.
+            if (isDownloadsLibrary) {
+                downloadJobsSection(jobs, viewModel, gridCols)
+                if (depth == 0 && onManageDownloads != null) {
+                    item(key = "dl_manage", span = { full(gridCols) }, contentType = { "manage" }) {
+                        ManageDownloadsRow(onManageDownloads)
+                    }
+                }
+            }
+
+            if (depth == 0 && spotlight != null) {
+                val pick = spotlight
+                item(key = "spotlight", span = { full(gridCols) }, contentType = { "spotlight" }) {
+                    SpotlightCard(
+                        item = pick,
+                        onOpen = { onAlbumClick(pick) },
+                        onPlay = { viewModel.play(pick) },
                     )
                 }
             }
-            itemsIndexed(
-                node.items,
-                key = { i, entry -> itemKey("r", i, entry) },
-                contentType = { _, _ -> "row" },
-                span = { _, _ -> full(gridCols) },
-            ) { _, entry ->
-                val click: (() -> Unit)? = when (entry.mediaType) {
-                    "album" -> { { onAlbumClick(entry) } }
-                    "artist" -> { { onArtistClick(entry) } }
-                    "playlist" -> { { onPlaylistClick(entry) } }
-                    else -> null
+            if (depth == 0) {
+                // Above the categories, because it is the one thing here that answers
+                // "I want music" rather than "I want to find something" — and a listener
+                // who wanted to browse is already scrolling past it either way. Hidden
+                // on Music Assistant, which builds and decodes its queue server-side and
+                // so can do neither half of this — see [LibraryViewModel.djRadioAvailable].
+                if (djRadioAvailable) {
+                    item(key = "dj_radio", span = { full(gridCols) }, contentType = { "dj" }) {
+                        DjRadioCard(
+                            running = djRadio,
+                            crossfadeSeconds = djCrossfade,
+                            smartFade = djSmartFade,
+                            moodTitle = djMood?.title,
+                            // The tap opens the choice rather than making it — see
+                            // [DjRadioPickerSheet]. Stop is still one tap.
+                            onStart = viewModel::openDjPicker,
+                            onStop = viewModel::stopDjRadio,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                    }
                 }
-                ItemRow(entry, viewModel, rows.of(entry), click, onLongPress, swipeToQueue = true)
+                // Root shelf: the category grid, then dynamic shelves of content.
+                // The user's order and selection applied to whatever this library
+                // actually offers — never a replacement for it. See [categoryOrder].
+                val shownCategories = run {
+                    val byId = node.items.associateBy { it.itemId }
+                    categoryOrder(node.items.map { it.itemId }, categoryOrderPref, categoryHidden)
+                        .mapNotNull { byId[it] }
+                }
+                if (categoryMetrics.wrapping) {
+                    // Chips are intrinsically sized and wrap, so they are one full-width
+                    // cell that lays itself out rather than N equal grid cells.
+                    item(span = { full(gridCols) }, contentType = "categoryChips") {
+                        CategoryChipRow(
+                            shownCategories,
+                            categoryMetrics,
+                            Modifier.animateItem(placementSpec = Motion.itemPlacement()),
+                        ) { viewModel.open(it) }
+                    }
+                } else {
+                    itemsIndexed(
+                        shownCategories,
+                        key = { i, cat -> itemKey("cat", i, cat) },
+                        contentType = { _, _ -> "category" },
+                        span = { _, _ -> GridItemSpan(categoryMetrics.span) },
+                    ) { _, cat ->
+                        // Categories come and go with the backend — switching to Music
+                        // Assistant adds Radio and Podcasts, switching away removes them —
+                        // and without this they popped in and out. Same modifier the shelves
+                        // below already use.
+                        CategoryEntry(
+                            item = cat,
+                            style = categoryStyle,
+                            metrics = categoryMetrics,
+                            modifier = Modifier.animateItem(placementSpec = Motion.itemPlacement()),
+                            mosaicArt = if (categoryStyle == CategoryStyle.MOSAIC) {
+                                mosaicArtFor(cat.itemId, shelves)
+                            } else {
+                                emptyList()
+                            },
+                        ) { viewModel.open(cat) }
+                    }
+                }
+                val openItem: (MaItem) -> Unit = { item ->
+                    when (item.mediaType) {
+                        "album" -> onAlbumClick(item)
+                        "artist" -> onArtistClick(item)
+                        "playlist" -> onPlaylistClick(item)
+                        else -> viewModel.open(item)
+                    }
+                }
+                shelfRows.forEach { spec -> shelfCarousel(spec, openItem, onLongPress, gridCols) }
+                return@LazyVerticalGrid
+            }
+
+            // Creating a playlist belongs where playlists are, not on the root — and
+            // it has to come before the empty-state return, or a library with no
+            // playlists yet would be the one place you can't make one.
+            val inPlaylists = !searchOpen && node.title == "Playlists"
+            if (inPlaylists) {
+                item(span = { full(gridCols) }) { NewPlaylistRow(viewModel::openCreatePlaylist) }
+            }
+
+            if (node.items.isEmpty()) {
+                // A folder with nothing in it, not a search with no hits: the search wording
+                // ("Try a different search") here sent people looking for a search box.
+                item(span = { full(gridCols) }) {
+                    if (inPlaylists) Unit else SearchEmptyState(
+                        "Nothing here", "This folder is empty.",
+                        icon = androidx.compose.material.icons.Icons.Default.FolderOpen,
+                    )
+                }
+                return@LazyVerticalGrid
+            }
+
+            // A list that reads as sections rather than as one run of rows: Starred, which
+            // holds several kinds of thing, and Podcasts and Radio stations, where the
+            // loader knows which ones you follow. See [typedGroups] and [Node.sections].
+            if (groups.isNotEmpty()) {
+                groups.forEach { (title, list) ->
+                    typedSection(
+                        title = title,
+                        list = list,
+                        viewModel = viewModel,
+                        rows = rows,
+                        onAlbumClick = onAlbumClick,
+                        onArtistClick = onArtistClick,
+                        onPlaylistClick = onPlaylistClick,
+                        onLongPress = onLongPress,
+                        gridCols = gridCols,
+                    )
+                }
+                return@LazyVerticalGrid
+            }
+
+            if (artful) {
+                itemsIndexed(
+                    node.items,
+                    key = { i, entry -> itemKey("t", i, entry) },
+                    contentType = { _, _ -> "cover" },
+                    span = { _, _ -> GridItemSpan(2) },
+                ) { _, entry ->
+                    CoverTile(entry, onLongPress = { onLongPress(entry) }) {
+                        when (entry.mediaType) {
+                            "album" -> onAlbumClick(entry)
+                            "artist" -> onArtistClick(entry)
+                            "playlist" -> onPlaylistClick(entry)
+                            else -> viewModel.open(entry)
+                        }
+                    }
+                }
+            } else {
+                if (tracks.size > 1) {
+                    item(key = "playall", span = { full(gridCols) }, contentType = { "playall" }) {
+                        PlayAllBar(
+                            count = tracks.size,
+                            onPlayAll = { viewModel.playAll(tracks) },
+                            onDownloadAll = if (downloadable.isEmpty()) null
+                            else ({ viewModel.downloadAll(downloadable) }),
+                        )
+                    }
+                }
+                itemsIndexed(
+                    node.items,
+                    key = { i, entry -> itemKey("r", i, entry) },
+                    contentType = { _, _ -> "row" },
+                    span = { _, _ -> full(gridCols) },
+                ) { _, entry ->
+                    val click: (() -> Unit)? = when (entry.mediaType) {
+                        "album" -> { { onAlbumClick(entry) } }
+                        "artist" -> { { onArtistClick(entry) } }
+                        "playlist" -> { { onPlaylistClick(entry) } }
+                        else -> null
+                    }
+                    ItemRow(entry, viewModel, rows.of(entry), click, onLongPress, swipeToQueue = true)
+                }
             }
         }
     }
