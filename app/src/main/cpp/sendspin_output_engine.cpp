@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 // Ported from Massdroid's sendspin_output_engine.cpp
 // (github.com/sfortis/massdroid_native, MIT), unchanged except this note and
@@ -62,6 +63,14 @@ constexpr double RATE_K = 6e-7;
 // buffer is healthy (observed on slower devices).
 constexpr int64_t OUTLIER_US = 15000;
 
+// Time constants of that smoothed drift: 8 and 64 callbacks of the 96-frame
+// (2 ms at 48 kHz) LowLatency stream they were tuned on, as time so a stream
+// with bigger callbacks smooths over the same span. Callbacks after a stream
+// start or flush that take the raw drift as-is: EMA_SEED_CALLBACKS.
+constexpr double EMA_TAU_US = 16000.0;
+constexpr double EMA_OUTLIER_TAU_US = 128000.0;
+constexpr int EMA_SEED_CALLBACKS = 4;
+
 // A |drift| this large is not a drift. It means one of the two halves of
 // `intendedHead - dac0` is being computed in the wrong domain — which is a bug
 // upstream of here, and one this engine cannot fix from inside the callback.
@@ -101,6 +110,12 @@ constexpr int64_t DIAG_REPEAT_CALLBACKS = 2048;
 // real ppm clock drift smoothly while clamping a noisy getTimestamp reading to
 // a sub-ms blip (no freeze-then-jump sawtooth that makes the drift wander).
 constexpr int64_t MAX_SLEW_US = 1000;
+
+// Normal (non-LowLatency) path only: a timestamp this far from the anchor's
+// prediction, confirmed by the next reading to within STEP_AGREE_US, is a real
+// latency step and is taken at once instead of slewed. See refreshTimestampAnchor.
+constexpr int64_t STEP_US = 3000;
+constexpr int64_t STEP_AGREE_US = 2000;
 
 // Max the (calcLat-derived) output latency may move per ~100 ms poll. The true
 // HAL latency is ~constant, so slew-clamp it: a one-off calculateLatencyMillis
@@ -200,7 +215,9 @@ bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool drif
     anchorTimeUs_.store(0);
     latencyUs_.store(0);
     lastTimestampPollFrame_ = 0;
+    lastRawTimestampPos_ = 0;
     driftEmaUs_.store(0);
+    emaSeedCallbacks_ = EMA_SEED_CALLBACKS;
     timelineUnusable_.store(false);
     underrunFrames_.store(0);
     lastRateMicros_.store(1000000);
@@ -210,15 +227,23 @@ bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool drif
     flushRequested_.store(false);
     disconnected_.store(false);
 
-    // BOTH modes use LowLatency (MMAP) so getTimestamp stays tight. Using
-    // PerformanceMode::None for solo/DIRECT was a CPU/glitch optimisation, but a
-    // None (normal-mixer, non-MMAP) stream that runs first does NOT cleanly hand
-    // the MMAP-exclusive output path back: the LowLatency stream opened right
-    // after (the DIRECT->SYNC swap on a group join, or a launch already grouped)
-    // then gets a degraded, sawtoothing getTimestamp and SYNC never locks. Solo
-    // robustness instead comes from the deeper HAL buffer below; the deep PCM
-    // ring absorbs the rest. Do NOT reintroduce None for DIRECT.
-    const oboe::PerformanceMode perfMode = oboe::PerformanceMode::LowLatency;
+    // PerformanceMode::None: the system's ordinary media path, the same one
+    // ExoPlayer's AudioTrack (local and Navidrome playback) lands on. Every
+    // manufacturer hangs its output processing off that path and nowhere else:
+    // speaker tuning, protection limiters, Dolby / Dirac / SoundAlive, and any
+    // system-wide EQ the listener has set up. A LowLatency stream goes MMAP or
+    // FAST, which skip all of it, so Music Assistant on the phone's own speaker
+    // sounded harsher, louder and noisier than the same track from Navidrome
+    // (seen on an S23: deep-buffer thread ran Dolby_FX + SoundAlivePlus, the
+    // MMAP thread ran nothing). Low latency buys Sendspin nothing: chunks arrive
+    // seconds ahead and are placed by timestamp, and the timeline already follows
+    // calculateLatencyMillis, whatever size it is.
+    //
+    // This used to be LowLatency for both timing policies because a None stream
+    // opened first left the next LowLatency stream (the DIRECT->SYNC swap on a
+    // group join) with a sawtoothing getTimestamp. There is one stream with one
+    // timeline now and no swap, and no LowLatency stream to hand over to.
+    const oboe::PerformanceMode perfMode = oboe::PerformanceMode::None;
     oboe::AudioStreamBuilder b;
     b.setDirection(oboe::Direction::Output)
         ->setPerformanceMode(perfMode)
@@ -236,10 +261,15 @@ bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool drif
         LOGE("openStream failed: %s", oboe::convertToText(r));
         return false;
     }
-    // Give the HAL slack: 2 bursts on the LowLatency path, more on the normal
-    // path (bigger bursts, absorbs scheduling jitter). The deep ring (above) is
-    // what actually absorbs GC, not this.
-    stream_->setBufferSizeInFrames(stream_->getFramesPerBurst() * (driftCorrection ? 2 : 4));
+    // Leave the normal path's buffer at the size the system chose for it, as
+    // AudioTrack does for ExoPlayer: trimming it to a couple of bursts (sized for
+    // the old LowLatency stream) invites underruns on a mixer that wakes far less
+    // often. The deep ring (above) is what absorbs GC, not this.
+    const bool lowLatency = stream_->getPerformanceMode() == oboe::PerformanceMode::LowLatency;
+    if (lowLatency) {
+        stream_->setBufferSizeInFrames(stream_->getFramesPerBurst() * (driftCorrection ? 2 : 4));
+    }
+    anchorTimeline_.store(!lowLatency);
     r = stream_->requestStart();
     if (r != oboe::Result::OK) {
         LOGE("requestStart failed: %s", oboe::convertToText(r));
@@ -247,8 +277,10 @@ bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool drif
         stream_.reset();
         return false;
     }
-    LOGD("started %dHz ch=%d burst=%d ringFrames=%d", sampleRate, channels,
-         stream_->getFramesPerBurst(), capacityFrames_);
+    LOGD("started %dHz ch=%d burst=%d buffer=%d perf=%s aaudio=%d ringFrames=%d", sampleRate, channels,
+         stream_->getFramesPerBurst(), stream_->getBufferSizeInFrames(),
+         oboe::convertToText(stream_->getPerformanceMode()),
+         stream_->usesAAudio() ? 1 : 0, capacityFrames_);
     return true;
 }
 
@@ -266,7 +298,13 @@ void SendspinOutputEngine::pauseStream() {
     if (!stream_) return;
     auto state = stream_->getState();
     if (state == oboe::StreamState::Started || state == oboe::StreamState::Starting) {
-        stream_->requestStop();
+        // Pause, not stop, on the normal path: a legacy (AudioTrack-backed)
+        // stream that is stopped and started again answers every getTimestamp
+        // after that with ErrorInvalidState for good (S23, Android 16), which
+        // drops the timeline back to the jittery now + latency guess. Pause
+        // keeps the track's position, so the timestamps carry on.
+        if (anchorTimeline_.load()) stream_->requestPause();
+        else stream_->requestStop();
     }
 }
 
@@ -275,10 +313,12 @@ void SendspinOutputEngine::resumeStream() {
     auto state = stream_->getState();
     if (state == oboe::StreamState::Started || state == oboe::StreamState::Starting) return;
     // Re-seat the timestamp anchor: after a stop/start the frame counters and
-    // getTimestamp restart, so the old anchor is stale.
+    // getTimestamp restart, and after a pause the output clock has moved on
+    // without the stream, so either way the old anchor is stale.
     anchorFramePosition_.store(-1);
     anchorTimeUs_.store(0);
     lastTimestampPollFrame_ = 0;
+    lastRawTimestampPos_ = 0;
     stream_->requestStart();
 }
 
@@ -295,6 +335,7 @@ void SendspinOutputEngine::resetRing() {
     readPos_ = static_cast<double>(w);
     markerRead_.store(markerWrite_.load());
     driftEmaUs_.store(0);
+    emaSeedCallbacks_ = EMA_SEED_CALLBACKS;
     compGsDb_ = 0.0f;
     // A flush is a new timeline: whatever made the old one implausible went with
     // the markers that have just been dropped.
@@ -364,11 +405,23 @@ void SendspinOutputEngine::refreshTimestampAnchor(oboe::AudioStream* stream, int
     }
     lastTimestampPollFrame_ = framesWritten;
     auto result = stream->getTimestamp(CLOCK_MONOTONIC);
-    if (!result) return;
+    const int64_t nowUs = monotonicNowUs();
+    if (!result) {
+        if ((++timestampFailures_ % 50) == 1) {
+            LOGW("getTimestamp failed (%s) x%lld framesWritten=%lld",
+                 oboe::convertToText(result.error()), (long long)timestampFailures_, (long long)framesWritten);
+        }
+        return;
+    }
     auto ts = result.value();
     const int64_t newPos = ts.position;
     const int64_t newTimeUs = ts.timestamp / 1000;
-    const int64_t nowUs = monotonicNowUs();
+    if ((newPos <= 0 || newPos > framesWritten || newTimeUs > nowUs + 50000 || newTimeUs < nowUs - 1000000) &&
+        (++timestampFailures_ % 50) == 1) {
+        LOGW("getTimestamp rejected x%lld: pos=%lld framesWritten=%lld time=%lld now=%lld",
+             (long long)timestampFailures_, (long long)newPos, (long long)framesWritten,
+             (long long)newTimeUs, (long long)nowUs);
+    }
 
     // Basic sanity: a real output timestamp marks a frame already/about to be
     // presented, so its position is within what we've written and its time is
@@ -392,11 +445,30 @@ void SendspinOutputEngine::refreshTimestampAnchor(oboe::AudioStream* stream, int
         const int64_t predictedTimeUs = anchorTimeUs_.load() +
             (newPos - oldPos) * 1000000LL / sampleRate_;
         int64_t deltaUs = newTimeUs - predictedTimeUs;
-        if (deltaUs > MAX_SLEW_US) deltaUs = MAX_SLEW_US;
-        else if (deltaUs < -MAX_SLEW_US) deltaUs = -MAX_SLEW_US;
-        anchorFramePosition_.store(newPos);
-        anchorTimeUs_.store(predictedTimeUs + deltaUs);
+        // ...except a STEP on the normal path. Its latency is not constant: when
+        // audio starts again after the ring has run dry (pause, track change)
+        // the output timestamp moves by tens of ms (-37 ms on an S23) and stays
+        // there. Slewing that at 1 ms per poll held the engine muted for its
+        // 3 s ceiling and then unmuted it 36-91 ms out of step. A spike is one
+        // reading; a step is two in a row that agree with each other, so
+        // re-seat on the second.
+        const int64_t prevRawPos = lastRawTimestampPos_;
+        const bool agreesWithPrevious = prevRawPos > 0 &&
+            std::llabs(newTimeUs - (lastRawTimestampUs_ +
+                (newPos - prevRawPos) * 1000000LL / sampleRate_)) < STEP_AGREE_US;
+        if (anchorTimeline_.load() && agreesWithPrevious && std::llabs(deltaUs) > STEP_US) {
+            LOGD("output timestamp stepped %lldus: re-anchored", (long long)deltaUs);
+            anchorFramePosition_.store(newPos);
+            anchorTimeUs_.store(newTimeUs);
+        } else {
+            if (deltaUs > MAX_SLEW_US) deltaUs = MAX_SLEW_US;
+            else if (deltaUs < -MAX_SLEW_US) deltaUs = -MAX_SLEW_US;
+            anchorFramePosition_.store(newPos);
+            anchorTimeUs_.store(predictedTimeUs + deltaUs);
+        }
     }
+    lastRawTimestampPos_ = newPos;
+    lastRawTimestampUs_ = newTimeUs;
     // Output latency from Oboe's calculateLatencyMillis, NOT the raw getTimestamp
     // inflight (framesWritten - position). On some HALs (seen on Samsung MMAP)
     // the raw position sawtooths wildly (tens of ms, ~10 s period) even though
@@ -425,11 +497,25 @@ void SendspinOutputEngine::refreshTimestampAnchor(oboe::AudioStream* stream, int
     }
 }
 
-int64_t SendspinOutputEngine::dacPresentationUsForNextWrite(int64_t /*framesWritten*/) const {
-    // out[0] reaches the DAC after the (stable) output latency. Anchoring on the
-    // raw getTimestamp position instead made dac0 sawtooth on flaky HALs and the
-    // resampler over-correct; a stable latency keeps the drift steady so only
-    // real, sustained clock drift is corrected (the resampler still tracks that).
+int64_t SendspinOutputEngine::dacPresentationUsForNextWrite(int64_t framesWritten) const {
+    // Normal (mixer) path: the mixer drains the stream in large, irregular
+    // gulps, so how much is queued ahead of out[0] differs from one callback to
+    // the next by up to a mixer period. A latency sampled every ~100 ms and added
+    // to `now` is therefore off by several ms per callback (measured +-5 ms and
+    // a resampler that never stopped hunting on an S23). The slew-limited
+    // anchor is a position on the output clock, so extrapolating it to
+    // framesWritten is exact per callback whatever the queue holds right now.
+    if (anchorTimeline_.load()) {
+        const int64_t anchorPos = anchorFramePosition_.load();
+        if (anchorPos >= 0) {
+            return anchorTimeUs_.load() + (framesWritten - anchorPos) * 1000000LL / sampleRate_;
+        }
+    }
+    // LowLatency (MMAP) path: out[0] reaches the DAC after the (stable) output
+    // latency. Anchoring on the raw getTimestamp position instead made dac0
+    // sawtooth on flaky MMAP HALs and the resampler over-correct; a stable
+    // latency keeps the drift steady so only real, sustained clock drift is
+    // corrected (the resampler still tracks that).
     return monotonicNowUs() + latencyUs_.load();
 }
 
@@ -552,15 +638,29 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // skip/insert a big chunk of samples -> audible "cough". Correct against
     // this estimate instead: it barely moves on single-callback outliers and
     // only tracks SUSTAINED drift (genuine boundaries flush + relock anyway).
+    //
+    // Seeded from the raw value for the first few callbacks of a stream AND of
+    // every flush (track start, skip, seek, resume): starting from the previous
+    // timeline's 0 instead, a seconds-early head looks like an "outlier" and the
+    // estimate crawls up to it while the snap below acts on a stale number.
+    //
+    // The smoothing is by time, not per callback. The constants were tuned on
+    // the LowLatency (MMAP) path's 2 ms callbacks (1/8 and 1/64 per callback);
+    // the normal path calls back every 20-35 ms in uneven sizes, where the same
+    // per-callback fractions took seconds to settle after every song start and
+    // the correction overshot to the rate cap meanwhile (heard as a warble).
     const int64_t prevEma = driftEmaUs_.load();
     int64_t ema;
-    if (callbackCount_ < 4) {
+    if (emaSeedCallbacks_ > 0) {
+        --emaSeedCallbacks_;
         ema = rawDriftUs;
     } else {
         int64_t dev = rawDriftUs - prevEma;
         if (dev < 0) dev = -dev;
-        ema = (dev > OUTLIER_US) ? prevEma + (rawDriftUs - prevEma) / 64
-                                 : prevEma + (rawDriftUs - prevEma) / 8;
+        const double callbackUs = static_cast<double>(numFrames) * 1000000.0 / sampleRate_;
+        const double tauUs = (dev > OUTLIER_US) ? EMA_OUTLIER_TAU_US : EMA_TAU_US;
+        const double a = std::min(1.0, callbackUs / tauUs);
+        ema = prevEma + static_cast<int64_t>(static_cast<double>(rawDriftUs - prevEma) * a);
     }
     driftEmaUs_.store(ema);
 

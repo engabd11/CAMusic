@@ -216,6 +216,15 @@ private:
     std::atomic<int64_t> anchorTimeUs_{0};
     std::atomic<int64_t> latencyUs_{0};
     int64_t lastTimestampPollFrame_ = 0;
+    // True when the opened stream is NOT LowLatency: dac0 is then extrapolated
+    // from the timestamp anchor per callback instead of now + latencyUs_.
+    std::atomic<bool> anchorTimeline_{false};
+    int64_t timestampFailures_ = 0;
+    // The previous raw getTimestamp reading, to tell a latency step from a spike.
+    int64_t lastRawTimestampPos_ = 0;
+    int64_t lastRawTimestampUs_ = 0;
+    // Callbacks left that seed the drift estimate from the raw value (stream start, flush).
+    int emaSeedCallbacks_ = 0;
 
     // Diagnostics
     std::atomic<int64_t> driftEmaUs_{0};
