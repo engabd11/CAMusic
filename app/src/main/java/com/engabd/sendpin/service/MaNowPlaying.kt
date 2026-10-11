@@ -180,8 +180,24 @@ class MaNowPlaying(private val app: Context) {
 
     private val _positionMs = MutableStateFlow(0L)
 
+    /**
+     * A seek dropped while the selected player was paused, not sent yet.
+     *
+     * Music Assistant cannot seek a paused queue: `player_queues/seek` resolves into
+     * `play_index(..., seek_position=)`, which starts playback. Sending it and pausing
+     * again a beat later (what this app used to do) played a second of audio from the
+     * new position on every paused scrub. So a paused seek only moves the bar; [resume]
+     * sends it, and since the seek starts playback, it *is* the play. Dropped when the
+     * track or player changes or playback starts from anywhere else.
+     */
+    private data class PendingSeek(val playerId: String, val title: String, val positionMs: Long)
+
+    private val pendingSeek = MutableStateFlow<PendingSeek?>(null)
+
     /** The projected playhead for the selected player, in milliseconds. */
-    val positionMs: StateFlow<Long> = _positionMs
+    val positionMs: StateFlow<Long> =
+        combine(_positionMs, pendingSeek) { live, pending -> pending?.positionMs ?: live }
+            .stateIn(scope, SharingStarted.Eagerly, 0L)
 
     /**
      * The last `players/all` and `player_queues/all` this process read.
@@ -337,9 +353,20 @@ class MaNowPlaying(private val app: Context) {
                     }
                 }
         }
+        // A paused seek only stands while that track is still paused on that player.
+        scope.launch {
+            now.collect { n ->
+                val p = pendingSeek.value ?: return@collect
+                if (n == null || n.isPlaying || n.playerId != p.playerId || n.title != p.title) {
+                    pendingSeek.value = null
+                }
+            }
+        }
         // This phone's stream (re)starting is what lifts a hold placed on its own bar.
         scope.launch {
-            SendpinApp.instance.playback.streamChunkSeq.drop(1).collect { playhead.onStreamChunk(it) }
+            SendpinApp.instance.playback.streamChunkSeq.drop(1).collect {
+                playhead.onStreamChunk(it, SendpinApp.instance.playback.lastStreamChunkAtMs)
+            }
         }
         // A seek or skip that reached the player through the media session rather
         // than through here still holds the bar the same way.
@@ -445,7 +472,23 @@ class MaNowPlaying(private val app: Context) {
      * paused the phone instead of the speaker.
      */
     fun playPause() = command {
-        if (now.value?.isPlaying == true) repo.pause(targetId()) else repo.play(targetId())
+        if (now.value?.isPlaying == true) repo.pause(targetId()) else resume()
+    }
+
+    /**
+     * Start the selected player: at a seek dropped while it was paused if there is one
+     * (see [pendingSeek]), else where it is.
+     */
+    suspend fun resume() {
+        val pending = pendingSeek.value
+        if (pending != null && pending.playerId == targetId()) {
+            pendingSeek.value = null
+            playhead.holdForSeek(target(), pending.positionMs, now.value?.durationMs?.takeIf { it > 0 }) {
+                repo.seek(targetId(), (pending.positionMs / 1000).toInt())
+            }
+        } else {
+            repo.play(targetId())
+        }
     }
 
     fun next() = command { skipNext() }
@@ -494,6 +537,12 @@ class MaNowPlaying(private val app: Context) {
         // Whole seconds: that is what `players/cmd/seek` takes, so the bar is held
         // exactly where the server will land rather than up to a second past it.
         val targetSec = (positionMs.coerceIn(0L, maxSeekPositionMs(duration)) / 1000).toInt()
+        val n = now.value
+        if (n != null && !n.isPlaying) {
+            pendingSeek.value = PendingSeek(n.playerId, n.title, targetSec * 1000L)
+            return
+        }
+        pendingSeek.value = null
         playhead.holdForSeek(target(), targetSec * 1000L, duration.takeIf { it > 0 }) {
             repo.seek(targetId(), targetSec)
         }

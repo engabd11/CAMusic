@@ -322,6 +322,13 @@ class PlayerPositionTracker(
         durationMs: Long? = null,
         speed: Float? = null,
         itemId: String? = null,
+        /**
+         * False for a reading stamped on arrival rather than by the server (a
+         * `queue_time_updated` event): its apparent lag is zero by construction, and
+         * folding that into the [skew] minimum wiped out a real 0.5 s clock offset,
+         * after which the next stamped poll hopped the bar half a second.
+         */
+        serverStamped: Boolean = true,
     ) {
         // Before the stamp bookkeeping, so a bogus reading leaves no trace that could
         // make the honest one after it look stale.
@@ -386,7 +393,7 @@ class PlayerPositionTracker(
             //    made every capture look a second stale, and the projection added that
             //    second to the position on every anchor, forever — a bar that was ahead
             //    of the music even at the very start of a track. See [skew].
-            if (capturedAtMs != null) observeLag(now - capturedAtMs, playing)
+            if (capturedAtMs != null && serverStamped) observeLag(now - capturedAtMs, playing)
             val anchorAt = capturedAtMs
                 ?.let { it + skew }
                 // Never anchor in the future: the correction is an estimate, and one
@@ -394,6 +401,26 @@ class PlayerPositionTracker(
                 ?.coerceAtMost(now)
                 ?.takeIf { now - it in 0..MAX_PROJECTION_MS }
                 ?: now
+            // 3b. Agrees with the bar already ticking: not news either. The official
+            //     app only re-anchors a playing bar on Music Assistant's jump events,
+            //     and so it never moves between seeks. Here the 5 s poll restates a
+            //     position the server last computed up to a second ago, and taking
+            //     each one nudged the bar 0.1-0.6 s every five seconds. Same item,
+            //     both playing, within [AGREE_MS]: keep ticking, remember the pair.
+            val sameItem = itemId == null || running?.itemId == null || itemId == running.itemId
+            if (running != null && playing && running.isPlaying && sameItem) {
+                val projected = elapsedMs + ((now - anchorAt) * rate).toLong()
+                if (kotlin.math.abs(projected - running.effectiveAt(now)) < AGREE_MS) {
+                    val kept = running.copy(
+                        serverElapsedMs = elapsedMs,
+                        serverStampMs = capturedAtMs ?: running.serverStampMs,
+                        durationMs = duration,
+                        speed = rate,
+                        itemId = itemId ?: running.itemId,
+                    )
+                    return@update if (kept == current) existing else existing + (queueId to kept)
+                }
+            }
             existing + (
                 queueId to Anchor(
                     elapsedMs = elapsedMs,
@@ -471,8 +498,13 @@ class PlayerPositionTracker(
         }
     }
 
-    /** Audio is confirmed flowing — release the freeze and start ticking again. */
-    fun confirmPlaying(queueId: String) {
+    /**
+     * Audio is confirmed flowing — release the freeze and start ticking again, from
+     * [startedAtMs] when the caller knows when the held position actually started
+     * playing (the new stream's first scheduled sample), so the bar is already where
+     * the server will say it is rather than correcting to it on the next reading.
+     */
+    fun confirmPlaying(queueId: String, startedAtMs: Long? = null) {
         anchors.update { existing ->
             val current = existing[queueId] ?: return@update existing
             if (current.freezeReason == null) return@update existing
@@ -480,7 +512,7 @@ class PlayerPositionTracker(
             existing + (
                 queueId to current.copy(
                     elapsedMs = current.effectiveAt(now),
-                    capturedAtMs = now,
+                    capturedAtMs = (startedAtMs ?: now).coerceIn(now - MAX_PROJECTION_MS, now),
                     isPlaying = true,
                     freezeReason = null,
                     // The server's own reading from here on is the held value — the
@@ -627,6 +659,14 @@ class PlayerPositionTracker(
          * ours is only held off briefly.
          */
         const val JUMP_GUARD_MS = 5_000L
+
+        /**
+         * How far a playing reading may sit from the ticking bar and still be taken as
+         * agreeing with it. A second: Music Assistant recomputes a Sendspin player's
+         * elapsed once a second, so a poll can restate a value up to that stale, and
+         * anything a listener would call a jump is several times this.
+         */
+        const val AGREE_MS = 1_000L
 
         /**
          * Allowance past `target + time since` before a reading counts as bogus: the

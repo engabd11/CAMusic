@@ -26,8 +26,8 @@ import kotlinx.coroutines.launch
  *   decides what is news, what is stale and what is a stalled server clock.
  * - **Only this phone's own player gets an optimistic hold.** A seek or a skip on the
  *   self player holds the bar at the target (or zero) until the *first chunk of the
- *   new stream* arrives — [Playback.streamChunkSeq], the official app's
- *   `Buffering → Synchronized` edge. A remote speaker gets no hold: the command is
+ *   new stream* is heard — [Playback.streamChunkSeq], the official app's
+ *   `PlaybackStarted` edge. A remote speaker gets no hold: the command is
  *   sent, and the server's next reading is the answer (the scrubber's own two-second
  *   latch covers the round trip visually).
  * - **Every seek and skip, self or remote, screens the readings after it** — see
@@ -84,7 +84,7 @@ class MaPlayhead(
     fun onQueueTime(t: Target, queueId: String, elapsedMs: Long) {
         if (queueId != t.queueId) return
         if (notCountingYet(elapsedMs)) return
-        tracker.setAnchor(t.key, elapsedMs, capturedAtMs = nowMs())
+        tracker.setAnchor(t.key, elapsedMs, capturedAtMs = nowMs(), serverStamped = false)
     }
 
     /**
@@ -137,11 +137,11 @@ class MaPlayhead(
 
     @Volatile private var lastChunkSeq = 0L
 
-    /** [Playback.streamChunkSeq] moved: the first chunk of a (re)started stream arrived. */
-    fun onStreamChunk(seq: Long) {
+    /** [Playback.streamChunkSeq] moved: a (re)started stream's audio is now playing. */
+    fun onStreamChunk(seq: Long, startedAtMs: Long = nowMs()) {
         lastChunkSeq = seq
         val h = hold ?: return
-        if (seq > h.armedAtSeq) release(h.key, "edge")
+        if (seq > h.armedAtSeq) release(h.key, "edge", startedAtMs)
     }
 
     // ── Optimistic holds ─────────────────────────────────────────────────────
@@ -224,14 +224,14 @@ class MaPlayhead(
 
     /** [why] names the releasing condition — edge, watchdog, throw — for the reader, not the code. */
     @Suppress("UNUSED_PARAMETER")
-    private fun release(key: String, why: String) {
+    private fun release(key: String, why: String, startedAtMs: Long = nowMs()) {
         val h = hold ?: return
         if (h.key != key) return
         h.watchdog.cancel()
         hold = null
         releasedAtMs = nowMs()
         releasedValueMs = h.valueMs
-        tracker.confirmPlaying(key)
+        tracker.confirmPlaying(key, startedAtMs)
     }
 
     // ── Outputs ──────────────────────────────────────────────────────────────

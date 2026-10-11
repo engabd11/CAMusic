@@ -1004,7 +1004,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     fun playPause() {
         if (isLocal) { local.toggle(); return }
-        act { if (state.value.isPlaying) repo.pause(targetId()) else repo.play(targetId()) }
+        // Through MaNowPlaying, so a seek dropped while paused starts the play there.
+        act { if (state.value.isPlaying) repo.pause(targetId()) else maNowPlaying.resume() }
     }
 
     /**
@@ -1098,32 +1099,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Seek the MA player.
-     *
-     * Two server behaviours have to be worked around here; the third — MA reporting
-     * the *old* position for a beat after a seek — is `MaPlayhead`'s, which holds
-     * this phone's own bar at the target until its new stream arrives, and lets a
-     * remote speaker's bar simply follow the server's next reading:
-     *
-     *  - `players/cmd/seek` resolves into `play_index(..., seek_position=)`, which
-     *    **starts** the queue. Seeking while paused therefore begins playback, which
-     *    is not what dropping the scrubber means. Re-pause afterwards when that's the
-     *    state the user was in.
-     *  - Music Assistant **refuses** a seek past `current_item.duration` ("Can not
-     *    seek outside of duration range"), and refuses one on an item with no
-     *    duration at all. A refusal is spoken rather than swallowed, and the clamp —
-     *    inside [MaNowPlaying.seek] — is measured against the same duration the
-     *    server will measure it against; see [seekableDurationMs].
+     * Seek the MA player, through [MaNowPlaying.seek]: it clamps to the duration Music
+     * Assistant checks against, holds this phone's own bar at the target until the new
+     * stream is heard, and keeps a seek dropped while paused for the next play rather
+     * than sending it (Music Assistant's seek starts playback). This used to send it
+     * anyway and pause again 250 ms later, which played a second of audio from the new
+     * spot on every paused scrub.
      */
     private fun seekOnServer(positionMs: Long) = act(toastOnError = "Couldn't seek") {
-        val wasPlaying = state.value.isPlaying
         maNowPlaying.seek(positionMs)
-        if (!wasPlaying) {
-            // The seek restarted it. Put it back where it was — after a beat, or the
-            // pause races the play the seek just issued.
-            delay(250)
-            runCatching { repo.pause(targetId()) }
-        }
     }
 
     private var volJob: kotlinx.coroutines.Job? = null

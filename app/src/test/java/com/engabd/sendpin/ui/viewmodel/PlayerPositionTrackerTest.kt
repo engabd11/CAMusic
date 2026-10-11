@@ -396,7 +396,8 @@ class PlayerPositionTrackerTest {
         assertEquals(127_600L, tracker.effectiveMs(q))
         now += 1_000
         tracker.setAnchor(q, elapsedMs = 128_300, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
-        assertEquals(128_300L, tracker.effectiveMs(q))
+        // 300 ms from the ticking bar: agrees, not a jump.
+        assertEquals(128_600L, tracker.effectiveMs(q))
     }
 
     @Test
@@ -442,7 +443,8 @@ class PlayerPositionTrackerTest {
         assertEquals(108_020L, tracker.effectiveMs(q))
         now += 220
         tracker.setAnchor(q, elapsedMs = 108_253, capturedAtMs = now, isPlaying = true, durationMs = 217_000)
-        assertEquals(108_253L, tracker.effectiveMs(q))
+        // Within a second of the ticking bar: it agrees, so the bar keeps ticking.
+        assertEquals(108_240L, tracker.effectiveMs(q))
     }
 
     @Test
@@ -481,7 +483,7 @@ class PlayerPositionTrackerTest {
         assertEquals(0L, tracker.effectiveMs(q))
         now += 920
         tracker.setAnchor(q, elapsedMs = 900, capturedAtMs = now, isPlaying = true, durationMs = 200_000, itemId = "b")
-        assertEquals(900L, tracker.effectiveMs(q))
+        assertEquals(920L, tracker.effectiveMs(q))
     }
 
     @Test
@@ -502,5 +504,44 @@ class PlayerPositionTrackerTest {
         val limit = 20_000L + 3_000L + PlayerPositionTracker.JUMP_GUARD_SLACK_MS
         tracker.setAnchor(q, elapsedMs = limit, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
         assertEquals(limit, tracker.effectiveMs(q))
+    }
+
+    // ── Agreeing readings and arrival-stamped events ─────────────────────────
+
+    @Test
+    fun `a playing reading within a second of the bar does not move it`() {
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000, itemId = "a")
+        now += 5_000
+        // A poll restating a value the server computed 400 ms before it says.
+        tracker.setAnchor(q, elapsedMs = 64_600, capturedAtMs = now, isPlaying = true, durationMs = 300_000, itemId = "a")
+        assertEquals(65_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `a playing reading further off than that is still taken`() {
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000, itemId = "a")
+        now += 5_000
+        tracker.setAnchor(q, elapsedMs = 90_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000, itemId = "a")
+        assertEquals(90_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `a new item is taken however close its position`() {
+        tracker.setAnchor(q, elapsedMs = 600, capturedAtMs = now, isPlaying = true, durationMs = 300_000, itemId = "a")
+        now += 500
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 200_000, itemId = "b")
+        assertEquals(0L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `an arrival-stamped reading does not reset the clock offset`() {
+        // Server clock 600 ms behind: every stamped reading arrives looking that stale.
+        repeat(3) {
+            tracker.setAnchor(q, elapsedMs = 10_000L + it * 5_000, capturedAtMs = now - 600, isPlaying = true, durationMs = 300_000)
+            now += 5_000
+        }
+        val before = tracker.rawSkew
+        tracker.setAnchor(q, elapsedMs = 25_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000, serverStamped = false)
+        assertEquals(before, tracker.rawSkew)
     }
 }

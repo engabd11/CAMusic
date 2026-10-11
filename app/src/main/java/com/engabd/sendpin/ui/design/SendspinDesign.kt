@@ -1273,7 +1273,17 @@ private fun rememberSliderGesture(value: Float): SliderGesture {
  * any vertical component can be taken over by the scroll container, and throwing the
  * gesture away left the Lights screen showing a brightness the user had chosen and
  * that was never written anywhere.
+ *
+ * The touch handlers read [onChange] and [commit] through [rememberUpdatedState].
+ * `pointerInput` keeps the block it started with until its key changes, and the key
+ * is only [mirrored], so the handlers held the first composition's lambdas for as
+ * long as the slider lived. The seek bar's lambdas close over the track duration:
+ * open Now Playing on a 3:37 track, let a 2:57 one come on, and a drop at 1:52 was
+ * multiplied by 3:37 and sent as 2:17, while the magnifier (recomposed every frame)
+ * showed 1:52. Near the end the product ran past the track and the clamp to its last
+ * second skipped to the next song.
  */
+@Composable
 private fun Modifier.sliderInput(
     gesture: SliderGesture,
     width: () -> Int,
@@ -1290,6 +1300,20 @@ private fun Modifier.sliderInput(
      * would move opposite to the touch; they pass false.
      */
     mirrored: Boolean = false,
+): Modifier {
+    val latestOnChange by rememberUpdatedState(onChange)
+    val latestCommit by rememberUpdatedState(commit)
+    return sliderInputWith(gesture, width, { latestOnChange(it) }, { latestCommit(it) }, value, describe, mirrored)
+}
+
+private fun Modifier.sliderInputWith(
+    gesture: SliderGesture,
+    width: () -> Int,
+    onChange: (Float) -> Unit,
+    commit: (Float) -> Unit,
+    value: () -> Float,
+    describe: ((Float) -> String)?,
+    mirrored: Boolean,
 ): Modifier = this
     // What TalkBack and Switch Access see. The custom drawing made every slider in
     // the app a blank region to them: no value, no role, nothing to adjust. A range,
@@ -1421,7 +1445,12 @@ fun HSlider(
     val gesture = rememberSliderGesture(value)
     val v = gesture.display(value)
 
-    fun commit(f: Float) {
+    // A lambda, not a local `fun` passed as a function reference: the Compose
+    // compiler remembers a local function reference without seeing what it
+    // captures, so it held the first composition's [onCommit] for the slider's
+    // whole life. On the seek bar that is the first track's duration: a drag held
+    // still and released on a later, shorter track sent 1:29 x 2:57/2:46 = 1:35.
+    val commit: (Float) -> Unit = { f ->
         val c = f.coerceIn(0f, 1f)
         if (onCommit != null) onCommit(c) else onChange(c)
     }
@@ -1431,7 +1460,7 @@ fun HSlider(
             .fillMaxWidth()
             .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .sliderInput(gesture, { width }, onChange, ::commit, value = { v }, describe = label, mirrored = LocalLayoutDirection.current == LayoutDirection.Rtl),
+            .sliderInput(gesture, { width }, onChange, commit, value = { v }, describe = label, mirrored = LocalLayoutDirection.current == LayoutDirection.Rtl),
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(50)).background(inkOn(0.14f)))
@@ -1511,7 +1540,12 @@ fun WaveSeekBar(
     val gesture = rememberSliderGesture(value)
     val v = gesture.display(value)
 
-    fun commit(f: Float) {
+    // A lambda, not a local `fun` passed as a function reference: the Compose
+    // compiler remembers a local function reference without seeing what it
+    // captures, so it held the first composition's [onCommit] for the slider's
+    // whole life. On the seek bar that is the first track's duration: a drag held
+    // still and released on a later, shorter track sent 1:29 x 2:57/2:46 = 1:35.
+    val commit: (Float) -> Unit = { f ->
         val c = f.coerceIn(0f, 1f)
         if (onCommit != null) onCommit(c) else onChange(c)
     }
@@ -1551,7 +1585,7 @@ fun WaveSeekBar(
             .fillMaxWidth()
             .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .sliderInput(gesture, { width }, onChange, ::commit, value = { v }, describe = label),
+            .sliderInput(gesture, { width }, onChange, commit, value = { v }, describe = label),
         contentAlignment = Alignment.CenterStart,
     ) {
         val fill = v.coerceIn(0f, 1f)
@@ -1656,7 +1690,12 @@ fun PillSeekBar(
     val gesture = rememberSliderGesture(value)
     val v = gesture.display(value)
 
-    fun commit(f: Float) {
+    // A lambda, not a local `fun` passed as a function reference: the Compose
+    // compiler remembers a local function reference without seeing what it
+    // captures, so it held the first composition's [onCommit] for the slider's
+    // whole life. On the seek bar that is the first track's duration: a drag held
+    // still and released on a later, shorter track sent 1:29 x 2:57/2:46 = 1:35.
+    val commit: (Float) -> Unit = { f ->
         val c = f.coerceIn(0f, 1f)
         if (onCommit != null) onCommit(c) else onChange(c)
     }
@@ -1666,7 +1705,7 @@ fun PillSeekBar(
             .fillMaxWidth()
             .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .sliderInput(gesture, { width }, onChange, ::commit, value = { v }, describe = label, mirrored = LocalLayoutDirection.current == LayoutDirection.Rtl),
+            .sliderInput(gesture, { width }, onChange, commit, value = { v }, describe = label, mirrored = LocalLayoutDirection.current == LayoutDirection.Rtl),
         contentAlignment = Alignment.CenterStart,
     ) {
         val fillWidth = (v * width).coerceIn(0f, width.toFloat())
@@ -1739,7 +1778,12 @@ fun GlowSeekBar(
     val gesture = rememberSliderGesture(value)
     val v = gesture.display(value)
 
-    fun commit(f: Float) {
+    // A lambda, not a local `fun` passed as a function reference: the Compose
+    // compiler remembers a local function reference without seeing what it
+    // captures, so it held the first composition's [onCommit] for the slider's
+    // whole life. On the seek bar that is the first track's duration: a drag held
+    // still and released on a later, shorter track sent 1:29 x 2:57/2:46 = 1:35.
+    val commit: (Float) -> Unit = { f ->
         val c = f.coerceIn(0f, 1f)
         if (onCommit != null) onCommit(c) else onChange(c)
     }
@@ -1770,7 +1814,7 @@ fun GlowSeekBar(
             .fillMaxWidth()
             .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .sliderInput(gesture, { width }, onChange, ::commit, value = { v }, describe = label),
+            .sliderInput(gesture, { width }, onChange, commit, value = { v }, describe = label),
         contentAlignment = Alignment.CenterStart,
     ) {
         Canvas(Modifier.matchParentSize()) {

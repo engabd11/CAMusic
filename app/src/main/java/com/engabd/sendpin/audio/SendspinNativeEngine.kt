@@ -456,6 +456,21 @@ class SendspinNativeEngine(
 
     var onRoutingChanged: (() -> Unit)? = null
 
+    /**
+     * The startup mute of a (re)started stream has lifted: this stream's audio is
+     * now actually playing. Called on the producer thread; keep it cheap. This is
+     * the official app's `AudioEvent.Started` (its scheduler's first write of a new
+     * stream, at the audio's scheduled play time), the edge its seek and skip holds
+     * release on.
+     *
+     * The argument is when the stream's first sample was scheduled to play, as
+     * wall-clock ms: the instant Music Assistant 2.10.6 counts the stream's elapsed
+     * time from (`timeline_start_us`). The mute lifts later than that, after the
+     * engine has locked, so a bar restarted at the mute lifting sat up to most of a
+     * second behind the server and hopped forward on its next reading.
+     */
+    var onAudible: ((startedAtWallMs: Long) -> Unit)? = null
+
     // ---- Encoded frame and timing types ----
 
     private data class EncodedFrame(
@@ -1360,6 +1375,11 @@ class SendspinNativeEngine(
                 syncMuted = false
                 syncMuteStartedMs = 0L
                 applyOutputVolume()
+                onAudible?.let { cb ->
+                    val anchorUs = mediaAnchorUs
+                    val wallNow = System.currentTimeMillis()
+                    cb(if (anchorUs > 0L) wallNow - (nowUs() - anchorUs) / 1000L else wallNow)
+                }
             }
         }
     }
