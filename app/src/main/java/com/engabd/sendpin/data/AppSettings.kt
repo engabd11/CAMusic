@@ -157,6 +157,8 @@ class AppSettings(private val context: Context) {
         private val LIBRARY_CATEGORY_ORDER = stringPreferencesKey("library_category_order")
         /** Comma-joined category ids the user has switched off. */
         private val LIBRARY_CATEGORY_HIDDEN = stringPreferencesKey("library_category_hidden")
+        /** Sort and filter per library category, as JSON — see [com.engabd.sendpin.ma.LibraryOrder]. */
+        private val LIBRARY_ORDER = stringPreferencesKey("library_order")
         private val CHAMELEON_BLOOM = booleanPreferencesKey("chameleon_bloom")
         private val GLASS_BLUR = booleanPreferencesKey("glass_blur")
         // Appearance. Defaults are the app as designed — OLED black with the accent
@@ -1587,6 +1589,19 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLibraryCategoryHidden(ids: Set<String>) {
         context.dataStore.edit { it[LIBRARY_CATEGORY_HIDDEN] = ids.joinToString(",") }
+    }
+
+    /** The sort and filter chosen for each library category; absent means as the server sends it. */
+    val libraryOrders: Flow<Map<String, com.engabd.sendpin.ma.LibraryOrder>> = pref { prefs ->
+        prefs[LIBRARY_ORDER]?.let { com.engabd.sendpin.ma.LibraryOrder.decode(it) } ?: emptyMap()
+    }
+
+    suspend fun setLibraryOrder(category: String, order: com.engabd.sendpin.ma.LibraryOrder) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[LIBRARY_ORDER]?.let { com.engabd.sendpin.ma.LibraryOrder.decode(it) } ?: emptyMap()
+            val next = if (order.isDefault) current - category else current + (category to order)
+            prefs[LIBRARY_ORDER] = com.engabd.sendpin.ma.LibraryOrder.encode(next)
+        }
     }
 
     /** Put the library's category row back to exactly how it shipped. */
