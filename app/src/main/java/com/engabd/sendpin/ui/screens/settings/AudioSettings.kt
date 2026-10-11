@@ -302,14 +302,13 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
             rungs.forEach { rung ->
                 ToggleChip(rung.title, rung == mode) {
                     scope.launch {
-                        // All three written together, every time, so the stored state can
-                        // only ever be one of the four rungs. The old UI wrote them
-                        // independently, which is how "AAudio on, exclusive off" — a
-                        // combination that does nothing — was reachable.
-                        settings.setBitPerfect24Bit(rung.floatPath)
-                        settings.setExclusiveOutput(rung.exclusive)
-                        settings.setBitPerfectAaudio(rung.aaudio)
-                        settings.setUsbBitperfect(rung.usb)
+                        // All written together, every time, so the stored state can only
+                        // ever be one rung. The old UI wrote them independently, which is
+                        // how "AAudio on, exclusive off" — a combination that does
+                        // nothing — was reachable.
+                        settings.setOutputMode(rung)
+                        // Chosen by hand: plugging a DAC in or out must not undo it.
+                        com.engabd.sendpin.usb.UsbOutputAutoSwitch.userChose(context)
                         // The driver opens the DAC at play time and cannot show a dialog
                         // then, so ask for USB permission now, while the user is here.
                         if (rung.usb) {
@@ -379,6 +378,19 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
             )
         }
 
+        // Shown in the simple view too: it is on unless turned off, and it can move the
+        // dial onto a rung that view does not list.
+        if (!com.engabd.sendpin.data.Platform.isTelevision(context)) {
+            val autoSwitch by settings.usbAutoSwitch.collectAsStateWithLifecycle(initialValue = true)
+            ToggleRow(
+                title = "USB bit-perfect when a DAC is plugged in",
+                subtitle = "Switches once Android lets CAMusic use the DAC, and back to the mode you " +
+                    "had 20 seconds after it is unplugged. A mode you pick above stays picked",
+                checked = autoSwitch,
+                accent = accent,
+            ) { on -> scope.launch { settings.setUsbAutoSwitch(on) } }
+        }
+
         if (mode == OutputMode.USB_BITPERFECT) {
             val digital by settings.usbDigitalVolume.collectAsStateWithLifecycle(initialValue = false)
             ToggleRow(
@@ -388,6 +400,7 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                 checked = digital,
                 accent = accent,
             ) { on -> scope.launch { settings.setUsbDigitalVolume(on) } }
+            RememberDacRow(accent)
         }
 
         if ((mode == OutputMode.DIRECT || mode == OutputMode.USB_BITPERFECT) && route?.isUsb != true) {
@@ -397,6 +410,47 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                 warn = true,
             )
         }
+    }
+}
+
+/**
+ * How to stop Android asking for USB permission every time the DAC connects.
+ *
+ * Android's dialog for a USB device has an "Always open CAMusic" box, and ticking it is
+ * the only way the permission outlasts an unplug. But Android leaves the box out for a
+ * device that can record (a DAC with a microphone, like the BTD 700's for calls) unless
+ * the app may use the microphone, and confirming without the box clears any earlier
+ * "always". So with such a DAC and no microphone permission, the question comes back at
+ * every plug-in and at every restart of the DAC, mid-song too. Shown only then.
+ */
+@Composable
+private fun RememberDacRow(accent: Color) {
+    val context = LocalContext.current
+    val dac = remember { com.engabd.sendpin.usb.UsbDacProbe.audioDevices(context).firstOrNull() }
+    if (dac == null || !com.engabd.sendpin.usb.UsbDacProbe.hasMicrophone(dac)) return
+    fun micGranted() = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.RECORD_AUDIO,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    var granted by remember { mutableStateOf(micGranted()) }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted = it }
+    val name = dac.productName ?: "This DAC"
+    if (granted) {
+        Note(
+            "Next time Android asks about $name, tick \"Always open CAMusic\" and it will not " +
+                "ask again.",
+        )
+        return
+    }
+    Note(
+        "Android will ask for permission every time $name connects. It only offers " +
+            "\"Always open CAMusic\" to apps allowed to use the microphone, because $name has " +
+            "one. Allowing it lets you tick that box; CAMusic never records from the DAC.",
+        warn = true,
+    )
+    OledButton("Allow the microphone", accent = accent, outline = true) {
+        permission.launch(android.Manifest.permission.RECORD_AUDIO)
     }
 }
 

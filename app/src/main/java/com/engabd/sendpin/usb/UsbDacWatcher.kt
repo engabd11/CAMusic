@@ -11,6 +11,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -21,26 +22,52 @@ import kotlinx.coroutines.flow.asSharedFlow
  * USB DAC comings and goings, for the bit-perfect driver (milestone 4 of
  * docs/plan/usb-bitperfect-driver.md).
  *
- * - A DAC CAMusic holds being unplugged is announced on [lost], so the player pauses
- *   the way it would for unplugged headphones, instead of streaming into nothing.
- * - A DAC plugged in while USB bit-perfect is selected gets the USB permission asked
- *   for straight away, so the next track can take it.
+ * - A DAC CAMusic holds going away is announced on [lost], so the player pauses the way
+ *   it would for unplugged headphones, instead of carrying on out of the phone.
+ * - The same DAC back within seconds (a DAC that restarted itself; see [UsbDacReturn])
+ *   is announced on [returned] once CAMusic may use it, so the song carries on through
+ *   it without anyone pressing play.
+ * - A DAC plugged in, once allowed, switches the output to USB bit-perfect, and its
+ *   unplugging switches back ([UsbOutputAutoSwitch]), when that setting is on.
  * - [recoverOrphans] hands a DAC back to Android when a previous run died holding it.
+ *
+ * Permission on plug-in is Android's own business here: with USB bit-perfect selected,
+ * [UsbAttachActivity]'s filter makes Android ask "Open CAMusic for this DAC?", and
+ * answering it grants the permission. This used to request permission as well, which
+ * put a second dialog on top of that one at every plug-in.
  */
 class UsbDacWatcher(private val context: Context) {
 
-    private val _lost = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-
     /** A DAC CAMusic was holding has gone. */
-    val lost: SharedFlow<Unit> = _lost.asSharedFlow()
+    val lost: SharedFlow<Unit> = lostSignal.asSharedFlow()
+
+    private val _returned = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** The DAC lost mid-song is back and allowed: take it again and carry on. */
+    val returned: SharedFlow<Unit> = _returned.asSharedFlow()
 
     /** Whether USB bit-perfect is the selected output; set by the app from the setting. */
     @Volatile
     var bitperfectSelected = false
         set(value) {
             field = value
-            setAttachEntryEnabled(value)
+            setAttachEntryEnabled(value || autoSwitchEnabled)
+            if (!value) dropouts.cancel()
         }
+
+    /**
+     * Whether plugging a DAC in switches to USB bit-perfect ([UsbOutputAutoSwitch]); set by
+     * the app from the setting. Needs the attach entry too: it is what lets Android ask,
+     * or with "always" simply allow, at the moment the DAC goes in.
+     */
+    @Volatile
+    var autoSwitchEnabled = false
+        set(value) {
+            field = value
+            setAttachEntryEnabled(value || bitperfectSelected)
+        }
+
+    private val autoSwitch = UsbOutputAutoSwitch(context)
 
     private val usb = context.getSystemService(UsbManager::class.java)
 
@@ -54,13 +81,23 @@ class UsbDacWatcher(private val context: Context) {
                     if (session != null && session.deviceName == device.deviceName) {
                         Log.i(TAG, "${device.productName} unplugged while CAMusic held it")
                         session.markLost()
-                        _lost.tryEmit(Unit)
+                        reportLost(device)
                     }
+                    // Not held any more is no proof it was not playing: a stream that
+                    // died a moment before this broadcast already failed over and
+                    // closed its session. UsbBitperfectOutput reports that loss itself.
+                    autoSwitch.onDacDetached()
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    if (bitperfectSelected && usb?.hasPermission(device) == false) {
-                        Log.i(TAG, "${device.productName} plugged in: asking for USB permission")
-                        usb.requestPermission(device, UsbDacProbe.permissionIntent(context))
+                    val permitted = usb?.hasPermission(device) == true
+                    // Not yet allowed, Android asks, and UsbAttachActivity switches after.
+                    if (permitted) autoSwitch.onDacAllowed()
+                    if (!bitperfectSelected) return
+                    if (dropouts.attached(keyOf(device), SystemClock.elapsedRealtime(), permitted)) {
+                        Log.i(TAG, "${device.productName} is back: carrying on")
+                        _returned.tryEmit(Unit)
+                    } else if (!permitted) {
+                        Log.i(TAG, "${device.productName} plugged in: Android asks whether CAMusic may use it")
                     }
                 }
             }
@@ -75,6 +112,26 @@ class UsbDacWatcher(private val context: Context) {
         // Exported, deliberately: both are protected broadcasts only the system can send,
         // and NOT_EXPORTED is not guaranteed to deliver system broadcasts on every build.
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+    }
+
+    /** The player paused for [lost]: carry on if the DAC comes straight back. */
+    fun awaitReturn() = dropouts.awaitReturn(SystemClock.elapsedRealtime())
+
+    /** Playback was started some other way meanwhile: do not start it again. */
+    fun cancelReturn() = dropouts.cancel()
+
+    /**
+     * Android opened [UsbAttachActivity] for [device]: the user allowed CAMusic in
+     * Android's dialog, or chose "always" before. Either way it is allowed now.
+     */
+    fun onAttachHandled(device: UsbDevice) {
+        if (usb?.hasPermission(device) != true) return
+        autoSwitch.onDacAllowed()
+        if (!bitperfectSelected) return
+        if (dropouts.permitted(keyOf(device), SystemClock.elapsedRealtime())) {
+            Log.i(TAG, "${device.productName} allowed again: carrying on")
+            _returned.tryEmit(Unit)
+        }
     }
 
     /**
@@ -106,9 +163,9 @@ class UsbDacWatcher(private val context: Context) {
 
     /**
      * The manifest's USB-attach entry ([UsbAttachActivity]) is enabled only while USB
-     * bit-perfect is selected. With it enabled, Android offers to open CAMusic for the DAC,
-     * and "always" makes the USB permission stick; with it disabled, plugging a DAC in
-     * never involves CAMusic.
+     * bit-perfect is selected or a DAC switches to it ([autoSwitchEnabled]). With it
+     * enabled, Android offers to open CAMusic for the DAC, and "always" makes the USB
+     * permission stick; with it disabled, plugging a DAC in never involves CAMusic.
      */
     private fun setAttachEntryEnabled(enabled: Boolean) {
         runCatching {
@@ -127,7 +184,27 @@ class UsbDacWatcher(private val context: Context) {
     private fun UsbDevice.isAudio() =
         (0 until interfaceCount).any { getInterface(it).interfaceClass == UsbConstants.USB_CLASS_AUDIO }
 
-    private companion object {
-        const val TAG = "UsbDacWatcher"
+    companion object {
+        private const val TAG = "UsbDacWatcher"
+
+        private val lostSignal = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        private val dropouts = UsbDacReturn()
+
+        /**
+         * What identifies a DAC across a reconnection. Not its device name, which is
+         * new each time it enumerates, and not its serial number, which Android hides
+         * until permission is granted.
+         */
+        fun keyOf(device: UsbDevice): String = "%04x:%04x".format(device.vendorId, device.productId)
+
+        /**
+         * The DAC CAMusic was playing through has gone. From the detach broadcast, or
+         * from [UsbBitperfectOutput] when the stream died first, which it can by a
+         * hundred milliseconds or so; either way the player pauses.
+         */
+        fun reportLost(device: UsbDevice) {
+            dropouts.lost(keyOf(device), SystemClock.elapsedRealtime())
+            lostSignal.tryEmit(Unit)
+        }
     }
 }

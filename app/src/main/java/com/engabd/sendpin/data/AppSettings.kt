@@ -178,6 +178,7 @@ class AppSettings(private val context: Context) {
         private val BIT_PERFECT_AAUDIO = booleanPreferencesKey("bit_perfect_aaudio") // AAudio direct I24/float exclusive path
         private val USB_BITPERFECT = booleanPreferencesKey("usb_bitperfect") // CAMusic's own USB driver
         private val USB_DIGITAL_VOLUME = booleanPreferencesKey("usb_digital_volume") // opt-in, not bit-perfect
+        private val USB_AUTO_SWITCH = booleanPreferencesKey("usb_auto_switch") // USB bit-perfect on plug-in
         private val EXCLUSIVE_OUTPUT = booleanPreferencesKey("exclusive_output")  // no processors, no in-app volume — the source's own bits
         // "sendspin_exoplayer" and "sendspin_oboe" were here and are deliberately
         // not replaced. The native Oboe engine is the only MA engine now, so a
@@ -1060,6 +1061,7 @@ class AppSettings(private val context: Context) {
             .putBoolean("bit_perfect_aaudio", prefs[BIT_PERFECT_AAUDIO] ?: false)
             .putBoolean("usb_bitperfect", prefs[USB_BITPERFECT] ?: false)
             .putBoolean("usb_digital_volume", prefs[USB_DIGITAL_VOLUME] ?: false)
+            .putBoolean("usb_auto_switch", prefs[USB_AUTO_SWITCH] ?: true)
             .putString("preferred_audio_device_id", prefs[PREFERRED_AUDIO_DEVICE_ID] ?: "")
             .putBoolean(HAS_LIBRARY, storedServers(prefs).any { it.id != DOWNLOADS_SERVER_ID })
             .apply()
@@ -2053,6 +2055,33 @@ class AppSettings(private val context: Context) {
      */
     val usbDigitalVolume: Flow<Boolean> = pref { it[USB_DIGITAL_VOLUME] ?: false }
     val bootUsbDigitalVolume: Boolean get() = bootPrefs.getBoolean("usb_digital_volume", false)
+
+    /**
+     * Switch to USB bit-perfect when a USB DAC is plugged in, and back once it has been
+     * gone a while; see com.engabd.sendpin.usb.UsbOutputAutoSwitch. On unless turned off.
+     * Mirrored because the switch is decided in a broadcast receiver.
+     */
+    val usbAutoSwitch: Flow<Boolean> = pref { it[USB_AUTO_SWITCH] ?: true }
+    val bootUsbAutoSwitch: Boolean get() = bootPrefs.getBoolean("usb_auto_switch", true)
+    suspend fun setUsbAutoSwitch(value: Boolean) {
+        bootPrefs.edit().putBoolean("usb_auto_switch", value).apply()
+        context.dataStore.edit { it[USB_AUTO_SWITCH] = value }
+    }
+
+    /** The output mode as the next player build will read it. */
+    val bootOutputMode: com.engabd.sendpin.audio.OutputMode
+        get() = com.engabd.sendpin.audio.OutputMode.of(bootBitPerfect, bootExclusiveOutput, bootBitPerfectAaudio, bootUsbBitperfect)
+
+    /**
+     * Store [mode]: all four keys together, every time, so the stored state can only
+     * ever be one rung (see OutputMode). The player rebuilds for it by itself.
+     */
+    suspend fun setOutputMode(mode: com.engabd.sendpin.audio.OutputMode) {
+        setBitPerfect24Bit(mode.floatPath)
+        setExclusiveOutput(mode.exclusive)
+        setBitPerfectAaudio(mode.aaudio)
+        setUsbBitperfect(mode.usb)
+    }
     suspend fun setUsbDigitalVolume(value: Boolean) {
         bootPrefs.edit().putBoolean("usb_digital_volume", value).apply()
         context.dataStore.edit { it[USB_DIGITAL_VOLUME] = value }
