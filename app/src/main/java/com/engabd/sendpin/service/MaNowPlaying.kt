@@ -72,6 +72,11 @@ class MaNowPlaying(private val app: Context) {
     )
 
     private val settings = AppSettings(app)
+
+    /** Music Assistant has a stream loaded on this phone (Sendspin), paused or playing. */
+    private fun streamingHere(): Boolean =
+        runCatching { (app.applicationContext as com.engabd.sendpin.SendpinApp).playbackOwner.state.value.sendspinActive }
+            .getOrDefault(false)
     /**
      * Live, not captured — see [PlayerIdentity.getPlayerId]. This one mattered most:
      * `MaNowPlaying` is built once, on `SendpinApp`, and never rebuilt, so a captured
@@ -285,8 +290,10 @@ class MaNowPlaying(private val app: Context) {
                 delay(POLL_MS)
                 // Pointless on the Navidrome backend, where MA may not even be
                 // configured — and waking the radio for it would be worse than
-                // pointless.
-                if (_backend.value != "subsonic" && api.state.value == MaApiClient.State.CONNECTED) {
+                // pointless. Except while Music Assistant is streaming to this phone:
+                // then MA is configured by definition, and what it says about this
+                // phone's own player is what Now Playing shows.
+                if ((_backend.value != "subsonic" || streamingHere()) && api.state.value == MaApiClient.State.CONNECTED) {
                     // Skip the poll when the app is backgrounded and no remote
                     // player is actively playing. The poll drives WebSocket traffic
                     // and JSON parsing on the main dispatcher every 5 seconds —
