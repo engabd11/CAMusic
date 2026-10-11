@@ -16,5 +16,9 @@ of the others.
 
 Settings, servers and credentials can be exported as a password-encrypted file (a passphrase of
 at least ten characters, entered twice, stretched with 600,000 rounds of PBKDF2) and imported
-on another device, where the credentials are re-encrypted under that device's Keystore. Older
-exports still import.
+on another device, where the credentials are re-encrypted under that device's Keystore. The
+file also carries the playlists made in the app, favourites kept on the phone, lyric timing
+fixes and game records, and, if you tick it, your play history for Stats (merged without
+doubling plays). Older exports still import, and an older version of the app still reads a new
+export, keeping what it knows. The player identity stays with each phone, so two phones never
+appear to Music Assistant as one speaker. Stats keeps up to 100,000 plays.

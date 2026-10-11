@@ -345,7 +345,7 @@ class PlaybackReporter(private val app: SendpinApp) {
                     energy = scan?.intensity?.character,
                 ),
             )
-            dao.trimTo()
+            if (com.engabd.sendpin.data.PlayHistoryRetention.shared.dueAfterInsert()) dao.trimTo()
         }
     }
 

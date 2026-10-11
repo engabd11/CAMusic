@@ -208,9 +208,31 @@ interface PlayHistoryDao {
     @Query("SELECT MIN(timestamp) FROM play_history")
     suspend fun earliest(): Long?
 
-    /** Storage cap: this table only ever grows otherwise. Called after every insert. */
-    @Query("DELETE FROM play_history WHERE id NOT IN (SELECT id FROM play_history ORDER BY timestamp DESC LIMIT :keep)")
-    suspend fun trimTo(keep: Int = 5_000)
+    /**
+     * Storage cap: this table only ever grows otherwise. Run on one insert in
+     * [com.engabd.sendpin.data.PlayHistoryRetention.TRIM_EVERY], not on every one.
+     *
+     * Cuts at the timestamp of the newest play past [keep], which the timestamp index
+     * answers directly; the old `id NOT IN (… LIMIT :keep)` built the whole kept list
+     * to compare against, once per play. With fewer plays than [keep] the subquery is
+     * empty and nothing goes.
+     */
+    @Query(
+        "DELETE FROM play_history WHERE timestamp < " +
+            "(SELECT timestamp FROM play_history ORDER BY timestamp DESC LIMIT 1 OFFSET :keep)",
+    )
+    suspend fun trimTo(keep: Int = com.engabd.sendpin.data.PlayHistoryRetention.KEEP)
+
+    /** Every play, oldest first, for a backup. */
+    @Query("SELECT * FROM play_history ORDER BY timestamp ASC")
+    suspend fun everything(): List<PlayHistoryEntity>
+
+    /** When each play was logged and what it was, to merge a restored history without doubling it. */
+    @Query("SELECT timestamp || '|' || trackId FROM play_history")
+    suspend fun playKeys(): List<String>
+
+    @Insert
+    suspend fun insertAll(rows: List<PlayHistoryEntity>)
 
     // ── "Your listening" on the album and artist pages ──────────────────────
     //
