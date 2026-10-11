@@ -296,8 +296,12 @@ class LocalPlayer(private val context: Context) {
      *
      * Set by `SendpinApp` at construction. The [AirPlayOutputProcessor] taps
      * the ExoPlayer chain and feeds it when [AirPlayOutput.isConnected] is true.
+     *
+     * Always built now. Deciding whether to build it meant loading the native library
+     * first, synchronously, on the main thread at every process start; the output
+     * loads it in the background instead, and does nothing until it has.
      */
-    val airPlayOutput: AirPlayOutput? = if (AirPlayOutput.available()) AirPlayOutput() else null
+    val airPlayOutput: AirPlayOutput? = AirPlayOutput()
 
     /**
      * The AirPlay PCM tap, in the audio chain after [audioAnalysisTap]. A

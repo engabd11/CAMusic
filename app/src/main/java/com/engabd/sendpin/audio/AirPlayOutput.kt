@@ -70,7 +70,10 @@ class AirPlayOutput : NetworkOutput {
      * first call — the name `nativePtr` is the contract.
      */
     @Suppress("unused")
+    @Volatile
     private var nativePtr: Long = 0L
+
+    private val nativeLock = Any()
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -89,12 +92,17 @@ class AirPlayOutput : NetworkOutput {
     val pinDeviceName: StateFlow<String?> get() = _pinDeviceName.asStateFlow()
 
     init {
-        loadNative()
+        // Off the main thread. This object is built with the local player, which is
+        // built in Application.onCreate on every process start, and the library is the
+        // whole AirPlay stack (RTSP, HAP pairing, ALAC, TLS): loading it there was the
+        // biggest main-thread disk read at startup. Every call below already does
+        // nothing until the pointer is set, and [connect] waits for the load itself.
+        Thread({ loadNative() }, "AirPlayLoad").apply { isDaemon = true }.start()
     }
 
-    private fun loadNative(): Boolean {
+    private fun loadNative(): Boolean = synchronized(nativeLock) {
         if (nativePtr != 0L) return true
-        return try {
+        try {
             System.loadLibrary("airplay_sendpin")
             nativePtr = nativeInit()
             nativePtr != 0L
@@ -103,20 +111,6 @@ class AirPlayOutput : NetworkOutput {
         }
     }
 
-    companion object {
-        /**
-         * Whether the AirPlay native library can be loaded. The AirPlay
-         * button in Now Playing checks this before showing. If the native
-         * build is not compiled (e.g. on a CI runner without the NDK),
-         * the feature is simply absent — no crash, no error.
-         */
-        fun available(): Boolean = try {
-            System.loadLibrary("airplay_sendpin")
-            true
-        } catch (_: UnsatisfiedLinkError) {
-            false
-        }
-    }
 
     override suspend fun connect(
         host: String,
@@ -128,7 +122,9 @@ class AirPlayOutput : NetworkOutput {
         credentialsJson: String,
         password: String,
     ) {
-        if (nativePtr == 0L) return
+        // The background load is almost always done by the time anyone picks a
+        // receiver; if not, finish it here (on the caller's IO dispatcher).
+        if (nativePtr == 0L && !loadNative()) return
         _deviceName.value = name
         nativeStart(host, port, name, authMode.nativeValue, airplay2, deviceId, credentialsJson, password)
     }
