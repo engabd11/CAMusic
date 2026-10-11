@@ -139,15 +139,28 @@ class UsbBitperfectOutput(
     private var lastOutputChannels: IntArray? = null
 
     /**
-     * The DAC went away mid-track (unplugged): hand the rest of the track to [fallback],
-     * configured as the DAC was. The player has already been paused by the unplug; when
-     * play is pressed again the music carries on through the phone, not into nothing.
-     * Returns false if there was nothing to fail over to.
+     * Set when the DAC was lost mid-track, so the next [flush] (the player seeking in
+     * place once it is back; see UsbDacWatcher.returned) takes it again rather than
+     * leaving the rest of the track on [fallback].
+     */
+    private var retakeAfterLoss = false
+
+    /**
+     * The DAC went away mid-track (unplugged, or it restarted itself): hand the rest of
+     * the track to [fallback], configured as the DAC was, and have the player pause.
+     * When play is pressed again the music carries on through the phone, not into
+     * nothing. Returns false if there was nothing to fail over to.
      */
     private fun failOverIfLost(): Boolean {
         val s = session ?: return false
         if (!usbActive || !s.streamDied) return false
         Log.i(TAG, "the DAC is gone: carrying on through Android")
+        // Reported from here as well as from the detach broadcast: the stream usually
+        // dies first, and this closes the session the broadcast would have matched, so
+        // the broadcast found nothing held and the player never paused. The song
+        // carried on out of the phone's speaker, or its Bluetooth.
+        UsbDacWatcher.reportLost(s.usbDevice)
+        retakeAfterLoss = true
         return failOver("the DAC was disconnected")
     }
 
@@ -453,15 +466,36 @@ class UsbBitperfectOutput(
     }
 
     override fun flush() {
-        if (!usbActive) return fallback.flush()
+        // A DAC lost while paused has not been noticed yet: fail over now, so the take
+        // back below sees it gone rather than flushing a dead stream.
+        failOverIfLost()
+        if (!usbActive) {
+            fallback.flush()
+            if (retakeAfterLoss) retake()
+            return
+        }
         session?.flush()
         resetCounters()
         // A seek: nothing of the old format is left to wait for.
         session?.let { applyPendingSwitch(it) }
     }
 
+    /**
+     * The DAC lost mid-track is attached again: take it back for the rest of the track.
+     * Only after a flush, when nothing of the track is queued on [fallback] any more, so
+     * the switch drops no audio. If it cannot be taken, the track stays on [fallback].
+     */
+    private fun retake() {
+        val format = lastFormat ?: return
+        if (!isRawPcm(format) || UsbDacProbe.audioDevices(context).isEmpty()) return
+        retakeAfterLoss = false
+        configure(format, lastBufferSize, lastOutputChannels)
+        if (usbActive) Log.i(TAG, "the DAC is back: taken again")
+    }
+
     override fun reset() {
         pendingSwitch = null
+        retakeAfterLoss = false
         fallback.reset()
         usbActive = false
         closeSession()

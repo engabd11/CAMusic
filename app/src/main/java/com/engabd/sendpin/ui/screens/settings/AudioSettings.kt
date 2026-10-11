@@ -388,6 +388,7 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                 checked = digital,
                 accent = accent,
             ) { on -> scope.launch { settings.setUsbDigitalVolume(on) } }
+            RememberDacRow(accent)
         }
 
         if ((mode == OutputMode.DIRECT || mode == OutputMode.USB_BITPERFECT) && route?.isUsb != true) {
@@ -397,6 +398,47 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
                 warn = true,
             )
         }
+    }
+}
+
+/**
+ * How to stop Android asking for USB permission every time the DAC connects.
+ *
+ * Android's dialog for a USB device has an "Always open CAMusic" box, and ticking it is
+ * the only way the permission outlasts an unplug. But Android leaves the box out for a
+ * device that can record (a DAC with a microphone, like the BTD 700's for calls) unless
+ * the app may use the microphone, and confirming without the box clears any earlier
+ * "always". So with such a DAC and no microphone permission, the question comes back at
+ * every plug-in and at every restart of the DAC, mid-song too. Shown only then.
+ */
+@Composable
+private fun RememberDacRow(accent: Color) {
+    val context = LocalContext.current
+    val dac = remember { com.engabd.sendpin.usb.UsbDacProbe.audioDevices(context).firstOrNull() }
+    if (dac == null || !com.engabd.sendpin.usb.UsbDacProbe.hasMicrophone(dac)) return
+    fun micGranted() = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.RECORD_AUDIO,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    var granted by remember { mutableStateOf(micGranted()) }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted = it }
+    val name = dac.productName ?: "This DAC"
+    if (granted) {
+        Note(
+            "Next time Android asks about $name, tick \"Always open CAMusic\" and it will not " +
+                "ask again.",
+        )
+        return
+    }
+    Note(
+        "Android will ask for permission every time $name connects. It only offers " +
+            "\"Always open CAMusic\" to apps allowed to use the microphone, because $name has " +
+            "one. Allowing it lets you tick that box; CAMusic never records from the DAC.",
+        warn = true,
+    )
+    OledButton("Allow the microphone", accent = accent, outline = true) {
+        permission.launch(android.Manifest.permission.RECORD_AUDIO)
     }
 }
 

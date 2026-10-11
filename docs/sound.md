@@ -51,8 +51,14 @@ Playback is built to be worth good headphones and a good DAC.
     tries the next rate it can convert to before handing the track to Android, so a track
     never plays at the wrong speed.
   - **Sharing the DAC**: CAMusic takes the DAC while playing and hands it back to Android
-    after 30 s paused. Unplugging pauses playback, like unplugging headphones. If the DAC
-    cannot be taken back (another app holds it), the track carries on through Android.
+    after 30 s paused. Unplugging pauses playback, like unplugging headphones. A DAC that
+    drops out and is back within 20 s (some restart themselves mid-song) picks the song up
+    where it paused, once Android allows it again. If the DAC cannot be taken back
+    (another app holds it), the track carries on through Android.
+  - **Permission**: Android asks whether CAMusic may use the DAC. Tick "Always open
+    CAMusic" there and it stops asking. For a DAC with a microphone (the BTD 700 has one),
+    Android only shows that box to apps allowed to use the microphone; the USB bit-perfect
+    setting says so and offers the permission. CAMusic never records from the DAC.
   - **Asynchronous DACs**: the driver streams at the file's exact rate and does not follow
     a DAC's own clock yet, so on a long session an asynchronous DAC may click now and then.
     The signal path says when a DAC is asynchronous.
@@ -93,7 +99,7 @@ between the decoder and the DAC.
 | **System sound effects** (e.g. Samsung Dolby Atmos) | Applied | Applied | Bypassed |
 | **Volume** | Android's media volume | Android's media volume | The DAC's own hardware volume (digital only if you opt in) |
 | **Other apps and calls** | Share the output as usual | Share the output as usual | The DAC belongs to CAMusic while it plays, and goes back to Android after 30 s paused |
-| **Needs** | Any output | Any output; best with a 24-bit-capable DAC or LDAC | A USB DAC and one USB permission prompt |
+| **Needs** | Any output | Any output; best with a 24-bit-capable DAC or LDAC | A USB DAC and Android's USB permission ("Always open CAMusic" makes it stick) |
 | **Best for** | Everyday listening with the equaliser and Light Sync | Bluetooth LDAC and hi-res files through Android | The most faithful playback from a USB DAC |
 
 In USB bit-perfect, a track above the DAC's highest rate (192 kHz on a 96 kHz DAC) is converted by CAMusic at an exact ratio (192 → 96 kHz) rather than handed to Android. The signal path labels that track "not bit-perfect: converted". Pure and Direct to DAC, the older Android-based rungs, have been retired from the picker and keep working for anyone who had selected them.

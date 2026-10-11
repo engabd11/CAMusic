@@ -110,6 +110,9 @@ class UsbAudioSession private constructor(
     /** The kernel's name for the device, to match against attach/detach broadcasts. */
     val deviceName: String get() = device.deviceName
 
+    /** The device itself, to report its loss with; see [UsbDacWatcher.reportLost]. */
+    val usbDevice: UsbDevice get() = device
+
     /** Set when the DAC was unplugged: nothing more will reach it. */
     @Volatile
     var lost = false

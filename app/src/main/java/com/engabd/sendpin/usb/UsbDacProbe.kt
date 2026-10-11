@@ -55,6 +55,26 @@ object UsbDacProbe {
     }
 
     /**
+     * Whether [device] can record: an audio-streaming interface with an endpoint into the
+     * phone. The BTD 700 has one, for calls. Android's own test for this is hidden API;
+     * it matters because Android's USB dialogs leave out "always" for such a device
+     * unless the app may use the microphone.
+     */
+    fun hasMicrophone(device: UsbDevice): Boolean =
+        (0 until device.interfaceCount).map(device::getInterface).any { iface ->
+            iface.interfaceClass == UsbConstants.USB_CLASS_AUDIO && iface.interfaceSubclass == AUDIO_STREAMING &&
+                (0 until iface.endpointCount).any {
+                    val ep = iface.getEndpoint(it)
+                    // Not an asynchronous DAC's feedback endpoint, which is IN as well
+                    // but sits on the playback interface (usage type 01 in bits 5..4).
+                    ep.direction == UsbConstants.USB_DIR_IN && ep.type == UsbConstants.USB_ENDPOINT_XFER_ISOC &&
+                        (ep.attributes shr 4) and 0x3 != 1
+                }
+        }
+
+    private const val AUDIO_STREAMING = 2
+
+    /**
      * Android's own USB permission dialog — the only one there is. Resolves to whether
      * the user allowed it; a device already allowed answers at once.
      */

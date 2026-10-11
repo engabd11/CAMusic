@@ -715,7 +715,28 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // The DAC CAMusic was playing through was unplugged: pause, as for unplugged
             // headphones, rather than play on into nothing (or out of the speaker).
             appScope.launch {
-                usbDacWatcher.lost.collect { if (localPlayer.playing.value) localPlayer.pause() }
+                usbDacWatcher.lost.collect {
+                    if (localPlayer.playing.value) {
+                        localPlayer.pause()
+                        // Some DACs restart themselves mid-song and are back in seconds.
+                        usbDacWatcher.awaitReturn()
+                    }
+                }
+            }
+            // ...and once it is back and allowed, carry on through it. Seeking in place
+            // is what makes the output take the DAC again (UsbBitperfectOutput.retake).
+            appScope.launch {
+                usbDacWatcher.returned.collect {
+                    if (!localPlayer.playing.value) {
+                        localPlayer.seekTo(localPlayer.positionMs.value)
+                        localPlayer.resume()
+                    }
+                }
+            }
+            // Played again some other way meanwhile: the listener decided, so a returning
+            // DAC must not start anything.
+            appScope.launch {
+                localPlayer.playing.collect { if (it) usbDacWatcher.cancelReturn() }
             }
             // Opt-in, unlike the two above: only starts if a previous run already had
             // both the setting on and the permission granted. `CallPauseObserver.start`
