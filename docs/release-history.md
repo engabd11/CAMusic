@@ -206,7 +206,22 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.15.0** (summaries moved here from the README):
+**v0.11.1 to v0.15.1** (summaries moved here from the README):
+
+**v0.15.1**: **Music Assistant on the phone's speaker sounds like local playback**: the Sendspin
+engine plays through Android's normal media path, so the phone's own speaker tuning (Dolby, Dirac,
+SoundAlive, system EQs) applies, with the sync timing reworked for it. **The seek bar lands where it
+is dropped** (it had been using the first track's length after any track change, which also skipped
+to the next song near the end), a paused seek waits for Play, and the bar no longer hops after a
+seek. A **crossfade switch** beside Don't stop the music. **Browse by folder** on Navidrome/Subsonic,
+MPD and this device; **sort and filter** every library category; **search Settings**; **parametric
+EQ** with AutoEQ import and a curve per output; **fetch-ahead streaming cache** with a size choice;
+fuller **backups** (playlists, favourites, lyric offsets, play history) that onboarding can restore;
+an Android Auto queue and repeat; optional favourite, shuffle and repeat buttons in the system media
+controls; a working widget and app shortcuts; TV focus, library, search and voice. Fixes include
+USB DAC dropouts (pause, then carry on) with auto-switch to USB bit-perfect on plug-in, server error
+pages never cached as tracks, a headset Play crash after process death, Music Assistant battery
+drain while unreachable, MPD following its own idle events, and ended queues resuming from the top.
 
 **v0.15.0**: **USB bit-perfect**, CAMusic's own USB audio driver. Files reach a USB DAC at their
 own rate and bit depth, with DAC hardware volume and a signal path the DAC confirms; unplug,
