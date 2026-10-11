@@ -174,6 +174,47 @@ class PlayerPositionTracker(
      */
     private val frozenStampCeiling = ConcurrentHashMap<String, Long>()
 
+    /** A jump this queue was just told to make: where to, and when. See [guardJump]. */
+    private class JumpGuard(val targetMs: Long, val armedAtMs: Long)
+
+    private val jumpGuards = ConcurrentHashMap<String, JumpGuard>()
+
+    /**
+     * Expect [queueId] to jump to [targetMs] — a seek, or zero for a skip — and for
+     * [JUMP_GUARD_MS] drop any reading further past it than the time since allows.
+     *
+     * Music Assistant's first readings after a seek are not all honest. It publishes
+     * the target, then — before the new stream has reset its player's clock — the
+     * target *plus the old stream's elapsed time* (`player_queues/controller.py`
+     * `on_player_elapsed_time_corrected`, and the flow-mode index walk in
+     * `playback_tracker.py`, both add the stale player elapsed; 2.10.6). Measured on
+     * a Sendspin phone: 1:48 then 1:52.8, and 3:27 then 4:16 on a 3:37 track. The
+     * [frozenStampCeiling] only catches that reading when it lands inside the freeze,
+     * which lifts on the first chunk of the new stream ~60 ms after the seek, so it was
+     * a race: lose it and the bar jumped seconds ahead, or to the end near the end. A
+     * remote speaker gets no freeze at all.
+     *
+     * A real reading cannot be further than `target + time since the seek` (scaled for
+     * speed) past the target, and the bogus one always is, by the old stream's whole
+     * elapsed time. Bounded in time rather than lifted by the first sensible reading,
+     * because the server sends the honest target *first* and the bogus one after it.
+     */
+    fun guardJump(queueId: String, targetMs: Long) {
+        jumpGuards[queueId] = JumpGuard(targetMs.coerceAtLeast(0L), nowMs())
+    }
+
+    /** True when [elapsedMs] is too far past a jump [queueId] just made to be real. */
+    private fun isPastJump(queueId: String, elapsedMs: Long): Boolean {
+        val guard = jumpGuards[queueId] ?: return false
+        val since = nowMs() - guard.armedAtMs
+        if (since > JUMP_GUARD_MS) {
+            jumpGuards.remove(queueId, guard)
+            return false
+        }
+        val rate = maxOf(anchors.value[queueId]?.speed ?: 1f, 1f)
+        return elapsedMs > guard.targetMs + (since.coerceAtLeast(0L) * rate).toLong() + JUMP_GUARD_SLACK_MS
+    }
+
     /**
      * How far behind this phone's wall clock the server's appears to run, in ms.
      *
@@ -282,6 +323,9 @@ class PlayerPositionTracker(
         speed: Float? = null,
         itemId: String? = null,
     ) {
+        // Before the stamp bookkeeping, so a bogus reading leaves no trace that could
+        // make the honest one after it look stale.
+        if (isPastJump(queueId, elapsedMs)) return
         if (capturedAtMs != null) {
             val seen = stampHighWater[queueId]
             if (seen != null && capturedAtMs < seen && seen - capturedAtMs < STALE_RESET_MS) return
@@ -407,6 +451,7 @@ class PlayerPositionTracker(
 
     private fun freeze(queueId: String, elapsedMs: Long, durationMs: Long?, reason: FreezeReason) {
         frozenStampCeiling.remove(queueId)
+        guardJump(queueId, elapsedMs)
         anchors.update { existing ->
             val current = existing[queueId]
             existing + (
@@ -488,6 +533,7 @@ class PlayerPositionTracker(
     fun remove(queueId: String) {
         stampHighWater.remove(queueId)
         frozenStampCeiling.remove(queueId)
+        jumpGuards.remove(queueId)
         anchors.update { it - queueId }
     }
 
@@ -495,6 +541,7 @@ class PlayerPositionTracker(
     fun clear() {
         stampHighWater.clear()
         frozenStampCeiling.clear()
+        jumpGuards.clear()
         anchors.update { emptyMap() }
     }
 
@@ -571,5 +618,22 @@ class PlayerPositionTracker(
          * was one to two *seconds*, which is four to eight times this.
          */
         const val SKEW_DEADBAND_MS = 250L
+
+        /**
+         * How long after a seek or skip [guardJump] screens readings. The bogus
+         * reading arrives within the first second (the new stream resets the server's
+         * clock on its first commit); five covers a slow server with room to spare,
+         * and is short enough that a forward seek from another controller just after
+         * ours is only held off briefly.
+         */
+        const val JUMP_GUARD_MS = 5_000L
+
+        /**
+         * Allowance past `target + time since` before a reading counts as bogus: the
+         * whole-second rounding of the seek and the server's own stamping jitter. The
+         * bogus reading is ahead by the old stream's elapsed time — normally tens of
+         * seconds — so this only lets through an error that small.
+         */
+        const val JUMP_GUARD_SLACK_MS = 2_000L
     }
 }

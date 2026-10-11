@@ -30,6 +30,10 @@ import kotlinx.coroutines.launch
  *   `Buffering → Synchronized` edge. A remote speaker gets no hold: the command is
  *   sent, and the server's next reading is the answer (the scrubber's own two-second
  *   latch covers the round trip visually).
+ * - **Every seek and skip, self or remote, screens the readings after it** — see
+ *   [PlayerPositionTracker.guardJump]. Music Assistant follows a seek with a bogus
+ *   reading (the target plus the old stream's elapsed time), and the hold above only
+ *   catches it when it happens to land before the first chunk does.
  * - **The hold cannot wedge.** It releases on the edge, immediately when the command
  *   throws, and after [WATCHDOG_MS] regardless — a backstop for a stream that never
  *   comes, not a timing the design relies on. The official app has no watchdog; a
@@ -155,7 +159,12 @@ class MaPlayhead(
      * phone. Rethrows whatever the command throws, after releasing the hold.
      */
     suspend fun <T> holdForSeek(t: Target, targetMs: Long, durationMs: Long?, command: suspend () -> T): T {
-        if (!t.isSelf) return command()
+        if (!t.isSelf) {
+            // No hold for a remote speaker, but its readings need the same screening:
+            // the server's target-plus-old-elapsed reading is not this phone's alone.
+            tracker.guardJump(t.key, targetMs)
+            return command()
+        }
         arm(t.key, targetMs) { tracker.setOptimisticSeek(t.key, targetMs, durationMs) }
         return runHeld(t.key, command)
     }
@@ -165,7 +174,10 @@ class MaPlayhead(
      * when [t] is this phone.
      */
     suspend fun <T> holdForTrackChange(t: Target, command: suspend () -> T): T {
-        if (!t.isSelf) return command()
+        if (!t.isSelf) {
+            tracker.guardJump(t.key, 0L)
+            return command()
+        }
         arm(t.key, 0L) { tracker.setOptimisticTrackChange(t.key) }
         return runHeld(t.key, command)
     }
