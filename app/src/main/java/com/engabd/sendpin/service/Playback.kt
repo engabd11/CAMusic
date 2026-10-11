@@ -719,6 +719,13 @@ class Playback(private val app: Context) {
         ).also {
             _maAudioSource.value = it.audioAnalysisTap to it.audioLead
         }
+        eng.onAudible = { startedAtMs ->
+            if (awaitingAudible) {
+                awaitingAudible = false
+                lastStreamChunkAtMs = startedAtMs
+                _streamChunkSeq.value += 1
+            }
+        }
         engine = eng
         android.util.Log.i("Playback", "sendspin engine = SendspinNativeEngine (oboe=always)")
 
@@ -802,10 +809,9 @@ class Playback(private val app: Context) {
         // starting a foreground service) is posted, or it stalls the socket.
         c.sink = object : SendspinClient.PlaybackSink {
             override fun onAudio(frame: ByteArray) {
-                if (chunkEdge.onAudio()) {
-                    lastStreamChunkAtMs = System.currentTimeMillis()
-                    _streamChunkSeq.value += 1
-                }
+                // The first chunk of a (re)started stream only arms the edge; it
+                // fires when that audio is heard (see `eng.onAudible` below).
+                if (chunkEdge.onAudio()) awaitingAudible = true
                 eng.submit(frame)
             }
 
@@ -846,6 +852,7 @@ class Playback(private val app: Context) {
                 val endedAt = SystemClock.elapsedRealtime()
                 lastStreamEndAtMs = endedAt
                 chunkEdge.onStreamEnd()
+                awaitingAudible = false
                 // Stamped now, while it is still unambiguous which stream ended. By
                 // the time the drain finishes, the engine may be playing a different
                 // one — see [SendspinPlaybackEngine.currentStreamId].
@@ -880,6 +887,7 @@ class Playback(private val app: Context) {
 
             override fun onDisconnected() {
                 chunkEdge.onDisconnected()
+                awaitingAudible = false
                 // Park rather than tear down: a reconnect is usually seconds away and
                 // a matching stream/start will carry straight on through the tail.
                 eng.endOfStream()
@@ -1099,17 +1107,27 @@ class Playback(private val app: Context) {
 
     private val chunkEdge = StreamChunkEdge()
 
+    /** The first chunk of a (re)started stream has arrived; [streamChunkSeq] bumps when it is heard. */
+    @Volatile private var awaitingAudible = false
+
     /**
-     * Counts (re)started streams: bumps on the first audio chunk after a
-     * `stream/start` or `stream/clear`. A level ("is it playing?") cannot answer "has
-     * the stream I am waiting for started?", because the outgoing track keeps coming
-     * out of the speaker after a skip is asked for. The playhead's optimistic hold
-     * samples this when it arms and releases when it moves.
+     * Counts (re)started streams: bumps when the audio of a stream that began with a
+     * `stream/start` or `stream/clear` is first heard (the engine's startup mute
+     * lifting), the official app's `PlaybackStarted`. A level ("is it playing?")
+     * cannot answer "has the stream I am waiting for started?", because the outgoing
+     * track keeps coming out of the speaker after a skip is asked for. The
+     * playhead's optimistic hold samples this when it arms and releases when it moves.
+     *
+     * It used to bump on the first chunk's *arrival*, on the reasoning that Music
+     * Assistant 2.10.2 counted a Sendspin player's elapsed time from that commit.
+     * 2.10.6 counts from `timeline_start_us`, the first chunk's scheduled play time,
+     * and arrival is ~60 ms after a seek: the hold lifted before the server had
+     * settled, and its bogus target-plus-old-elapsed reading went straight to the bar.
      */
     private val _streamChunkSeq = MutableStateFlow(0L)
     val streamChunkSeq: StateFlow<Long> = _streamChunkSeq.asStateFlow()
 
-    /** Wall-clock instant of the most recent [streamChunkSeq] edge. */
+    /** When the stream behind the most recent [streamChunkSeq] edge started playing, wall-clock ms. */
     @Volatile var lastStreamChunkAtMs: Long = 0L
         private set
 

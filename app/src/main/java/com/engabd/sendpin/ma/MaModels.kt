@@ -443,6 +443,12 @@ data class MaQueue(
     /** The queue's own `state` (`playing`, `paused`, `idle`) — what a `queue_updated` event knows. */
     val state: String = "idle",
     val dontStopTheMusic: Boolean = false,
+    /**
+     * Crossfade on this queue, as `player_queues/crossfade` set it or the global
+     * default. Null when the server sends no such key: it predates the per-queue
+     * toggle, and the switch is hidden rather than offered to do nothing.
+     */
+    val crossfadeEnabled: Boolean? = null,
     val playbackSpeed: Float = 1f,
     /** The queue's own playhead, which the player object doesn't always agree with. */
     val elapsedMs: Long? = null,
@@ -1027,6 +1033,7 @@ object MaParse {
             currentQueueItemId = current?.get("queue_item_id")?.jsonPrimitive?.contentOrNull,
             state = o["state"]?.jsonPrimitive?.contentOrNull ?: "idle",
             dontStopTheMusic = o["dont_stop_the_music_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
+            crossfadeEnabled = o["crossfade_enabled"]?.jsonPrimitive?.booleanOrNull,
             playbackSpeed = o["playback_speed"]?.jsonPrimitive?.floatOrNull ?: 1f,
             elapsedMs = o["elapsed_time"]?.jsonPrimitive?.doubleOrNull?.let { (it * 1000).toLong() },
             elapsedTimeLastUpdated = o["elapsed_time_last_updated"]?.jsonPrimitive?.doubleOrNull,

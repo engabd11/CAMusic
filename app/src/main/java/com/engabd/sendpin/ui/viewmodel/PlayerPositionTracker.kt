@@ -174,6 +174,47 @@ class PlayerPositionTracker(
      */
     private val frozenStampCeiling = ConcurrentHashMap<String, Long>()
 
+    /** A jump this queue was just told to make: where to, and when. See [guardJump]. */
+    private class JumpGuard(val targetMs: Long, val armedAtMs: Long)
+
+    private val jumpGuards = ConcurrentHashMap<String, JumpGuard>()
+
+    /**
+     * Expect [queueId] to jump to [targetMs] — a seek, or zero for a skip — and for
+     * [JUMP_GUARD_MS] drop any reading further past it than the time since allows.
+     *
+     * Music Assistant's first readings after a seek are not all honest. It publishes
+     * the target, then — before the new stream has reset its player's clock — the
+     * target *plus the old stream's elapsed time* (`player_queues/controller.py`
+     * `on_player_elapsed_time_corrected`, and the flow-mode index walk in
+     * `playback_tracker.py`, both add the stale player elapsed; 2.10.6). Measured on
+     * a Sendspin phone: 1:48 then 1:52.8, and 3:27 then 4:16 on a 3:37 track. The
+     * [frozenStampCeiling] only catches that reading when it lands inside the freeze,
+     * which lifts on the first chunk of the new stream ~60 ms after the seek, so it was
+     * a race: lose it and the bar jumped seconds ahead, or to the end near the end. A
+     * remote speaker gets no freeze at all.
+     *
+     * A real reading cannot be further than `target + time since the seek` (scaled for
+     * speed) past the target, and the bogus one always is, by the old stream's whole
+     * elapsed time. Bounded in time rather than lifted by the first sensible reading,
+     * because the server sends the honest target *first* and the bogus one after it.
+     */
+    fun guardJump(queueId: String, targetMs: Long) {
+        jumpGuards[queueId] = JumpGuard(targetMs.coerceAtLeast(0L), nowMs())
+    }
+
+    /** True when [elapsedMs] is too far past a jump [queueId] just made to be real. */
+    private fun isPastJump(queueId: String, elapsedMs: Long): Boolean {
+        val guard = jumpGuards[queueId] ?: return false
+        val since = nowMs() - guard.armedAtMs
+        if (since > JUMP_GUARD_MS) {
+            jumpGuards.remove(queueId, guard)
+            return false
+        }
+        val rate = maxOf(anchors.value[queueId]?.speed ?: 1f, 1f)
+        return elapsedMs > guard.targetMs + (since.coerceAtLeast(0L) * rate).toLong() + JUMP_GUARD_SLACK_MS
+    }
+
     /**
      * How far behind this phone's wall clock the server's appears to run, in ms.
      *
@@ -281,7 +322,17 @@ class PlayerPositionTracker(
         durationMs: Long? = null,
         speed: Float? = null,
         itemId: String? = null,
+        /**
+         * False for a reading stamped on arrival rather than by the server (a
+         * `queue_time_updated` event): its apparent lag is zero by construction, and
+         * folding that into the [skew] minimum wiped out a real 0.5 s clock offset,
+         * after which the next stamped poll hopped the bar half a second.
+         */
+        serverStamped: Boolean = true,
     ) {
+        // Before the stamp bookkeeping, so a bogus reading leaves no trace that could
+        // make the honest one after it look stale.
+        if (isPastJump(queueId, elapsedMs)) return
         if (capturedAtMs != null) {
             val seen = stampHighWater[queueId]
             if (seen != null && capturedAtMs < seen && seen - capturedAtMs < STALE_RESET_MS) return
@@ -342,7 +393,7 @@ class PlayerPositionTracker(
             //    made every capture look a second stale, and the projection added that
             //    second to the position on every anchor, forever — a bar that was ahead
             //    of the music even at the very start of a track. See [skew].
-            if (capturedAtMs != null) observeLag(now - capturedAtMs, playing)
+            if (capturedAtMs != null && serverStamped) observeLag(now - capturedAtMs, playing)
             val anchorAt = capturedAtMs
                 ?.let { it + skew }
                 // Never anchor in the future: the correction is an estimate, and one
@@ -350,6 +401,26 @@ class PlayerPositionTracker(
                 ?.coerceAtMost(now)
                 ?.takeIf { now - it in 0..MAX_PROJECTION_MS }
                 ?: now
+            // 3b. Agrees with the bar already ticking: not news either. The official
+            //     app only re-anchors a playing bar on Music Assistant's jump events,
+            //     and so it never moves between seeks. Here the 5 s poll restates a
+            //     position the server last computed up to a second ago, and taking
+            //     each one nudged the bar 0.1-0.6 s every five seconds. Same item,
+            //     both playing, within [AGREE_MS]: keep ticking, remember the pair.
+            val sameItem = itemId == null || running?.itemId == null || itemId == running.itemId
+            if (running != null && playing && running.isPlaying && sameItem) {
+                val projected = elapsedMs + ((now - anchorAt) * rate).toLong()
+                if (kotlin.math.abs(projected - running.effectiveAt(now)) < AGREE_MS) {
+                    val kept = running.copy(
+                        serverElapsedMs = elapsedMs,
+                        serverStampMs = capturedAtMs ?: running.serverStampMs,
+                        durationMs = duration,
+                        speed = rate,
+                        itemId = itemId ?: running.itemId,
+                    )
+                    return@update if (kept == current) existing else existing + (queueId to kept)
+                }
+            }
             existing + (
                 queueId to Anchor(
                     elapsedMs = elapsedMs,
@@ -407,6 +478,7 @@ class PlayerPositionTracker(
 
     private fun freeze(queueId: String, elapsedMs: Long, durationMs: Long?, reason: FreezeReason) {
         frozenStampCeiling.remove(queueId)
+        guardJump(queueId, elapsedMs)
         anchors.update { existing ->
             val current = existing[queueId]
             existing + (
@@ -426,8 +498,13 @@ class PlayerPositionTracker(
         }
     }
 
-    /** Audio is confirmed flowing — release the freeze and start ticking again. */
-    fun confirmPlaying(queueId: String) {
+    /**
+     * Audio is confirmed flowing — release the freeze and start ticking again, from
+     * [startedAtMs] when the caller knows when the held position actually started
+     * playing (the new stream's first scheduled sample), so the bar is already where
+     * the server will say it is rather than correcting to it on the next reading.
+     */
+    fun confirmPlaying(queueId: String, startedAtMs: Long? = null) {
         anchors.update { existing ->
             val current = existing[queueId] ?: return@update existing
             if (current.freezeReason == null) return@update existing
@@ -435,7 +512,7 @@ class PlayerPositionTracker(
             existing + (
                 queueId to current.copy(
                     elapsedMs = current.effectiveAt(now),
-                    capturedAtMs = now,
+                    capturedAtMs = (startedAtMs ?: now).coerceIn(now - MAX_PROJECTION_MS, now),
                     isPlaying = true,
                     freezeReason = null,
                     // The server's own reading from here on is the held value — the
@@ -488,6 +565,7 @@ class PlayerPositionTracker(
     fun remove(queueId: String) {
         stampHighWater.remove(queueId)
         frozenStampCeiling.remove(queueId)
+        jumpGuards.remove(queueId)
         anchors.update { it - queueId }
     }
 
@@ -495,6 +573,7 @@ class PlayerPositionTracker(
     fun clear() {
         stampHighWater.clear()
         frozenStampCeiling.clear()
+        jumpGuards.clear()
         anchors.update { emptyMap() }
     }
 
@@ -571,5 +650,30 @@ class PlayerPositionTracker(
          * was one to two *seconds*, which is four to eight times this.
          */
         const val SKEW_DEADBAND_MS = 250L
+
+        /**
+         * How long after a seek or skip [guardJump] screens readings. The bogus
+         * reading arrives within the first second (the new stream resets the server's
+         * clock on its first commit); five covers a slow server with room to spare,
+         * and is short enough that a forward seek from another controller just after
+         * ours is only held off briefly.
+         */
+        const val JUMP_GUARD_MS = 5_000L
+
+        /**
+         * How far a playing reading may sit from the ticking bar and still be taken as
+         * agreeing with it. A second: Music Assistant recomputes a Sendspin player's
+         * elapsed once a second, so a poll can restate a value up to that stale, and
+         * anything a listener would call a jump is several times this.
+         */
+        const val AGREE_MS = 1_000L
+
+        /**
+         * Allowance past `target + time since` before a reading counts as bogus: the
+         * whole-second rounding of the seek and the server's own stamping jitter. The
+         * bogus reading is ahead by the old stream's elapsed time — normally tens of
+         * seconds — so this only lets through an error that small.
+         */
+        const val JUMP_GUARD_SLACK_MS = 2_000L
     }
 }

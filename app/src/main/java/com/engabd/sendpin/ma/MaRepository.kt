@@ -1080,6 +1080,18 @@ class MaRepository(
             put("queue_id", queueId); put("dont_stop_the_music_enabled", enabled)
         })
 
+    // --- crossfade ---------------------------------------------------------
+
+    /**
+     * Turn crossfade on or off for this queue. Absolute, not a toggle: MA pins it
+     * as the queue's override of the global default (the official app's crossfade
+     * badge sends the same).
+     */
+    suspend fun setCrossfade(queueId: String, enabled: Boolean) =
+        api.sendCommand("player_queues/crossfade", buildJsonObject {
+            put("queue_id", queueId); put("crossfade_enabled", enabled)
+        })
+
     // --- lyrics ------------------------------------------------------------
 
     /**
