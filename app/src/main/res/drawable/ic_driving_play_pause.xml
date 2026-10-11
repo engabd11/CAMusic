@@ -1,11 +1,11 @@
 <!--
-  One glyph for both states, deliberately.
+  One glyph for both states, used by the home-screen widget's button.
 
-  A PiP RemoteAction's icon can be swapped only by rebuilding the whole
-  PictureInPictureParams, which needs the activity and is not reliably reachable
-  while it is backgrounded. A play triangle that lied while the music was playing
-  would be worse than a symbol that means "play or pause" and is always true — the
-  same reasoning a car's steering-wheel button uses, which is also one button.
+  The widget redraws only when its own buttons are pressed, so a play triangle could
+  sit there lying while the music was playing; a symbol that means "play or pause"
+  is always true. The driving floating window used to share it, but its buttons can
+  be replaced while it is open, so it shows a real Play or Pause instead
+  (ic_driving_play / ic_driving_pause).
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
