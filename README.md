@@ -13,6 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/engabd11/CAMusic/releases"><img src="https://img.shields.io/github/v/tag/engabd11/CAMusic?label=release&sort=semver" alt="Release" /></a>
+  <a href="https://github.com/engabd11/CAMusic/releases"><img src="https://img.shields.io/github/downloads/engabd11/CAMusic/total?logo=github&color=brightgreen" alt="Downloads" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-Apache%202.0-blue" alt="Licence" /></a>
   <img src="https://img.shields.io/badge/Android-12%2B-green" alt="Android 12+" />
   <img src="https://img.shields.io/badge/surfaces-Phone%20%C2%B7%20TV%20%C2%B7%20Auto%20%C2%B7%20webOS-3DDC84" alt="Surfaces" />
