@@ -28,6 +28,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
@@ -62,14 +65,54 @@ class LocalPlaybackService : Service() {
         const val ACTION_PREV = "com.engabd.sendpin.LOCAL_PREV"
         const val ACTION_STOP = "com.engabd.sendpin.LOCAL_STOP"
 
-        fun start(context: Context) {
+        /**
+         * Start the service, or say Android refused.
+         *
+         * Android 12+ throws `ForegroundServiceStartNotAllowedException` from
+         * `startForegroundService` itself when the app is in the background. The one
+         * caller is a process-scoped collector in SendpinApp with no handler, and a
+         * process started headless (a widget at boot, a tile, a sticky restart of the
+         * connection service) restores the last queue, becomes the session owner and
+         * lands here — so that exception crashed the process. A refusal is not fatal:
+         * the caller retries once the app is on screen.
+         */
+        fun start(context: Context): Boolean = runCatching {
             val intent = Intent(context, LocalPlaybackService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
             else context.startService(intent)
-        }
+        }.onFailure {
+            android.util.Log.w("LocalPlaybackService", "couldn't start the playback service: ${it.message}")
+        }.isSuccess
 
         fun stop(context: Context) {
             context.stopService(Intent(context, LocalPlaybackService::class.java))
+        }
+
+        private val _foreground = MutableStateFlow(false)
+
+        /**
+         * Whether the service is up with its notification posted — the moment the
+         * local player's session is the one holding the media buttons. Read by
+         * [com.engabd.sendpin.car.CarMediaLibraryService] to know when its stand-in
+         * notification can go.
+         */
+        val foreground: StateFlow<Boolean> = _foreground.asStateFlow()
+
+        /**
+         * The playback channel, created if missing. Shared with the car service's
+         * stand-in notification, which can be posted before this service ever ran —
+         * and `startForeground` with a channel that does not exist yet throws.
+         */
+        fun ensureChannel(context: Context) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            val channel = NotificationChannel(
+                CHANNEL_ID, "Offline & Navidrome playback", NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "Controls for music playing on this phone"
+                setShowBadge(false)
+                setSound(null, null)
+            }
+            context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
         private const val ART_PX = 512
@@ -181,6 +224,7 @@ class LocalPlaybackService : Service() {
             // events, so nothing to do here for ACTION_MEDIA_BUTTON.
         }
         if (!startForegroundNow()) return START_NOT_STICKY
+        _foreground.value = true
         observe()
         // Not sticky. A sticky restart after the process died brought this back with
         // no queue behind it, from the background, where Android refuses the
@@ -302,20 +346,10 @@ class LocalPlaybackService : Service() {
         return builder.build()
     }
 
-    private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID, "Offline & Navidrome playback", NotificationManager.IMPORTANCE_LOW,
-            ).apply {
-                description = "Controls for music playing on this phone"
-                setShowBadge(false)
-                setSound(null, null)
-            }
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
-    }
+    private fun createChannel() = ensureChannel(this)
 
     override fun onDestroy() {
+        _foreground.value = false
         artworkJob?.cancel()
         remoteActiveJob?.cancel()
         player.removePlayerRebuiltListener(onPlayerRebuilt)
