@@ -1556,10 +1556,13 @@ class MaRepository(
     // --- DSP presets (reusable configs across players) ---------------------
 
     /** All user-defined DSP presets. */
+    /**
+     * The saved DSP presets. Throws when Music Assistant can't be reached, rather than
+     * answering an empty list: an unreachable server read as "no presets", and the
+     * screen replaced the presets it was showing with none.
+     */
     suspend fun getDspPresets(): List<DspPreset> {
-        val res = runCatchingCancellable {
-            api.sendCommand("config/dsp_presets/get")
-        }.getOrNull() ?: return emptyList()
+        val res = api.sendCommand("config/dsp_presets/get") ?: return emptyList()
         val arr = res as? kotlinx.serialization.json.JsonArray ?: return emptyList()
         return DspParse.presets(arr)
     }

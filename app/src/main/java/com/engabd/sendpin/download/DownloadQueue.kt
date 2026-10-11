@@ -2,6 +2,7 @@ package com.engabd.sendpin.download
 
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.util.DurableFile
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -60,8 +61,7 @@ class DownloadQueue(private val file: File) {
     private val lock = Any()
 
     fun load(): List<QueuedDownload> = synchronized(lock) {
-        if (!file.exists()) return emptyList()
-        runCatching { json.decodeFromString(serializer, file.readText()) }.getOrDefault(emptyList())
+        DurableFile.read(file) { json.decodeFromString(serializer, it) } ?: emptyList()
     }
 
     fun add(entries: List<QueuedDownload>) = synchronized(lock) {
@@ -81,8 +81,6 @@ class DownloadQueue(private val file: File) {
 
     private fun write(entries: List<QueuedDownload>) {
         if (entries.isEmpty()) { file.delete(); return }
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(json.encodeToString(serializer, entries))
-        if (!tmp.renameTo(file)) { file.delete(); tmp.renameTo(file) }
+        DurableFile.write(file, json.encodeToString(serializer, entries))
     }
 }

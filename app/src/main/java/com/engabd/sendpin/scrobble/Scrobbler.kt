@@ -146,8 +146,8 @@ class Scrobbler(
                 }
             }
         }
-        queue.replace(keep)
-        _pending.value = keep.size
+        queue.finishFlush(entries, keep)
+        _pending.value = queue.load().size
     }
 
     /** Flush whenever a validated network appears — the moment listens made offline can go. */

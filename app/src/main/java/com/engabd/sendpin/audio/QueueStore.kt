@@ -2,6 +2,7 @@ package com.engabd.sendpin.audio
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import com.engabd.sendpin.util.DurableFile
 import java.io.File
 
 /**
@@ -64,19 +65,12 @@ class QueueStore(private val file: File) {
     private val lock = Any()
 
     fun load(): SavedQueue? = synchronized(lock) {
-        if (!file.exists()) return null
-        runCatching { json.decodeFromString(SavedQueue.serializer(), file.readText()) }
-            .getOrNull()
+        DurableFile.read(file) { json.decodeFromString(SavedQueue.serializer(), it) }
             ?.takeIf { it.tracks.isNotEmpty() && it.index in it.tracks.indices }
     }
 
     fun save(queue: SavedQueue) = synchronized(lock) {
-        runCatching {
-            file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(json.encodeToString(SavedQueue.serializer(), queue))
-            if (!tmp.renameTo(file)) { file.delete(); tmp.renameTo(file) }
-        }
+        runCatching { DurableFile.write(file, json.encodeToString(SavedQueue.serializer(), queue)) }
     }
 
     fun clear() = synchronized(lock) { file.delete() }
