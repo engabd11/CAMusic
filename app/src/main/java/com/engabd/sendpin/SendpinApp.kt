@@ -571,6 +571,23 @@ class SendpinApp : Application(), ImageLoaderFactory {
         }
     }
 
+    /**
+     * Run [com.engabd.sendpin.audio.MediaCache.removeErrorDocuments] once per install.
+     * New error documents are never stored ([com.engabd.sendpin.audio.NotAudioGuard]),
+     * so only what an earlier version cached needs finding, and the scan need not
+     * read the cache at every start.
+     */
+    private fun sweepStreamCacheOnce() {
+        val prefs = getSharedPreferences(STREAM_CACHE_PREFS, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_ERROR_DOCUMENTS_SWEPT, false)) return
+        runCatching { com.engabd.sendpin.audio.MediaCache.removeErrorDocuments(this) }
+            .onSuccess { n ->
+                if (n > 0) android.util.Log.i("SendpinApp", "removed $n cached server error(s) stored as tracks")
+                prefs.edit().putBoolean(KEY_ERROR_DOCUMENTS_SWEPT, true).apply()
+            }
+            .onFailure { android.util.Log.w("SendpinApp", "stream cache sweep failed", it) }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -580,6 +597,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // Before any source is built, so the first stream URL already knows whether
         // it is on mobile data. One callback for the process; see [StreamNetwork].
         com.engabd.sendpin.library.StreamNetwork.start(this)
+        // Once: clear out server error documents an earlier version cached as tracks.
+        // See MediaCache.removeErrorDocuments.
+        appScope.launch(Dispatchers.IO) { sweepStreamCacheOnce() }
         // Catch and store crashes locally before anything else starts. The previous
         // handler is chained so the app still terminates as the platform expects.
         CrashReporter.install(this)
@@ -1177,6 +1197,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
 
         /** Cover URLs are content-addressed, so a week is conservative. */
         private const val ART_MAX_AGE_SEC = 7 * 24 * 60 * 60
+
+        private const val STREAM_CACHE_PREFS = "stream_cache"
+        private const val KEY_ERROR_DOCUMENTS_SWEPT = "error_documents_swept"
     }
 }
 

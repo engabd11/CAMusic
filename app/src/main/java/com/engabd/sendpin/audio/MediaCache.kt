@@ -51,11 +51,45 @@ object MediaCache {
     fun factory(context: Context, upstream: DataSource.Factory): DataSource.Factory =
         CacheDataSource.Factory()
             .setCache(cache(context))
-            .setUpstreamDataSourceFactory(upstream)
+            // A server's error document (Subsonic answers a failed stream with 200 and
+            // XML) is refused before it can be stored as the track; see NotAudioGuard.
+            .setUpstreamDataSourceFactory(NotAudioGuard.Factory(upstream))
             .setCacheKeyFactory(KEY_FACTORY)
             // A cache that fails (disk full, the system clearing it mid-read) must fall
             // back to the network rather than fail the track.
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+    /**
+     * Drop what is stored for [url], so the next play fetches it again. For a stored
+     * stream that turned out not to be playable (see [LocalPlayer]'s error handling).
+     */
+    fun remove(context: Context, url: String) {
+        runCatching { cache(context).removeResource(cacheKey(url)) }
+    }
+
+    /**
+     * Remove every stored stream that is a server's error document rather than audio.
+     *
+     * Before [NotAudioGuard], a Subsonic error answered with HTTP 200 was cached as the
+     * track and replayed from the phone for as long as it stayed in the cache, even
+     * after the server could play the file again. Run once to clear those out; the
+     * guard keeps new ones from being stored. Reads only the first bytes of each
+     * entry's first span. Returns how many were removed.
+     */
+    fun removeErrorDocuments(context: Context): Int {
+        val c = cache(context)
+        var removed = 0
+        val head = ByteArray(16)
+        for (key in c.keys.toList()) {
+            val first = runCatching { c.getCachedSpans(key).firstOrNull { it.position == 0L } }.getOrNull() ?: continue
+            val file = first.file ?: continue
+            val n = runCatching { file.inputStream().use { it.read(head) } }.getOrDefault(-1)
+            if (n > 0 && NotAudioGuard.looksLikeDocument(head, n)) {
+                runCatching { c.removeResource(key) }.onSuccess { removed++ }
+            }
+        }
+        return removed
+    }
 
     private val KEY_FACTORY = CacheKeyFactory { spec -> cacheKey(spec.uri.toString()) }
 

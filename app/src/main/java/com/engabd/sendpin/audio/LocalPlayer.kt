@@ -696,12 +696,32 @@ class LocalPlayer(private val context: Context) {
             _playing.value = false
             val name = _current.value?.title.orEmpty()
             val status = (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
+            // Bytes that are not a container this player can read. If they came from
+            // the stream cache, they stay wrong there for as long as they are kept, so
+            // drop them: the next attempt asks the server again.
+            if (error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+                error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
+            ) {
+                player.currentMediaItem?.localConfiguration?.uri?.toString()
+                    ?.takeIf { it.startsWith("http", ignoreCase = true) }
+                    ?.let { MediaCache.remove(context, it) }
+            }
+            // The server answered with an error document instead of audio: its own words
+            // say more than "couldn't play" (Navidrome: "data not found").
+            val serverSaid = generateSequence(error.cause as Throwable?) { it.cause }
+                .filterIsInstance<NotAudioGuard.NotAudioException>().firstOrNull()?.serverMessage
             when (PlaybackErrorPolicy.classify(error.errorCode, status)) {
                 // Every error used to take this branch, so a Wi-Fi dropout longer than
                 // the buffer skipped through the rest of the queue one failed track at
                 // a time. Now only an error about *this item* does.
                 PlaybackErrorPolicy.Action.SKIP -> {
-                    _error.tryEmit(if (name.isBlank()) "Playback failed" else "Couldn't play \"$name\"")
+                    _error.tryEmit(
+                        when {
+                            name.isBlank() -> "Playback failed"
+                            serverSaid != null -> "Couldn't play \"$name\": the server said \"$serverSaid\""
+                            else -> "Couldn't play \"$name\""
+                        },
+                    )
                     // One bad track should not end the album — but a queue in which
                     // every track fails is not a run of bad files.
                     if (player.hasNextMediaItem() && consecutiveSkips < PlaybackErrorPolicy.MAX_CONSECUTIVE_SKIPS) {
