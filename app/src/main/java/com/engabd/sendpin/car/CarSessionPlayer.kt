@@ -75,6 +75,11 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
             Player.COMMAND_GET_TIMELINE,
             Player.COMMAND_GET_METADATA,
             Player.COMMAND_SET_SHUFFLE_MODE,
+            // A row in the car's queue view, and its repeat button. Both are only
+            // acted on for this phone's own queue; see [handleSeek] and
+            // [handleSetRepeatMode].
+            Player.COMMAND_SEEK_TO_MEDIA_ITEM,
+            Player.COMMAND_SET_REPEAT_MODE,
             // Without these two, *nothing in the browse tree plays*, and nothing in
             // `CarLibraryBridge` ever runs to say so.
             //
@@ -106,6 +111,7 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
     private var artworkJob: Job? = null
     private var collectJob: Job? = null
     private var settingsJob: Job? = null
+    private var queueJob: Job? = null
 
     /** Begin reflecting [UnifiedNowPlaying]. Call once the session/player is attached. */
     fun start() {
@@ -133,6 +139,10 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
                 }
             }
         }
+        queueJob = scope.launch {
+            kotlinx.coroutines.flow.combine(localPlayer.queue, localPlayer.repeatMode) { q, r -> q.size to r }
+                .collect { invalidateState() }
+        }
         settingsJob = scope.launch {
             AppSettings(app).carBrowseOptions.collect { options ->
                 if (options.seekMs != seekIncrementMs) {
@@ -144,6 +154,7 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
     }
 
     fun stopObserving() {
+        queueJob?.cancel(); queueJob = null
         collectJob?.cancel(); collectJob = null
         settingsJob?.cancel(); settingsJob = null
         artworkJob?.cancel(); artworkJob = null
@@ -186,6 +197,7 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
             .setSeekBackIncrementMs(seekIncrementMs.takeIf { it > 0 } ?: DEFAULT_SEEK_MS)
             .setSeekForwardIncrementMs(seekIncrementMs.takeIf { it > 0 } ?: DEFAULT_SEEK_MS)
             .apply {
+                val window = localWindow(snapshot)
                 if (snapshot.title.isBlank()) {
                     // Nothing loaded anywhere: an empty playlist, which is the truth, and
                     // which is what makes media3 ask onPlaybackResumption when a play
@@ -193,7 +205,24 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
                     // always something to play, so a Bluetooth play after a reboot went
                     // to play() on nothing instead of to the saved queue.
                     setPlaylist(emptyList())
+                } else if (window != null) {
+                    // This phone's own queue: the real one, so the car's queue view lists
+                    // what is coming and a tap on a row plays it.
+                    publishedWindow = window
+                    setPlaylist(localPlaylist(window, snapshot))
+                    setCurrentMediaItemIndex(window.currentRow)
+                    setRepeatMode(
+                        when (localPlayer.repeatMode.value) {
+                            "all" -> Player.REPEAT_MODE_ALL
+                            "one" -> Player.REPEAT_MODE_ONE
+                            else -> Player.REPEAT_MODE_OFF
+                        },
+                    )
+                    setContentPositionMs(
+                        PositionSupplier.getExtrapolating(anchorPositionMs, if (snapshot.isPlaying) 1f else 0f),
+                    )
                 } else {
+                    publishedWindow = null
                     setPlaylist(
                         listOf(mediaItemData(snapshot, uid = "placeholder-prev"), current, mediaItemData(snapshot, uid = "placeholder-next")),
                     )
@@ -205,6 +234,48 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
                 }
             }
             .build()
+    }
+
+    /** The window last published, so a tapped row maps back to the queue it was drawn from. */
+    @Volatile private var publishedWindow: CarQueueWindow? = null
+
+    /** The local queue's window, when this phone's own queue is what is playing. */
+    private fun localWindow(snapshot: UnifiedNowPlaying.Snapshot): CarQueueWindow? {
+        if (snapshot.owner != UnifiedNowPlaying.Owner.LOCAL || snapshot.title.isBlank()) return null
+        val queue = localPlayer.queue.value
+        return CarQueueWindow.of(queue.size, localPlayer.index.value)
+    }
+
+    private fun localPlaylist(window: CarQueueWindow, snapshot: UnifiedNowPlaying.Snapshot): List<MediaItemData> {
+        val queue = localPlayer.queue.value
+        val rows = (window.start until window.endExclusive).map { i ->
+            val t = queue[i]
+            val current = i - window.start == window.currentRow
+            MediaItemData.Builder("$i:${t.id}")
+                .setMediaItem(
+                    MediaItem.Builder()
+                        .setMediaId("$i:${t.id}")
+                        .setMediaMetadata(
+                            MediaMetadata.Builder()
+                                .setTitle(if (current) snapshot.title else t.title)
+                                .setArtist(if (current) snapshot.artist else t.artist)
+                                .setAlbumTitle(if (current) snapshot.album else t.album)
+                                .apply {
+                                    // The cover travels with the playing row only: media3
+                                    // copies artwork bytes into every item it ships.
+                                    if (current) artworkBytes?.let { setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+                                }
+                                .build(),
+                        )
+                        .build(),
+                )
+                .setDurationUs(
+                    (if (current) snapshot.durationMs else t.durationMs).takeIf { it > 0 }?.let { it * 1000L } ?: C.TIME_UNSET,
+                )
+                .setIsSeekable(true)
+                .build()
+        }
+        return if (window.trailingNext) rows + mediaItemData(snapshot, uid = "placeholder-next") else rows
     }
 
     private fun mediaItemData(snapshot: UnifiedNowPlaying.Snapshot, uid: String) = MediaItemData.Builder(uid)
@@ -291,6 +362,16 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
         when (seekCommand) {
             Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> playbackOwner.next()
             Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> playbackOwner.previous()
+            // A row tapped in the car's queue view.
+            Player.COMMAND_SEEK_TO_MEDIA_ITEM -> {
+                val window = publishedWindow
+                val target = window?.queueIndexOf(mediaItemIndex)
+                when {
+                    window == null -> playbackOwner.next()
+                    target == null -> playbackOwner.next()     // the trailing stand-in
+                    target != localPlayer.index.value -> localPlayer.playAt(target)
+                }
+            }
             else -> {
                 when (unifiedNowPlaying.state.value.owner) {
                     UnifiedNowPlaying.Owner.LOCAL -> localPlayer.seekTo(positionMs)
@@ -300,6 +381,21 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
                 // The bar lands where it was dragged, not where the last tick said.
                 anchor(positionMs)
             }
+        }
+        invalidateState()
+        return Futures.immediateVoidFuture()
+    }
+
+    /** The car's repeat button. This phone's own queue only; Music Assistant's is left alone. */
+    override fun handleSetRepeatMode(repeatMode: Int): ListenableFuture<*> {
+        if (unifiedNowPlaying.state.value.owner == UnifiedNowPlaying.Owner.LOCAL) {
+            localPlayer.setRepeatMode(
+                when (repeatMode) {
+                    Player.REPEAT_MODE_ALL -> "all"
+                    Player.REPEAT_MODE_ONE -> "one"
+                    else -> "off"
+                },
+            )
         }
         invalidateState()
         return Futures.immediateVoidFuture()
