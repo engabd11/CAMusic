@@ -96,7 +96,10 @@ class MainActivity : ComponentActivity() {
         }
         // A voice request that cold-started the app. Not on a recreation: the intent
         // is redelivered with the saved state and would play the same search again.
-        if (savedInstanceState == null) handleVoiceSearch(intent)
+        if (savedInstanceState == null) {
+            handleVoiceSearch(intent)
+            handleShortcut(intent)
+        }
         handleSharedShow(intent)
         com.engabd.sendpin.service.DrivingPip.registerControls(this, pipControls)
         watchDrivingForPip()
@@ -127,6 +130,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleVoiceSearch(intent)
+        handleShortcut(intent)
         handleSharedShow(intent)
     }
 
@@ -162,6 +166,18 @@ class MainActivity : ComponentActivity() {
     private fun handleVoiceSearch(intent: android.content.Intent?) {
         if (intent?.action != android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
         (application as SendpinApp).playFromVoice(intent.getStringExtra(android.app.SearchManager.QUERY))
+    }
+
+    /** A shortcut from long-pressing the app icon; see SendpinApp.publishShortcuts. */
+    private fun handleShortcut(intent: android.content.Intent?) {
+        val app = application as SendpinApp
+        when (intent?.action) {
+            // The same as an empty "Hey Google, play on CAMusic": carry on with what
+            // was playing, or the last queue.
+            ACTION_RESUME -> app.playFromVoice(null)
+            ACTION_OPEN_LIBRARY -> app.appRoute.value = "library"
+            ACTION_OPEN_LIGHTS -> app.appRoute.value = "light_sync"
+        }
     }
 
     /** Routes a Picture-in-Picture button to whichever player owns the session. */
@@ -257,8 +273,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private companion object {
-        const val PIP_OFF_SETTLE_MS = 3_000L
+    companion object {
+        private const val PIP_OFF_SETTLE_MS = 3_000L
+
+        /** The home-screen shortcuts' actions; see SendpinApp.publishShortcuts. */
+        const val ACTION_RESUME = "com.engabd.sendpin.action.RESUME"
+        const val ACTION_OPEN_LIBRARY = "com.engabd.sendpin.action.OPEN_LIBRARY"
+        const val ACTION_OPEN_LIGHTS = "com.engabd.sendpin.action.OPEN_LIGHTS"
     }
 
     override fun onDestroy() {
