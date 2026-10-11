@@ -31,6 +31,18 @@ object StreamNetwork {
     /** The current answer, for code that reads it once while building a URL. */
     val isMetered: Boolean get() = _metered.value
 
+    private val _networkAvailable = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+
+    /**
+     * A network has just become the default — arriving home, Wi-Fi coming back. The
+     * moment a socket that gave up waiting should try again, rather than at the end
+     * of whatever backoff it had reached.
+     */
+    val networkAvailable: kotlinx.coroutines.flow.SharedFlow<Unit> = _networkAvailable
+
     @Volatile private var started = false
 
     fun start(context: Context) {
@@ -42,6 +54,10 @@ object StreamNetwork {
         }.getOrDefault(false)
         runCatching {
             cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    _networkAvailable.tryEmit(Unit)
+                }
+
                 override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                     _metered.value = isMetered(caps)
                 }

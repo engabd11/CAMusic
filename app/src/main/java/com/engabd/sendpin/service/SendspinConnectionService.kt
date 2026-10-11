@@ -48,6 +48,12 @@ class SendspinConnectionService : Service() {
         const val ACTION_START = "com.engabd.sendpin.START_CONNECTION"
         const val ACTION_STOP = "com.engabd.sendpin.STOP_CONNECTION"
 
+        /** How long the CPU stays up after the connection drops: the fast reconnect attempts. */
+        private const val DISCONNECTED_HOLD_MS = 2 * 60_000L
+
+        /** How long a network appearing keeps the CPU up for the dial it triggers. */
+        private const val NETWORK_DIAL_HOLD_MS = 30_000L
+
         /** Start the persistent connection service. */
         fun start(context: Context) {
             val intent = Intent(context, SendspinConnectionService::class.java).apply {
@@ -192,7 +198,11 @@ class SendspinConnectionService : Service() {
         if (wakeLock == null) {
             wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sendspin:receiver")
-                .apply { setReferenceCounted(false); acquire() }
+                .apply {
+                    setReferenceCounted(false)
+                    // Timed until the connection says otherwise: see holdCpuFor.
+                    acquire(DISCONNECTED_HOLD_MS)
+                }
         }
     }
 
@@ -240,8 +250,35 @@ class SendspinConnectionService : Service() {
             pb.connectionStatus.collect { _ -> updateNotification() }
         }
         scope.launch {
-            pb.connected.collect { _ -> updateNotification() }
+            pb.connected.collect { connected ->
+                holdCpuFor(connected)
+                updateNotification()
+            }
         }
+        // A network appearing while disconnected: keep the CPU up long enough for the
+        // reconnect SendpinApp starts on the same signal to finish dialling.
+        scope.launch {
+            com.engabd.sendpin.library.StreamNetwork.networkAvailable.collect {
+                if (!pb.connected.value) wakeLock?.acquire(NETWORK_DIAL_HOLD_MS)
+            }
+        }
+    }
+
+    /**
+     * The wake lock follows the connection.
+     *
+     * Connected, it is held for as long as the connection lasts: that is what keeps
+     * incoming frames — an announcement, a stream start — from waiting on doze. Not
+     * connected, there is nothing to receive, and holding the CPU awake only kept the
+     * reconnect loop dialling a server it could not reach: leave home with the player
+     * on and the phone never slept all day. So on a drop it is kept for
+     * [DISCONNECTED_HOLD_MS] — the fast part of the backoff, which is what a server
+     * restart or a Wi-Fi blip needs — and then let go.
+     */
+    @SuppressLint("WakelockTimeout")
+    private fun holdCpuFor(connected: Boolean) {
+        val lock = wakeLock ?: return
+        runCatching { if (connected) lock.acquire() else lock.acquire(DISCONNECTED_HOLD_MS) }
     }
 
     /**

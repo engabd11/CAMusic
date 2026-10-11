@@ -624,6 +624,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
         appScope.launch {
             localPlayer.current.collect { downloads.protectedId = it?.id }
         }
+        // A network appearing (arriving home, Wi-Fi back) is the moment a dropped
+        // Music Assistant connection should come back - not whenever the backoff it
+        // had walked up to next fires. Both calls are no-ops when nothing is
+        // configured, a socket is already up, or one was dialled a moment ago.
+        appScope.launch {
+            com.engabd.sendpin.library.StreamNetwork.networkAvailable.collect {
+                maApi.reconnectNow()
+                playback.wakePlayerSocket()
+            }
+        }
         // Reporting plays to the library servers, and to Stats, from the process rather
         // than from a screen — see PlaybackReporter.
         playbackReporter.start()

@@ -149,7 +149,7 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         if (userClosed || wsUrl.isBlank()) return
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
-            val delayMs = (500L * (1 shl attempt.coerceAtMost(5))).coerceAtMost(15_000L)
+            val delayMs = com.engabd.sendpin.protocol.ReconnectBackoff.delayMs(attempt)
             attempt++
             kotlinx.coroutines.delay(delayMs)
             if (!userClosed) {
