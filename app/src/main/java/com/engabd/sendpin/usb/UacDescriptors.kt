@@ -21,7 +21,37 @@ data class UacDevice(
     val clockSources: List<ClockSource>,
     val volumeUnits: List<VolumeUnit>,
     val outputs: List<StreamingAlt>,
-)
+    /** UAC2: the clock entity each USB-streaming input terminal is clocked from (bCSourceID). */
+    val terminalClocks: Map<Int, Int> = emptyMap(),
+    /** UAC2 clock selectors: id to the clock entities on their input pins, pin 1 first. */
+    val clockSelectors: Map<Int, List<Int>> = emptyMap(),
+    /** UAC2 clock multipliers: id to the clock entity they follow. */
+    val clockMultipliers: Map<Int, Int> = emptyMap(),
+) {
+    /**
+     * The clock source a stream on [terminal] runs from — the entity whose sampling-
+     * frequency control a rate has to be set on.
+     *
+     * A UAC2 DAC can put a clock selector (for example internal oscillator or S/PDIF in)
+     * or a multiplier between the streaming terminal and its clock source. Setting the
+     * rate on the first clock source in the descriptors, as this used to, set it on the
+     * wrong one for such a DAC. [selectorPin] answers which input (1-based) a selector is
+     * on now; null takes its first.
+     */
+    fun clockSourceFor(terminal: Int, selectorPin: (Int) -> Int? = { null }): ClockSource? {
+        var id = terminalClocks[terminal] ?: return clockSources.firstOrNull()
+        repeat(8) {
+            clockSources.firstOrNull { it.id == id }?.let { return it }
+            val pins = clockSelectors[id]
+            val next = when {
+                pins != null -> pins.getOrNull((selectorPin(id) ?: 1) - 1) ?: pins.firstOrNull()
+                else -> clockMultipliers[id]
+            } ?: return clockSources.firstOrNull()
+            id = next
+        }
+        return clockSources.firstOrNull()
+    }
+}
 
 /** A UAC2 clock source: the entity a sample rate is set and read on. */
 data class ClockSource(val id: Int, val type: String, val frequencyControl: String)
@@ -88,6 +118,8 @@ object UacDescriptors {
     private const val TERMINAL_USB_STREAMING = 0x0101
     private const val AC_FEATURE_UNIT = 0x06
     private const val AC2_CLOCK_SOURCE = 0x0A
+    private const val AC2_CLOCK_SELECTOR = 0x0B
+    private const val AC2_CLOCK_MULTIPLIER = 0x0C
 
     // AudioStreaming interface descriptor subtypes.
     private const val AS_GENERAL = 0x01
@@ -109,6 +141,9 @@ object UacDescriptors {
         // The AudioControl graph, for telling a playback volume from a microphone one.
         val sourceOf = mutableMapOf<Int, Int>()
         val usbStreamingInputs = mutableSetOf<Int>()
+        val terminalClocks = mutableMapOf<Int, Int>()
+        val clockSelectors = mutableMapOf<Int, List<Int>>()
+        val clockMultipliers = mutableMapOf<Int, Int>()
         val outputs = mutableListOf<StreamingAlt>()
 
         // Where we are: the interface the descriptors that follow belong to.
@@ -161,6 +196,17 @@ object UacDescriptors {
                         }
                         AC_INPUT_TERMINAL -> if (len >= 6 && raw.u16(i + 4) == TERMINAL_USB_STREAMING) {
                             usbStreamingInputs += raw.u8(i + 3)
+                            // UAC2 names the terminal's clock; UAC1 has channels here instead.
+                            if (ifProtocol == 0x20 && len >= 8) terminalClocks[raw.u8(i + 3)] = raw.u8(i + 7)
+                        }
+                        AC2_CLOCK_SELECTOR -> if (ifProtocol == 0x20 && len >= 5) {
+                            val n = raw.u8(i + 4)
+                            clockSelectors[raw.u8(i + 3)] = (0 until n).mapNotNull { k ->
+                                (i + 5 + k).takeIf { it < i + len }?.let { raw.u8(it) }
+                            }
+                        }
+                        AC2_CLOCK_MULTIPLIER -> if (ifProtocol == 0x20 && len >= 5) {
+                            clockMultipliers[raw.u8(i + 3)] = raw.u8(i + 4)
                         }
                         AC_OUTPUT_TERMINAL -> if (len >= 8) sourceOf[raw.u8(i + 3)] = raw.u8(i + 7)
                         AC_FEATURE_UNIT -> {
@@ -245,7 +291,10 @@ object UacDescriptors {
             return false
         }
         val marked = volumes.map { it.copy(playback = onPlaybackPath(it.id)) }
-        return UacDevice(vendor, product, uacVersion, controlInterface, clocks, marked, outputs)
+        return UacDevice(
+            vendor, product, uacVersion, controlInterface, clocks, marked, outputs,
+            terminalClocks, clockSelectors, clockMultipliers,
+        )
     }
 
     /**

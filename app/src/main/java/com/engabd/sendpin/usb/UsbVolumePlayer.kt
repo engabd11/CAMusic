@@ -105,7 +105,7 @@ class UsbVolumePlayer(player: Player) : ForwardingPlayer(player) {
 
     override fun setDeviceMuted(muted: Boolean, flags: Int) {
         if (usb == null) return super.setDeviceMuted(muted, flags)
-        UsbVolume.set(if (muted) 0f else 0.5f)
+        if (muted) UsbVolume.set(0f) else UsbVolume.unmute()
     }
 
     @Deprecated("Deprecated in media3")

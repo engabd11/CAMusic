@@ -41,9 +41,17 @@ Playback is built to be worth good headphones and a good DAC.
   - **Over-rate tracks**: a track above the DAC's highest rate (192 kHz on a 96 kHz DAC) is
     converted by CAMusic at an exact ratio and still goes out on its own driver, labelled
     as converted.
-  - **Signal path**: the Output & signal path page shows what the DAC itself confirmed.
+  - **Signal path**: the Output & signal path page shows what the DAC itself confirmed, and
+    how the stream is holding up (packet errors, silence padded).
+  - **A rate the DAC refuses** is caught: CAMusic checks the rate the DAC reports back, and
+    tries the next rate it can convert to before handing the track to Android, so a track
+    never plays at the wrong speed.
   - **Sharing the DAC**: CAMusic takes the DAC while playing and hands it back to Android
-    after 30 s paused. Unplugging pauses playback, like unplugging headphones.
+    after 30 s paused. Unplugging pauses playback, like unplugging headphones. If the DAC
+    cannot be taken back (another app holds it), the track carries on through Android.
+  - **Asynchronous DACs**: the driver streams at the file's exact rate and does not follow
+    a DAC's own clock yet, so on a long session an asynchronous DAC may click now and then.
+    The signal path says when a DAC is asynchronous.
   - **Tested on**: a Galaxy S23 with a Sennheiser BTD 700. The Diagnostics page can read any
     USB DAC's own description of itself and play a test tone through the driver.
 - **USB DAC awareness**: connect one and CAMusic tells you what it can do and offers to pin

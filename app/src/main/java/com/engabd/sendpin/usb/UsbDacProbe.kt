@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -94,6 +95,24 @@ object UsbDacProbe {
         return parts.joinToString("\n\n")
     }
 
+    /**
+     * The rates UAC2 clock [clockId] takes, from its `RANGE` request; null when the DAC
+     * would not answer (the kernel's driver still holding the control interface, most
+     * often). A GET that changes nothing, shared by the DAC report and the player.
+     */
+    internal fun clockRates(conn: UsbDeviceConnection, d: UacDevice, clockId: Int): List<Int>? {
+        val index = (clockId shl 8) or d.controlInterface
+        val value = CS_SAM_FREQ_CONTROL shl 8
+        // wNumSubRanges first, then the whole reply at the size that implies.
+        val head = ByteArray(2)
+        val got = conn.controlTransfer(REQ_TYPE_GET_INTERFACE, REQ_RANGE, value, index, head, 2, 1000)
+        if (got < 2) return null
+        val n = (head[0].toInt() and 0xFF) or ((head[1].toInt() and 0xFF) shl 8)
+        val full = ByteArray(2 + 12 * n.coerceIn(0, 64))
+        val len = conn.controlTransfer(REQ_TYPE_GET_INTERFACE, REQ_RANGE, value, index, full, full.size, 1000)
+        return if (len >= 2) UacDescriptors.parseRateRanges(full, len) else null
+    }
+
     private fun read(context: Context, dev: UsbDevice, name: String): String {
         val usb = context.getSystemService(UsbManager::class.java)
         val conn = usb?.openDevice(dev)
@@ -104,18 +123,7 @@ object UsbDacProbe {
             val parsed = UacDescriptors.parse(raw)
             val clockRates = parsed?.takeIf { it.uacVersion == 0x0200 && it.clockSources.isNotEmpty() }?.let { d ->
                 val rates = mutableMapOf<Int, List<Int>>()
-                for (clock in d.clockSources) {
-                    val index = (clock.id shl 8) or d.controlInterface
-                    val value = CS_SAM_FREQ_CONTROL shl 8
-                    // wNumSubRanges first, then the whole reply at the size that implies.
-                    val head = ByteArray(2)
-                    val got = conn.controlTransfer(REQ_TYPE_GET_INTERFACE, REQ_RANGE, value, index, head, 2, 1000)
-                    if (got < 2) continue
-                    val n = (head[0].toInt() and 0xFF) or ((head[1].toInt() and 0xFF) shl 8)
-                    val full = ByteArray(2 + 12 * n.coerceIn(0, 64))
-                    val len = conn.controlTransfer(REQ_TYPE_GET_INTERFACE, REQ_RANGE, value, index, full, full.size, 1000)
-                    if (len >= 2) rates[clock.id] = UacDescriptors.parseRateRanges(full, len)
-                }
+                for (clock in d.clockSources) clockRates(conn, d, clock.id)?.let { rates[clock.id] = it }
                 rates.takeIf { it.isNotEmpty() }
             }
             return UacReport.format(name, parsed, raw, clockRates)

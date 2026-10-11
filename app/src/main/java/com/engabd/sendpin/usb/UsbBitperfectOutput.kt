@@ -7,7 +7,6 @@ import android.media.AudioTrack
 import android.media.AudioDeviceInfo
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
@@ -107,7 +106,10 @@ class UsbBitperfectOutput(
                 .build()
             track.write(ShortArray(frames), 0, frames)
             track.play()
-            Handler(Looper.myLooper() ?: Looper.getMainLooper())
+            // On the main looper, not the playback thread's: that one quits when the
+            // player is released, and a stop queued on it then never ran - the track
+            // leaked with its native buffer.
+            Handler(Looper.getMainLooper())
                 .postDelayed({ runCatching { track.stop() }; track.release() }, 300)
         }.onFailure { Log.w(TAG, "could not announce playback to Android", it) }
     }
@@ -145,12 +147,41 @@ class UsbBitperfectOutput(
     private fun failOverIfLost(): Boolean {
         val s = session ?: return false
         if (!usbActive || !s.streamDied) return false
-        val format = lastFormat ?: return false
         Log.i(TAG, "the DAC is gone: carrying on through Android")
-        toFallback("the DAC was disconnected")
+        return failOver("the DAC was disconnected")
+    }
+
+    /** Hand the rest of the track to [fallback], configured as the DAC was. */
+    private fun failOver(why: String): Boolean {
+        val format = lastFormat ?: return false
+        pendingSwitch = null
+        toFallback(why)
         runCatching { fallback.configure(format, lastBufferSize, lastOutputChannels) }
             .onFailure { Log.w(TAG, "fallback could not take over", it) }
         if (playing) fallback.play()
+        return true
+    }
+
+    /**
+     * A format change the DAC has to make, waiting for the previous track's queued audio
+     * to play out — see [configure]. Applied by [handleBuffer] once the queue is empty.
+     */
+    private data class PendingSwitch(
+        val format: Format,
+        val bufferSize: Int,
+        val outputChannels: IntArray?,
+        /** A same-rate bit-depth change from [handleDiscontinuity], rather than a configure. */
+        val depthOnly: StreamingAlt? = null,
+    )
+
+    private var pendingSwitch: PendingSwitch? = null
+
+    /** Apply [pendingSwitch] once nothing of the previous format is left to play. */
+    private fun applyPendingSwitch(s: UsbAudioSession): Boolean {
+        val p = pendingSwitch ?: return true
+        if (playing && !s.suspended && s.pendingFrames() > 0) return false
+        pendingSwitch = null
+        if (p.depthOnly != null) switchDepth(s, p.depthOnly) else configureNow(p.format, p.bufferSize, p.outputChannels)
         return true
     }
 
@@ -159,9 +190,32 @@ class UsbBitperfectOutput(
         lastBufferSize = specifiedBufferSize
         lastOutputChannels = outputChannels
         SignalPath.onDecoderOutput(format)
-        val target = if (isRawPcm(format)) pick(format) else null
+        // A new format on the same DAC while the previous track is still queued: let it
+        // play out first, rather than cut its last second. This used to wait right here,
+        // up to 1.5 s, holding the player's own thread; now the switch waits in
+        // [pendingSwitch] and handleBuffer() declines the new track's audio until the
+        // queue is empty, which is how media3's own sink drains a format change.
         val s = session
-        if (target == null || s == null) {
+        if (usbActive && s != null && !s.suspended && playing && s.pendingFrames() > 0 &&
+            isRawPcm(format) && needsSwitch(s, format)
+        ) {
+            pendingSwitch = PendingSwitch(format, specifiedBufferSize, outputChannels)
+            return
+        }
+        pendingSwitch = null
+        configureNow(format, specifiedBufferSize, outputChannels)
+    }
+
+    /** Whether [format] would put the DAC in a different format or rate from the one it is in. */
+    private fun needsSwitch(s: UsbAudioSession, format: Format): Boolean {
+        val first = candidates(format).firstOrNull() ?: return true
+        return !(s.format == first.alt && s.confirmedRate == first.dacRate)
+    }
+
+    private fun configureNow(format: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
+        val all = if (isRawPcm(format)) candidates(format) else emptyList()
+        val s = session
+        if (all.isEmpty() || s == null) {
             toFallback("the DAC does not offer ${format.sampleRate} Hz x ${format.channelCount} ch")
             fallback.configure(format, specifiedBufferSize, outputChannels)
             // Mid-queue, media3 already told this sink to play; the fallback never heard
@@ -169,19 +223,29 @@ class UsbBitperfectOutput(
             if (playing) fallback.play()
             return
         }
-        val (alt, wantRate, factor) = target
-        val same = usbActive && !s.suspended && s.format == alt && s.confirmedRate == wantRate
-        if (!same) {
-            drainBeforeSwitch(s)
-            if (!s.configure(alt, wantRate) || !s.start()) {
-                toFallback(s.error ?: "the DAC could not be configured")
-                fallback.configure(format, specifiedBufferSize, outputChannels)
-                if (playing) fallback.play()
-                return
+        // The file's own rate first, then the rates CAMusic can divide it down to. A DAC
+        // that refuses one - its clock does not list the rate, or reports back another -
+        // gets the next, rather than the whole track going to Android.
+        var target: Target? = null
+        for (t in all) {
+            val same = usbActive && !s.suspended && s.format == t.alt && s.confirmedRate == t.dacRate
+            if (same || (s.configure(t.alt, t.dacRate) && s.start())) {
+                target = t
+                if (!same) {
+                    s.setPaused(!playing)
+                    Log.i(TAG, "USB bit-perfect: ${t.alt.bitResolution}-bit ${s.confirmedRate} Hz, ${t.alt.channels} ch (decoder ${format.pcmEncoding})")
+                }
+                break
             }
-            s.setPaused(!playing)
-            Log.i(TAG, "USB bit-perfect: ${alt.bitResolution}-bit ${s.confirmedRate} Hz, ${alt.channels} ch (decoder ${format.pcmEncoding})")
+            Log.i(TAG, "${UacReport.khz(t.dacRate)} kHz refused: ${s.error}")
         }
+        if (target == null) {
+            toFallback(s.error ?: "the DAC could not be configured")
+            fallback.configure(format, specifiedBufferSize, outputChannels)
+            if (playing) fallback.play()
+            return
+        }
+        val (alt, wantRate, factor) = target
         fallback.reset()
         usbActive = true
         decimator = if (factor > 1) UsbDecimator(factor, format.channelCount) else null
@@ -213,19 +277,23 @@ class UsbBitperfectOutput(
      * but it keeps the DAC on this driver at the best rate it has. Float input only,
      * which is what the float path decodes to.
      */
-    private fun pick(format: Format): Target? {
-        val s = session ?: openSession() ?: return null
+    private fun candidates(format: Format): List<Target> {
+        val s = session ?: openSession() ?: return emptyList()
         val rate = format.sampleRate
         val sourceBits = SignalPath.state.value.source.bitDepth
-        UsbFormatChoice.choose(s.info.outputs, rate, format.channelCount, sourceBits)
-            ?.let { return Target(it, rate, 1) }
-        if (format.pcmEncoding != C.ENCODING_PCM_FLOAT) return null
-        for (factor in listOf(2, 4)) {
-            if (rate % factor != 0) continue
-            val alt = UsbFormatChoice.choose(s.info.outputs, rate / factor, format.channelCount, null) ?: continue
-            return Target(alt, rate / factor, factor)
+        // With each UAC2 alternate's rates filled in from its clock once read: a DAC
+        // whose clock has said it stops at 96 kHz is not offered 192 kHz again.
+        val outputs = s.outputs()
+        val out = mutableListOf<Target>()
+        UsbFormatChoice.choose(outputs, rate, format.channelCount, sourceBits)?.let { out += Target(it, rate, 1) }
+        if (format.pcmEncoding == C.ENCODING_PCM_FLOAT) {
+            for (factor in listOf(2, 4)) {
+                if (rate % factor != 0) continue
+                val alt = UsbFormatChoice.choose(outputs, rate / factor, format.channelCount, null) ?: continue
+                out += Target(alt, rate / factor, factor)
+            }
         }
-        return null
+        return out
     }
 
     private fun openSession(): UsbAudioSession? {
@@ -236,16 +304,6 @@ class UsbBitperfectOutput(
             return null
         }
         return UsbAudioSession.open(context, device)?.also { session = it }
-    }
-
-    /**
-     * A new format on the same DAC: let the previous track's queued audio play out
-     * first (up to 1.5 s, and only while playing), rather than cut its last second.
-     */
-    private fun drainBeforeSwitch(s: UsbAudioSession) {
-        if (!usbActive || !playing || s.suspended) return
-        val until = SystemClock.uptimeMillis() + 1500
-        while (s.pendingFrames() > 0 && SystemClock.uptimeMillis() < until) Thread.sleep(5)
     }
 
     /** Tell the signal path what the DAC was given and confirmed. */
@@ -259,6 +317,7 @@ class UsbBitperfectOutput(
                 slotBits = alt.subslotBytes * 8,
                 samplesUntouched = vol?.digital != true && convertedFromHz == null,
                 convertedFromHz = convertedFromHz,
+                asyncClock = alt.endpoint?.sync == "asynchronous" || alt.feedback != null,
                 volume = when {
                     vol == null -> "none on the DAC (set it on the headphones or amp)"
                     vol.digital -> "digital (not bit-perfect)"
@@ -292,6 +351,7 @@ class UsbBitperfectOutput(
 
     override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
         failOverIfLost()
+        if (usbActive) session?.let { if (!applyPendingSwitch(it)) return false }
         if (!usbActive) return fallback.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
         val s = session ?: return false
         if (!buffer.hasRemaining()) return true
@@ -367,7 +427,15 @@ class UsbBitperfectOutput(
             if (s.resumeFromAndroid()) {
                 UsbVolume.attach(s, allowDigital = com.engabd.sendpin.data.AppSettings(context).bootUsbDigitalVolume)
             } else {
+                // Not taken back - another app holds it now, or it refused the rate. This
+                // used to log and carry on: the session stayed suspended, so nothing
+                // counted the stream as dead, the queue filled and then refused every
+                // buffer, and the player sat on "playing" with a frozen bar and no sound.
+                // The rest of the track goes through Android instead, and says so.
                 Log.w(TAG, "could not take the DAC back: ${s.error}")
+                failOver("the DAC could not be taken back (${s.error ?: "refused"})")
+                if (!wasPlaying) announcePlaying()
+                return
             }
         }
         s.setPaused(false)
@@ -388,9 +456,12 @@ class UsbBitperfectOutput(
         if (!usbActive) return fallback.flush()
         session?.flush()
         resetCounters()
+        // A seek: nothing of the old format is left to wait for.
+        session?.let { applyPendingSwitch(it) }
     }
 
     override fun reset() {
+        pendingSwitch = null
         fallback.reset()
         usbActive = false
         closeSession()
@@ -462,15 +533,18 @@ class UsbBitperfectOutput(
         // A converted track's rate differs from the DAC's by design; its end is a rate
         // change, which configure() handles.
         if (decimator != null) return
-        val want = UsbFormatChoice.choose(s.info.outputs, rate, channels, SignalPath.state.value.source.bitDepth) ?: return
+        val want = UsbFormatChoice.choose(s.outputs(), rate, channels, SignalPath.state.value.source.bitDepth) ?: return
         if (want == s.format) return
         Log.i(TAG, "track boundary: ${s.format?.bitResolution}-bit -> ${want.bitResolution}-bit at $rate Hz")
-        drainBeforeSwitch(s)
+        val format = lastFormat ?: return
+        // The previous track's last second plays out first, without holding this thread.
+        pendingSwitch = PendingSwitch(format, lastBufferSize, lastOutputChannels, depthOnly = want)
+        applyPendingSwitch(s)
+    }
+
+    private fun switchDepth(s: UsbAudioSession, want: StreamingAlt) {
         if (!s.configure(want, rate) || !s.start()) {
-            val format = lastFormat ?: return
-            toFallback(s.error ?: "the DAC could not switch format")
-            fallback.configure(format, lastBufferSize, lastOutputChannels)
-            if (playing) fallback.play()
+            failOver(s.error ?: "the DAC could not switch format")
             return
         }
         s.setPaused(!playing)

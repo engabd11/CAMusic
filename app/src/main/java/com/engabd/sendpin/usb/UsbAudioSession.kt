@@ -45,6 +45,15 @@ object UsbAudioMath {
     fun packetsPerSecond(speed: Int, interval: Int): Int =
         if (speed >= SPEED_HIGH) 8000 shr (interval.coerceIn(1, 4) - 1) else 1000
 
+    /**
+     * Whether the rate a DAC reported back is the rate that was asked for. Within 0.1 %,
+     * so a DAC that reports its real crystal rate (44 099 for 44 100) still counts; any
+     * further off and the DAC is running a different rate, and samples written for the
+     * asked one would play at the wrong speed and pitch.
+     */
+    fun rateMatches(wanted: Int, confirmed: Int?): Boolean =
+        confirmed != null && kotlin.math.abs(confirmed - wanted) <= wanted / 1000
+
     /** A UAC1 endpoint sampling-frequency value: 3 bytes, little-endian. */
     fun uac1Rate(hz: Int) = byteArrayOf((hz and 0xFF).toByte(), (hz shr 8 and 0xFF).toByte(), (hz shr 16 and 0xFF).toByte())
 
@@ -115,6 +124,9 @@ class UsbAudioSession private constructor(
     val streamDied: Boolean
         get() = lost || (stream != 0L && !suspended && stats()?.running == false)
     private var stream = 0L
+    private val streamLock = Any()
+
+    private fun setStream(ptr: Long) = synchronized(streamLock) { stream = ptr }
     var confirmedRate: Int? = null
         private set
     var format: StreamingAlt? = null
@@ -159,8 +171,23 @@ class UsbAudioSession private constructor(
         if (!conn.setInterface(streaming)) return fail("could not select alternate setting ${alt.alternateSetting}")
 
         val ep = alt.endpoint ?: return fail("no playback endpoint")
-        confirmedRate = if (info.uacVersion >= 0x0200) setUac2Rate(rate) else setUac1Rate(ep.address, rate)
-        if (confirmedRate == null) return fail("the DAC did not accept $rate Hz")
+        if (info.uacVersion >= 0x0200) {
+            // The clock's own list, read now that the control interface is ours. A rate it
+            // does not list is refused here, cleanly, rather than set and read back wrong.
+            val offered = ratesFor(alt)
+            if (offered.isNotEmpty() && rate !in offered) {
+                return fail("the DAC's clock offers ${offered.joinToString { UacReport.khz(it) }} kHz, not ${UacReport.khz(rate)}")
+            }
+        }
+        val reported = if (info.uacVersion >= 0x0200) setUac2Rate(alt, rate) else setUac1Rate(ep.address, rate)
+        if (reported == null) return fail("the DAC did not accept $rate Hz")
+        // Read back and *checked*. A rate SET the DAC quietly ignored used to be taken at
+        // its read-back word and streamed anyway: a 192 kHz track clocked out at 96 kHz,
+        // at half speed and an octave down.
+        if (!UsbAudioMath.rateMatches(rate, reported)) {
+            return fail("the DAC was asked for ${UacReport.khz(rate)} kHz and runs at ${UacReport.khz(reported)} kHz")
+        }
+        confirmedRate = reported
         format = alt
         // Claimed again: whatever the 30 s hand-back left, this session holds the DAC now.
         suspended = false
@@ -218,8 +245,39 @@ class UsbAudioSession private constructor(
         return UsbAudioMath.readUac1Rate(back, len) ?: rate.takeIf { set >= 0 }
     }
 
-    private fun setUac2Rate(rate: Int): Int? {
-        val clock = info.clockSources.firstOrNull() ?: return null
+    /** The clock source [alt]'s stream runs from, following any selector to its current input. */
+    private fun clockFor(alt: StreamingAlt): ClockSource? = info.clockSourceFor(alt.terminalLink) { selector ->
+        // GET_CUR on the selector's control: one byte, the input pin it is on now.
+        val b = ByteArray(1)
+        val n = conn.controlTransfer(0xA1, 0x01, 0x0100, (selector shl 8) or info.controlInterface, b, 1, 1000)
+        if (n == 1) (b[0].toInt() and 0xFF).takeIf { it > 0 } else null
+    }
+
+    private val clockRates = mutableMapOf<Int, List<Int>>()
+
+    /**
+     * The rates [alt] can run at. UAC1 lists them in the descriptors; UAC2 leaves them
+     * out and answers a `RANGE` request on the clock instead, which is read once per
+     * clock and kept. Empty when it is not known (the request was refused before the
+     * interface was ours): [configure]'s read-back check is then what catches a miss.
+     */
+    fun ratesFor(alt: StreamingAlt): List<Int> {
+        if (alt.sampleRates.isNotEmpty() || info.uacVersion < 0x0200) return alt.sampleRates
+        val clock = clockFor(alt) ?: return emptyList()
+        clockRates[clock.id]?.let { return it }
+        val read = runCatching { UsbDacProbe.clockRates(conn, info, clock.id) }.getOrNull()
+        if (!read.isNullOrEmpty()) clockRates[clock.id] = read
+        return read.orEmpty()
+    }
+
+    /** [UacDevice.outputs], with each UAC2 alternate's rates filled in where the clock has said. */
+    fun outputs(): List<StreamingAlt> = info.outputs.map { alt ->
+        if (alt.sampleRates.isNotEmpty() || info.uacVersion < 0x0200) alt
+        else clockFor(alt)?.let { clockRates[it.id] }?.let { alt.copy(sampleRates = it) } ?: alt
+    }
+
+    private fun setUac2Rate(alt: StreamingAlt, rate: Int): Int? {
+        val clock = clockFor(alt) ?: return null
         val index = (clock.id shl 8) or info.controlInterface
         val set = conn.controlTransfer(0x21, 0x01, 0x0100, index, UsbAudioMath.uac2Rate(rate), 4, 1000)
         if (set < 0) Log.w(TAG, "clock SET_CUR rate $rate failed")
@@ -246,25 +304,37 @@ class UsbAudioSession private constructor(
             conn.fileDescriptor, ep.address, ep.maxPacketBytes * ep.transactionsPerMicroframe,
             alt.channels * alt.subslotBytes, rate, UsbAudioMath.packetsPerSecond(speed, ep.interval),
         )
-        stream = launch()
+        setStream(launch())
         if (stream == 0L) return fail("the native stream did not start")
         // Taken straight back from Android, a DAC can refuse the very first transfers
         // (the endpoint not there yet: ENOENT) - once, and then accept. Seen on a BTD 700
         // 30 s after a hand-back. Give it one clean retry before calling the DAC gone.
-        Thread.sleep(40)
-        val st = stats()
-        if (st != null && !st.running && st.urbsCompleted == 0L) {
-            Log.w(TAG, "first transfers refused (errno ${st.lastErrno}); selecting the format again")
+        if (refusedAtStart(0L)) {
             stopStream()
-            iface(alt.interfaceNumber, 0)?.let { conn.setInterface(it) }
-            Thread.sleep(STREAM_RESTART_MS)
-            iface(alt.interfaceNumber, alt.alternateSetting)?.let { conn.setInterface(it) }
-            // Selecting the setting again can reset a UAC1 endpoint's rate.
-            if (info.uacVersion >= 0x0200) setUac2Rate(rate) else setUac1Rate(ep.address, rate)
-            stream = launch()
+            reselect(alt, rate)
+            setStream(launch())
             if (stream == 0L) return fail("the native stream did not start")
         }
         return true
+    }
+
+    /** True when a stream just started stopped again without a single transfer completing. */
+    private fun refusedAtStart(completedBefore: Long): Boolean {
+        Thread.sleep(40)
+        val st = stats() ?: return false
+        val refused = !st.running && st.urbsCompleted == completedBefore
+        if (refused) Log.w(TAG, "first transfers refused (errno ${st.lastErrno}); selecting the format again")
+        return refused
+    }
+
+    /** Zero bandwidth and back to [alt], and its rate again: the clean restart a refusing DAC needs. */
+    private fun reselect(alt: StreamingAlt, rate: Int) {
+        iface(alt.interfaceNumber, 0)?.let { conn.setInterface(it) }
+        Thread.sleep(STREAM_RESTART_MS)
+        iface(alt.interfaceNumber, alt.alternateSetting)?.let { conn.setInterface(it) }
+        // Selecting the setting again can reset a UAC1 endpoint's rate.
+        val ep = alt.endpoint ?: return
+        if (info.uacVersion >= 0x0200) setUac2Rate(alt, rate) else setUac1Rate(ep.address, rate)
     }
 
     /** Queue PCM already in the DAC's own format; returns the bytes taken. */
@@ -278,8 +348,15 @@ class UsbAudioSession private constructor(
         val framesSent: Long, val lastErrno: Long, val running: Boolean,
     )
 
-    fun stats(): Stats? = if (stream == 0L) null else UsbAudioNative.nativeStats(stream).let {
-        Stats(it[0], it[1], it[2], it[3], it[4], it[5] != 0L)
+    /**
+     * The native stream's counters. Safe from any thread (the signal-path page reads them
+     * while the player's thread may be stopping the stream) because the stream is only
+     * ever freed under the same lock.
+     */
+    fun stats(): Stats? = synchronized(streamLock) {
+        if (stream == 0L) null else UsbAudioNative.nativeStats(stream).let {
+            Stats(it[0], it[1], it[2], it[3], it[4], it[5] != 0L)
+        }
     }
 
     fun setPaused(paused: Boolean) { if (stream != 0L) UsbAudioNative.nativeSetPaused(stream, paused) }
@@ -314,12 +391,22 @@ class UsbAudioSession private constructor(
         val alt = format ?: return fail("not configured")
         val rate = confirmedRate ?: return fail("no rate")
         val keep = stream
-        stream = 0L  // configure() would otherwise stop and free it.
+        setStream(0L)  // configure() would otherwise stop and free it.
         val ok = configure(alt, rate)
-        stream = keep
+        setStream(keep)
         if (!ok) return false
+        val before = stats()?.urbsCompleted ?: 0L
         UsbAudioNative.nativeRestart(stream)
         suspended = false
+        // The same refusal start() guards against, and the case it was written for: a
+        // BTD 700 taken back thirty seconds after a hand-back. Restarting skipped the
+        // check, so the stream died at once and playback fell back to Android as if the
+        // DAC had been unplugged.
+        if (refusedAtStart(before)) {
+            reselect(alt, rate)
+            UsbAudioNative.nativeRestart(stream)
+            if (stats()?.running == false) return fail("the DAC refused the stream after being taken back")
+        }
         return true
     }
 
@@ -334,7 +421,7 @@ class UsbAudioSession private constructor(
         claimed.clear()
     }
 
-    fun stopStream() {
+    fun stopStream() = synchronized(streamLock) {
         if (stream != 0L) {
             UsbAudioNative.nativeStop(stream)
             stream = 0L
@@ -344,7 +431,10 @@ class UsbAudioSession private constructor(
     /** Stop, return the streaming interface to zero bandwidth, and give the DAC back to Android. */
     override fun close() {
         stopStream()
-        if (!suspended) releaseAll()
+        // Whatever is claimed goes back, suspended or not. A take-back that failed half
+        // way (interfaces claimed again, rate refused) left `suspended` set, this skipped
+        // the release, and Android had no USB output until the DAC was replugged.
+        if (claimed.isNotEmpty()) releaseAll()
         conn.close()
         synchronized(Companion) { if (current === this) current = null }
     }

@@ -76,14 +76,37 @@ object UsbVolume {
 
     private var digitalLevel = 1f
 
+    /** The last level above zero, which unmuting returns to. */
+    @Volatile private var lastAudible = 0.5f
+
+    /**
+     * The DAC's volume is a USB control transfer: up to a second of blocking I/O, and the
+     * callers are the media session and the volume keys, on the main thread. So writes
+     * go to their own thread, and only the newest one waiting is sent — a held volume
+     * key produces a burst, and the DAC only needs to land on the last.
+     */
+    private val writer = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "UsbVolume").apply { isDaemon = true }
+    }
+    private val pendingWrite = java.util.concurrent.atomic.AtomicReference<Pair<UsbAudioSession, Pair<Int, Boolean>>?>(null)
+
+    private fun writeLater(s: UsbAudioSession, value: Int, mute: Boolean) {
+        if (pendingWrite.getAndSet(s to (value to mute)) != null) return
+        writer.execute {
+            val (target, v) = pendingWrite.getAndSet(null) ?: return@execute
+            runCatching { target.setHardwareVolume(v.first, mute = v.second) }
+        }
+    }
+
     /** Set the level, 0..1. Zero mutes. */
     fun set(level: Float) {
         val l = level.coerceIn(0f, 1f)
+        if (l > 0f) lastAudible = l
         when (mode) {
             Mode.HARDWARE -> {
                 val s = session ?: return
                 val r = range ?: return
-                runCatching { s.setHardwareVolume(valueOf(l, r), mute = l <= 0f) }
+                writeLater(s, valueOf(l, r), mute = l <= 0f)
                 _state.value = Info(l, stepsOf(r), digital = false)
             }
             Mode.DIGITAL -> {
@@ -94,6 +117,12 @@ object UsbVolume {
             }
         }
     }
+
+    /**
+     * Unmute to where the level was before. Unmuting used to jump to half volume
+     * whatever it had been, which on a DAC driving sensitive IEMs is a surprise.
+     */
+    fun unmute() = set(lastAudible)
 
     /** One volume-key step up or down. */
     fun step(up: Boolean) {

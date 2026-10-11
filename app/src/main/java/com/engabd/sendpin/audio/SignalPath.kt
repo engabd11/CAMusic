@@ -272,6 +272,13 @@ object SignalPath {
         val volume: String,
         /** Set when the track's rate was above the DAC's and CAMusic divided it down from this. */
         val convertedFromHz: Int? = null,
+        /**
+         * The DAC runs on its own clock and asks the host to follow it (an asynchronous
+         * endpoint, or a feedback endpoint). CAMusic's driver streams on the nominal
+         * schedule, not yet following that feedback (docs/plan/usb-bitperfect-driver.md,
+         * M6), so over a very long stretch the DAC's buffer can drift into a click.
+         */
+        val asyncClock: Boolean = false,
     )
 
     fun onUsbPath(path: UsbPath?) {

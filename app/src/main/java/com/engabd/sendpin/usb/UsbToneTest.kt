@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Milestone 2's proof: a quiet 1 kHz tone through CAMusic's own driver, two seconds in
@@ -26,8 +27,10 @@ object UsbToneTest {
             val session = UsbAudioSession.open(context, device) ?: return@withContext "Could not open the DAC."
             val lines = mutableListOf("Test tone: 1 kHz at -20 dBFS, ${SECONDS}s per format, ${session.speedName}")
             try {
+                var gone = false
                 for (alt in session.info.outputs) {
-                    for (rate in alt.sampleRates.ifEmpty { listOf(44_100, 48_000) }) {
+                    if (gone) break
+                    for (rate in session.ratesFor(alt).ifEmpty { listOf(44_100, 48_000) }) {
                         val label = "${alt.bitResolution}-bit ${UacReport.khz(rate)}"
                         onProgress("Playing $label…")
                         if (!session.configure(alt, rate)) {
@@ -42,19 +45,34 @@ object UsbToneTest {
                         var frame = 0L
                         val total = rate.toLong() * SECONDS
                         val bytesPerFrame = alt.channels * alt.subslotBytes
-                        while (frame < total) {
+                        // A DAC pulled out mid-test stops taking audio. Without this the
+                        // loops below waited for room, and a drain, that never came.
+                        var died = false
+                        while (frame < total && !died) {
                             val n = minOf(CHUNK_FRAMES.toLong(), total - frame).toInt()
                             val pcm = UsbAudioMath.tone(n, frame, rate, alt.channels, alt.subslotBytes, alt.bitResolution)
                             var off = 0
                             while (off < pcm.size) {
                                 val took = session.write(pcm, off, pcm.size - off)
                                 off += took
-                                if (took == 0) delay(5)
+                                if (took == 0) {
+                                    if (session.streamDied) { died = true; break }
+                                    delay(5)
+                                }
                             }
                             frame += n
                         }
-                        // Let the queue drain before measuring.
-                        while (session.queuedBytes() >= bytesPerFrame) delay(10)
+                        if (died) {
+                            session.stopStream()
+                            lines += "$label: the DAC stopped taking audio (unplugged?)"
+                            gone = true
+                            break
+                        }
+                        // Let the queue drain before measuring, for as long as a healthy
+                        // stream could possibly need.
+                        withTimeoutOrNull(3_000) {
+                            while (session.queuedBytes() >= bytesPerFrame && !session.streamDied) delay(10)
+                        }
                         delay(100)
                         val s = session.stats()
                         session.stopStream()
@@ -71,6 +89,9 @@ object UsbToneTest {
                         }
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Leaving the screen cancels the test: that is not a result to report.
+                throw e
             } catch (e: Exception) {
                 lines += "Stopped: ${e.message}"
             } finally {
