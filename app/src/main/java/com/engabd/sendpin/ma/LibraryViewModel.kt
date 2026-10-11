@@ -1654,6 +1654,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * for "queue just this one"). This builds a single [LocalTrack] directly instead.
      */
     fun enqueueTrack(item: MaItem, option: String) {
+        // A track from another library is queued from that library; [playForeign]
+        // already queues a track on its own.
+        if (isForeign(item)) { playForeign(item, option); return }
         viewModelScope.launch {
             try {
                 if (item.provider == DOWNLOAD || MusicSources.isLocalProvider(item.provider)) {
