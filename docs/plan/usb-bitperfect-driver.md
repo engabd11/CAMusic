@@ -1,8 +1,8 @@
 # Bit-perfect USB output: CAMusic's own USB Audio Class driver
 
 Status (2026-09-29): **M1–M5 done**, tested on a Galaxy S23 with a Sennheiser BTD 700 (#282, #283, #284, #286,
-and the M5 PR). M6 — other DACs, UAC2 and high speed, the feedback endpoint — is what remains, and needs DACs
-other than the BTD 700 to test against. It follows v0.14.1, which made Direct to DAC play at all.
+and the M5 PR). M6 remains — **What remains (M6)** at the end of this file is the full list: feedback-endpoint
+clocking, UAC2 and high speed, more DACs, and the fixes found reviewing M1–M5. It follows v0.14.1, which made Direct to DAC play at all.
 
 ## Why
 
@@ -130,3 +130,79 @@ Decided 2026-09-29: **our own usbfs layer**, **take the DAC while playing and ha
 - **Verifying bit-perfection.** A DAC's rate indicator proves the rate, not the bits.
   A digital loopback, for example a USB DAC with S/PDIF out into a PC capture card, would
   let us compare captured samples with the file.
+
+## What remains (M6)
+
+Written 2026-09-29, reviewing M1–M5. The BTD 700 on the S23 is still the only device any of
+this has run on; the list below is what the mode needs before it can leave experimental, in
+the order the risk sits.
+
+### Clocking: the feedback endpoint (the core gap)
+
+Everything so far streams on the nominal schedule — the native engine's frame accumulator,
+no feedback read. The BTD 700 tolerates that (albums verified by ear, 0 packet errors), but
+a genuinely asynchronous DAC's clock drifts off nominal over a session: the one-second ring
+eventually underruns (silent padding, then clicks) or overruns. This is the difference
+between "bit-perfect samples" and a player that can hold any DAC for a whole album.
+
+- Parse the streaming interface's isochronous IN endpoint as the feedback endpoint — explicit
+  feedback (10.14 fixed point on UAC1, 16.16 on UAC2) and implicit feedback (a bidirectional
+  interface with no explicit feedback endpoint: the OUT schedule follows the IN endpoint's
+  data). It must not grab a headset's microphone endpoint; the M2 parser already traces
+  feature units back to the streaming terminal, and the same care applies here.
+- Native: submit an iso IN URB alongside the OUT chain and feed the observed rate into the
+  `owed` accumulator, slew-limited so one misread cannot jerk the schedule. Expose the
+  observed rate in `nativeStats`.
+- Adaptive and synchronous DACs keep the nominal schedule. The choice comes from the
+  alternate setting's sync type in the descriptors, and the signal path should say which
+  one ran.
+- Verification: `silentFrames` must stay 0 over a multi-hour album on an asynchronous DAC,
+  and the Risks section's digital loopback (a DAC's S/PDIF out into a capture card, captured
+  bits compared with the file) is the only real proof of bits — do it once, on one DAC, and
+  the claim stops resting on the DAC's own rate read-back.
+
+### UAC2 and high speed
+
+The code paths exist and are fixture-tested, but no real UAC2 or high-speed DAC has been
+taken:
+
+- `UsbAudioSession.setUac2Rate` uses the first clock source. A DAC with a clock selector —
+  several sources, one chosen — needs the source that actually feeds the streaming terminal
+  (walk the selector's connections) and the selector's own SET_CUR.
+- High-speed microframe scheduling: `UsbAudioMath.packetsPerSecond` handles `bInterval` and
+  the M1 parser reads the interval, but no high-speed device has exercised it. Verify packet
+  sizes, `maxPacket` and the 125 µs cadence on hardware.
+- Implicit feedback is the common shape on UAC2 boxes; it is covered by clocking above.
+
+### More DACs
+
+At least three different DACs before experimental lifts (the milestone's own bar). The M1
+report page is the intake: Share/Copy hands over raw descriptors, and each report becomes a
+parser fixture the suite runs on. The report card should say that plainly — that a shared
+report becomes a fixture — and power-draw failures have to read as an error, never a hang.
+
+### What review found in M1–M5 (each small, none blocking v0.15.0)
+
+- `usb_audio.cpp`'s `nativeRestart` requires `!thread.joinable()`. A streaming thread that
+  self-exits through the REAPURB-error break in `run()` leaves the thread joinable, so
+  `resumeFromAndroid` returns success and restarts nothing. `streamDied` → failover covers
+  playback today; join-on-dead-thread (or a restartable flag) closes it.
+- `UsbBitperfectOutput.drainBeforeSwitch` blocks the playback thread for up to 1.5 s (a
+  `Thread.sleep(5)` loop) on every format switch — bounded and deliberate for gapless
+  play-out, but it stalls the whole pipeline, and feedback clocking changes hand-back
+  timing anyway. Revisit the two together.
+- `UsbVolumePlayer.setDeviceMuted(false)` sets the level to 0.5 rather than restoring the
+  pre-mute level. Keep the pre-mute level.
+- The README's signing sentence ("a stable local key that has been in use since v0.1.0")
+  predates the v3 key rotation in v0.14.0; the lineage is stable, the key is not. One
+  clarifying sentence.
+- `silentFrames` and `packetErrors` are counted natively and shown nowhere. Surface them in
+  the signal path (or the USB DAC report) — underrun visibility is how drift gets diagnosed
+  on DACs we don't own.
+
+### What lifts the mode out of experimental
+
+- Feedback clocking proven silent over a full album on at least one asynchronous DAC.
+- Three different DACs, each verified by ear with 0 packet errors.
+- The loopback bit-proof on one device.
+- Both unit suites, both lints and release builds of both flavours green (the standing bar).
