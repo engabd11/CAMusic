@@ -206,7 +206,12 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.15.1** (summaries moved here from the README):
+**v0.11.1 to v0.15.2** (summaries moved here from the README):
+
+**v0.15.2**: **a toolchain refresh, not a feature release** — nothing in the app's behaviour
+changes. Kotlin 2.4.20 → 2.4.21, Material 3 1.5.0-alpha29 → 1.5.0-beta01, Gradle 9.8.0 → 9.8.1, and
+the CI actions brought up to date. The shipped APKs are rebuilt on those versions, so the binaries
+match the toolchain the project now pins. Updating from 0.15.1 has nothing new to see.
 
 **v0.15.1**: **Music Assistant on the phone's speaker sounds like local playback**: the Sendspin
 engine plays through Android's normal media path, so the phone's own speaker tuning (Dolby, Dirac,
