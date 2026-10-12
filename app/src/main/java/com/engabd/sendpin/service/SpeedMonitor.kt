@@ -78,6 +78,11 @@ import kotlin.math.roundToInt
  * [DrivingLocationService] is started alongside the subscription and stopped with
  * it. That service exists for no other reason; see its own doc.
  *
+ * Android only lets that service hold location if it starts while CAMusic is on
+ * screen or from a tap, and the car usually connects with the app in the
+ * background. So it is started again whenever the app comes on screen while the
+ * watch is listening without it — see `foregroundJob` in [start].
+ *
  * ## What it asks the platform for
  *
  * A fix a second, from the fused provider where the platform has one and raw GPS
