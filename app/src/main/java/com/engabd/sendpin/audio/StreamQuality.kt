@@ -45,12 +45,25 @@ data class StreamQuality(
             sampleRateHz == other.sampleRateHz &&
             bitDepth == other.bitDepth
 
+    /** The same codec however it was spelled: `mpeg` (a MIME type) and `mp3` (a tag) are one. */
+    fun sameCodecAs(other: StreamQuality): Boolean = displayCodec == other.displayCodec
+
+    /**
+     * [sameFormatAs], judged only on what both readings know. A decoder's input format
+     * often has no depth for a compressed stream and a library's tags often have no
+     * rate; a field one side never reported is not a difference.
+     */
+    fun matches(other: StreamQuality): Boolean =
+        sameCodecAs(other) &&
+            (sampleRateHz <= 0 || other.sampleRateHz <= 0 || sampleRateHz == other.sampleRateHz) &&
+            (bitDepth <= 0 || other.bitDepth <= 0 || bitDepth == other.bitDepth)
+
     /**
      * `audio/flac` and `FLAC` are the same codec — MA sends both spellings. Raw PCM
      * arrives as a sample format (`s24le`, `f32le`, `pcm_s16le`), which is PCM.
      */
     private val normalizedCodec: String
-        get() = codec.substringAfterLast('/').lowercase().trim().let { if (isRawPcm(it)) "pcm" else it }
+        get() = codec.substringAfterLast('/').lowercase().trim().let { if (isRawPcm(it) || it == "raw") "pcm" else it }
 
     /**
      * The codec as a listener would name it.
@@ -63,7 +76,7 @@ data class StreamQuality(
     private val displayCodec: String
         get() = when (val c = normalizedCodec) {
             "mpeg", "mp3", "mpga" -> "MP3"
-            "mp4", "m4a", "aac", "mp4a" -> "AAC"
+            "mp4", "m4a", "aac", "mp4a", "mp4a-latm" -> "AAC"
             "ogg", "vorbis" -> "Vorbis"
             "x-flac" -> "FLAC"
             "wave", "x-wav" -> "WAV"

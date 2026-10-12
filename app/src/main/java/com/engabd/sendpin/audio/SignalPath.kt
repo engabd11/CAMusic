@@ -52,6 +52,8 @@ object SignalPath {
         val channels: Int? = null,
         /** True when this stage is 32-bit float rather than integer PCM. */
         val isFloat: Boolean = false,
+        /** The stream's bitrate in kbps when the container declares one, else null. */
+        val bitrateKbps: Int? = null,
     ) {
         val known: Boolean get() = sampleRateHz != null || bitDepth != null || codec != null
 
@@ -216,6 +218,8 @@ object SignalPath {
                 bitDepth = depthOf(format.pcmEncoding),
                 channels = format.channelCount.takeIf { it != Format.NO_VALUE },
                 isFloat = format.pcmEncoding == C.ENCODING_PCM_FLOAT,
+                bitrateKbps = (format.averageBitrate.takeIf { it > 0 } ?: format.bitrate.takeIf { it > 0 })
+                    ?.let { it / 1000 },
             ),
         )
     }
