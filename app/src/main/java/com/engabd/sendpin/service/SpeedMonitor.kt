@@ -6,7 +6,8 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.os.Looper
+import android.location.LocationRequest
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.SpeedAdaptiveGain
@@ -86,6 +87,12 @@ import kotlin.math.roundToInt
  * measured in fixes' worth of time, and the coarser the interval the longer a driver
  * has to hold a speed before anything happens. A fix a second is what a satnav asks
  * for, on a phone that is plugged in and driving.
+ *
+ * And at high-accuracy quality, said explicitly. The plain
+ * `requestLocationUpdates(provider, interval, distance, …)` overload takes the fused
+ * provider at *balanced* quality, which is Wi-Fi and cell positions tens of metres
+ * out with no speed on them — the source of a 45 km/h drive being alerted at
+ * 1100 km/h, and of zone lookups landing on the next road over. See [GpsSpeed].
  */
 class SpeedMonitor(private val context: Context, private val drivingMode: DrivingMode) {
 
@@ -166,8 +173,11 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     @Volatile private var manualLimitKmh = 0
     @Volatile private var tolerancePct = 5
 
-    /** The previous fix, for the derived-speed fallback. */
-    private var lastFix: Location? = null
+    /** Turns fixes into speeds, refusing the ones no car could do. */
+    private val speedEstimator = GpsSpeed.Estimator()
+
+    /** Steadies the detected limit across single bad lookups. */
+    private val limitFilter = DetectedLimitFilter()
 
     /** Guards against a second lookup starting while one is still on the database. */
     @Volatile private var lookupInFlight = false
@@ -314,7 +324,8 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         }
         listening = true
         alertTracker.reset()
-        lastFix = null
+        speedEstimator.reset()
+        limitFilter.reset()
         _fixStatus.value = "Waiting for a GPS fix…"
         // Started before the subscription, not after: this is what keeps the grant
         // alive once the driver switches to their map, and a subscription taken
@@ -352,14 +363,16 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
             }
             add(LocationManager.GPS_PROVIDER)
         }.filter { runCatching { locationManager.isProviderEnabled(it) }.getOrDefault(false) }
+        val request = LocationRequest.Builder(MIN_UPDATE_INTERVAL_MS)
+            .setQuality(LocationRequest.QUALITY_HIGH_ACCURACY)
+            .build()
         val subscribed = providers.any { provider ->
             runCatching {
                 locationManager.requestLocationUpdates(
                     provider,
-                    MIN_UPDATE_INTERVAL_MS,
-                    0f,
+                    request,
+                    context.mainExecutor,
                     locationListener,
-                    Looper.getMainLooper(),
                 )
             }.isSuccess
         }
@@ -385,7 +398,8 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         _speedKmh.value = 0f
         _detectedLimitKmh.value = null
         _activeLimitKmh.value = null
-        lastFix = null
+        speedEstimator.reset()
+        limitFilter.reset()
         alertTracker.reset()
         SendpinApp.instance.localPlayer.speedGainTarget = 1f
     }
@@ -393,11 +407,17 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     private fun onLocation(location: Location) {
         val nowMs = System.currentTimeMillis()
         val kmh = speedKmhFrom(location)
-        lastFix = location
         if (kmh == null) {
             // A fix with no usable speed still says the subscription is alive, which
-            // is worth reporting; it just cannot feed the alert.
-            _fixStatus.value = "Fix received, no speed yet."
+            // is worth reporting; it just cannot feed the alert. A coarse one says
+            // why, since that is the case that used to become a nonsense speed.
+            _fixStatus.value = if (location.hasAccuracy() &&
+                location.accuracy > GpsSpeed.MAX_DERIVE_ACCURACY_M
+            ) {
+                "Fix too rough to read speed (±${location.accuracy.toInt()} m), waiting for GPS…"
+            } else {
+                "Fix received, no speed yet."
+            }
             return
         }
         _speedKmh.value = kmh
@@ -415,19 +435,21 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
      * The reading's speed in km/h, or null if there is no honest one to be had.
      *
      * `hasSpeed()` is false on some first fixes and on providers that report
-     * position only, and the old code simply returned — leaving the speed at
-     * whatever it last was and the alert with nothing to judge. Two fixes and the
-     * time between them are a perfectly good speed, and over the second-scale
-     * interval this subscribes at they are an accurate one.
+     * position only, and two fixes and the time between them can stand in — but
+     * only when both positions are good enough. Differencing anything at all is
+     * what turned a Wi-Fi fix 300 m off into 1100 km/h; [GpsSpeed] holds the rules.
      */
-    private fun speedKmhFrom(location: Location): Float? {
-        if (location.hasSpeed()) return location.speed * 3.6f
-        val previous = lastFix ?: return null
-        val elapsedMs = location.time - previous.time
-        if (elapsedMs !in MIN_DERIVE_GAP_MS..MAX_DERIVE_GAP_MS) return null
-        val metres = location.distanceTo(previous)
-        return (metres / (elapsedMs / 1000f)) * 3.6f
-    }
+    private fun speedKmhFrom(location: Location): Float? = speedEstimator.onFix(
+        GpsSpeed.Fix(
+            elapsedMs = location.elapsedRealtimeNanos / 1_000_000L,
+            lat = location.latitude,
+            lon = location.longitude,
+            accuracyM = location.accuracy.takeIf { location.hasAccuracy() },
+            speedMs = location.speed.takeIf { location.hasSpeed() },
+            speedAccuracyMs = location.speedAccuracyMetersPerSecond.takeIf { location.hasSpeedAccuracy() },
+        ),
+        nowElapsedMs = SystemClock.elapsedRealtime(),
+    )
 
     /**
      * Decide whether to beep for the current reading.
@@ -449,6 +471,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         if (autoDetect) {
             refreshDetectedLimit(location)
         } else if (_detectedLimitKmh.value != null) {
+            limitFilter.reset()
             _detectedLimitKmh.value = null
         }
 
@@ -476,6 +499,10 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     private fun refreshDetectedLimit(location: Location) {
         val provider = speedLimitProvider ?: return
         if (!provider.ready.value || lookupInFlight) return
+        // A coarse fix is not looked up at all. Its radius would be widened to cover
+        // its own error, and at that width the nearest segment is as often the road
+        // beside this one; the limit already in effect is a better answer than that.
+        if (!location.hasAccuracy() || location.accuracy > MAX_LOOKUP_ACCURACY_M) return
         lookupInFlight = true
         // Accuracy is passed through rather than assumed: the database matches a
         // point against road geometry within a fixed radius, and a fix that is
@@ -489,11 +516,15 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         }
         scope.launch {
             try {
-                _detectedLimitKmh.value = provider.getSpeedLimit(
-                    location.latitude,
-                    location.longitude,
-                    accuracyMeters = accuracy,
-                    headingDeg = heading,
+                // Through the filter, not straight in: one lookup at a junction or
+                // one miss off the edge of the data no longer swaps the limit.
+                _detectedLimitKmh.value = limitFilter.onLookup(
+                    provider.getSpeedLimit(
+                        location.latitude,
+                        location.longitude,
+                        accuracyMeters = accuracy,
+                        headingDeg = heading,
+                    ),
                 )
             } catch (_: Exception) {
                 // A lookup that failed says nothing about the road; the last known
@@ -542,10 +573,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         /** Below this (m/s, ~11 km/h) a fix's bearing is not trusted for matching. */
         private const val MIN_HEADING_SPEED_MS = 3f
 
-        /** Two fixes closer together than this cannot be differenced usefully. */
-        private const val MIN_DERIVE_GAP_MS = 300L
-
-        /** Two fixes further apart than this are a resumed subscription, not a journey. */
-        private const val MAX_DERIVE_GAP_MS = 30_000L
+        /** A fix less certain than this (metres) is not matched against the zones. */
+        private const val MAX_LOOKUP_ACCURACY_M = 25f
     }
 }
