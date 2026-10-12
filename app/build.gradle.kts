@@ -209,6 +209,12 @@ android {
     androidResources {
         noCompress += "xz"
     }
+
+    // The app's lint run also checks the library modules (:core, :providers:*), so the
+    // one CI lint step still covers every line of code that ships.
+    lint {
+        checkDependencies = true
+    }
 }
 
 // The offline-analysis harness (`ScanHarnessTest`) reads a directory of decoded
@@ -312,6 +318,17 @@ androidComponents {
 }
 
 dependencies {
+    // The modules the app is built from. See docs/architecture.md, Modules.
+    implementation(project(":core"))
+    implementation(project(":providers:subsonic"))
+    implementation(project(":providers:jellyfin"))
+    implementation(project(":providers:emby"))
+    implementation(project(":providers:plex"))
+    implementation(project(":providers:qobuz"))
+    implementation(project(":providers:tidal"))
+    implementation(project(":providers:mpd"))
+    implementation(project(":providers:foobar2000"))
+
     // The Oboe native output engine (src/main/cpp/sendspin_output_*) links
     // against this via CMake's find_package(oboe) - see CMakeLists.txt. Ships
     // as a prefab package (buildFeatures.prefab above), not source, since NDK

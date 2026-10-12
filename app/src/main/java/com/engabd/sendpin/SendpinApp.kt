@@ -689,7 +689,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
         if (BuildConfig.DEBUG) enableStrictMode()
         // Before any client is built: [Http.base] is lazy, and a cache installed after
         // the first request would be attached to a client nobody is using any more.
-        Http.initCache(cacheDir)
+        Http.initCache(cacheDir, BuildConfig.VERSION_NAME)
         // Before any source is built, so the first stream URL already knows whether
         // it is on mobile data. One callback for the process; see [StreamNetwork].
         com.engabd.sendpin.library.StreamNetwork.start(this)

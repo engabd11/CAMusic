@@ -397,9 +397,10 @@ private fun SpotifyCards(
         )
         Note("Changes here take effect when the Spotify session is next opened — reconnect from the Account card, or restart playback.")
     }
-    if (account?.plan != null && account.plan.lowercase() != "premium") {
+    val plan = account?.plan
+    if (plan != null && plan.lowercase() != "premium") {
         SettingsCard(title = "Premium required") {
-            Note("This account is ${account.plan}. Spotify only lets third-party clients play on Premium; browsing works, playback will not.", warn = true)
+            Note("This account is $plan. Spotify only lets third-party clients play on Premium; browsing works, playback will not.", warn = true)
         }
     }
 }

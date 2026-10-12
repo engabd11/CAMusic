@@ -491,9 +491,10 @@ private fun QueueRow(
                 fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            if (!item.artist.isNullOrBlank()) {
+            val artist = item.artist
+            if (!artist.isNullOrBlank()) {
                 Text(
-                    item.artist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                    artist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -632,9 +633,10 @@ private fun SimilarRow(track: MaSimilarTrack, onPlay: () -> Unit, onQueue: () ->
                 fontWeight = FontWeight.Bold, fontSize = 13.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            if (!track.artist.isNullOrBlank()) {
+            val trackArtist = track.artist
+            if (!trackArtist.isNullOrBlank()) {
                 Text(
-                    track.artist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                    trackArtist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
