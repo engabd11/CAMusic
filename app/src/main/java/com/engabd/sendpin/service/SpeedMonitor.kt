@@ -95,6 +95,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     private val alertTracker = SpeedAlert.Tracker()
     private var gateJob: Job? = null
     private var settingsJob: Job? = null
+    private var foregroundJob: Job? = null
     private var listening = false
 
     /** The offline speed-limit provider. Null until first needed. */
@@ -231,6 +232,18 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
                 .distinctUntilChanged()
                 .collect { gate -> applyGate(gate) }
         }
+        // The retry the location service needs. It is usually started as the car
+        // connects, with CAMusic in the background, and Android refuses it there; it
+        // is allowed the moment the app is on screen. Nothing used to ask again —
+        // `listening` was already true, so opening the app skipped the start — and
+        // location went with the app every time it left the screen, all drive.
+        foregroundJob?.cancel()
+        foregroundJob = scope.launch {
+            val foreground = AppLifecycleObserver.get()?.foreground ?: return@launch
+            combine(foreground, DrivingLocationService.running) { onScreen, running -> onScreen && !running }
+                .distinctUntilChanged()
+                .collect { needed -> if (needed && listening) DrivingLocationService.start(context) }
+        }
         settingsJob?.cancel()
         settingsJob = scope.launch {
             combine(
@@ -254,6 +267,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     fun stop() {
         gateJob?.cancel()
         settingsJob?.cancel()
+        foregroundJob?.cancel()
         stopLocationUpdates()
         _fixStatus.value = null
     }
