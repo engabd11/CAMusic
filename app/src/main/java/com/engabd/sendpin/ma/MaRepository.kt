@@ -142,6 +142,20 @@ class MaRepository(
         libraryPage("music/playlists/library_items", offset, limit)
 
     /**
+     * [limit] library tracks in a random order, for DJ Radio's seed choices. The same
+     * `library_items` command every browse uses, ordered `random` on the server.
+     */
+    suspend fun randomTracks(limit: Int) =
+        MaParse.items(
+            api.sendCommand(
+                "music/tracks/library_items",
+                libraryArgs(0, limit, orderBy = "random"),
+                timeoutMs = LIBRARY_TIMEOUT_MS,
+            ),
+            serverUrl,
+        )
+
+    /**
      * Internet radio stations in the library.
      *
      * Radio was already *playable* — `MaItem.PLAYABLE` has carried it from the start,

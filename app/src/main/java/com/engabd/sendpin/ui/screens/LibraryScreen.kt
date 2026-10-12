@@ -577,6 +577,7 @@ private fun Browse(
     }
     val djRadio by viewModel.djRadio.collectAsStateWithLifecycle()
     val djRadioAvailable by viewModel.djRadioAvailable.collectAsStateWithLifecycle()
+    val djOnMa by viewModel.djRadioOnMusicAssistant.collectAsStateWithLifecycle()
     val djCrossfade by viewModel.djRadioCrossfadeSeconds.collectAsStateWithLifecycle()
     val djSmartFade by viewModel.djRadioSmartFade.collectAsStateWithLifecycle()
     val djMood by viewModel.djRadioMood.collectAsStateWithLifecycle()
@@ -790,9 +791,9 @@ private fun Browse(
             if (depth == 0) {
                 // Above the categories, because it is the one thing here that answers
                 // "I want music" rather than "I want to find something" — and a listener
-                // who wanted to browse is already scrolling past it either way. Hidden
-                // on Music Assistant, which builds and decodes its queue server-side and
-                // so can do neither half of this — see [LibraryViewModel.djRadioAvailable].
+                // who wanted to browse is already scrolling past it either way. On Music
+                // Assistant it is the server's radio and crossfade rather than the
+                // phone's — see [LibraryViewModel.djRadioAvailable].
                 if (djRadioAvailable) {
                     item(key = "dj_radio", span = { full(gridCols) }, contentType = { "dj" }) {
                         DjRadioCard(
@@ -800,6 +801,7 @@ private fun Browse(
                             crossfadeSeconds = djCrossfade,
                             smartFade = djSmartFade,
                             moodTitle = djMood?.title,
+                            onMusicAssistant = djOnMa,
                             // The tap opens the choice rather than making it — see
                             // [DjRadioPickerSheet]. Stop is still one tap.
                             onStart = viewModel::openDjPicker,

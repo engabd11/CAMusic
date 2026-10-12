@@ -40,12 +40,16 @@ import com.engabd.sendpin.library.SubsonicSource
 import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.subsonic.SubsonicError
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -240,6 +244,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun startRadio(item: MaItem) {
         val uri = item.uri ?: run { _toast.tryEmit("Can't start radio from that"); return }
+        // It replaces the queue, so a DJ set that was running is over.
+        leaveDjRadio()
         viewModelScope.launch {
             try {
                 localPlayer.stop()
@@ -986,8 +992,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // queue sheet is the same statement as pressing Stop, and until this the set
         // went on running behind a player holding nothing, topping the emptiness
         // back up on the next collector emission.
+        // The phone's own libraries only: on Music Assistant the set's queue is the
+        // server's and the phone's is always empty, so this would end every MA set the
+        // moment it began.
         viewModelScope.launch {
-            localPlayer.queue.collect { if (it.isEmpty()) leaveDjRadio() }
+            localPlayer.queue.collect { if (it.isEmpty() && _backend.value == Backend.SUBSONIC) leaveDjRadio() }
+        }
+        // A Music Assistant crossfade a DJ set switched on and the process did not live
+        // to put back: restored the first time the server is reachable again.
+        viewModelScope.launch {
+            _ready.collect { ready ->
+                if (ready && _backend.value == Backend.MA && !_djRadio.value) restoreMaCrossfade()
+            }
         }
         // The fade settings (length, beat-matching, overlap, DJ smart joins) are
         // collected by LocalPlayer itself, so they hold with no screen open.
@@ -2533,23 +2549,28 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         settings.djRadioCrossfadeSeconds
             .stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings.DEFAULT_DJ_CROSSFADE_S)
 
-    /**
-     * The button is worth offering here.
-     *
-     * Every library this phone plays itself qualifies — Navidrome, Subsonic,
-     * Jellyfin, Emby, Plex, MPD and the downloads on this phone all arrive as
-     * [Backend.SUBSONIC] and all play through [localPlayer], which is what owns both
-     * halves of DJ Radio. Music Assistant is the one that cannot: its queue is built
-     * and decoded on the server, so neither the crossfade nor the scan-based
-     * selection has anywhere to happen. Offering a button there that quietly did
-     * something else would be worse than not offering one.
-     */
     /** Whether the card says "smart mix" or a number of seconds. */
     val djRadioSmartFade: StateFlow<Boolean> =
         settings.djRadioSmartFade.stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
+    /**
+     * The button is worth offering here: on every library.
+     *
+     * The libraries this phone plays itself (Navidrome, Subsonic, Jellyfin, Emby, Plex,
+     * MPD and the downloads, all [Backend.SUBSONIC]) run DJ Radio on [localPlayer]: the
+     * phone picks each track from its scans and crossfades them itself. Music Assistant
+     * builds and decodes its queue on the server, so there it is the server's DJ Radio
+     * instead: MA's own radio from the chosen seed, with the player's own crossfade
+     * (Smart Fades where the server has them) switched on for the set and put back
+     * after. See [startMaDjRadio].
+     */
     val djRadioAvailable: StateFlow<Boolean> =
-        _backend.map { it == Backend.SUBSONIC }
+        _backend.map { it == Backend.SUBSONIC || it == Backend.MA }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** The set is Music Assistant's, so the card describes MA's mixing, not the phone's. */
+    val djRadioOnMusicAssistant: StateFlow<Boolean> =
+        _backend.map { it == Backend.MA }
             .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // --- DJ Radio: session bookkeeping ------------------------------------
@@ -2622,10 +2643,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Open the picker. What the card's tap does when no set is running. */
     fun openDjPicker() {
-        if (_backend.value != Backend.SUBSONIC) {
-            _toast.tryEmit("DJ Radio needs a library this phone plays itself")
-            return
-        }
         if (_djRadio.value) return
         _djPicker.value = DjPicker(loading = true)
         loadDjSeeds(DjMood.ANYTHING)
@@ -2680,6 +2697,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A wide page to choose the six from — the library's, or the phone's when offline. */
     private suspend fun djSeedPool(): List<MaItem> {
+        if (_backend.value == Backend.MA) {
+            // Music Assistant's own random page: these are seeds for MA's radio, so they
+            // must be items MA can play, and a download on the phone is not one.
+            return runCatchingCancellable { maRepo.randomTracks(DJ_SEED_POOL) }.getOrDefault(emptyList())
+                // A server that will not order a page `random` still has a first page,
+                // and shuffling it here is the next best thing to its own shuffle.
+                .ifEmpty { runCatchingCancellable { maRepo.tracks(0, DJ_SEED_POOL) }.getOrDefault(emptyList()).shuffled() }
+                .filter { it.itemId.isNotBlank() && it.uri != null }
+                .distinctBy { it.itemId }
+        }
         val src = source
         val fromLibrary = if (_offline.value || src == null) {
             emptyList<MaItem>()
@@ -2702,8 +2729,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * scan behind it gives every pick after it something real to be similar to.
      */
     fun startDjRadio(seed: MaItem? = null, mood: DjMood? = null) {
-        if (_backend.value != Backend.SUBSONIC) {
-            _toast.tryEmit("DJ Radio needs a library this phone plays itself")
+        if (_backend.value == Backend.MA) {
+            startMaDjRadio(seed, mood)
             return
         }
         closeDjPicker()
@@ -2909,7 +2936,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         radioFetching = false
         _djRadio.value = false
         localPlayer.djCrossfadeSeconds = 0
-        localPlayer.clear()
+        if (_backend.value == Backend.MA) {
+            // The server's set: stop it on the speaker and empty its queue, for the same
+            // reason the phone's queue is cleared below, then put the crossfade back.
+            val target = playTarget()
+            viewModelScope.launch {
+                runCatchingCancellable { maRepo.stop(target) }
+                runCatchingCancellable { maRepo.clearQueue(maRepo.activeQueueId(target)) }
+                restoreMaCrossfade()
+            }
+        } else {
+            localPlayer.clear()
+        }
         _toast.tryEmit("DJ Radio off")
     }
 
@@ -2959,6 +2997,140 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         djMood = null
         _djRadio.value = false
         localPlayer.djCrossfadeSeconds = 0
+        // On Music Assistant the set's crossfade is the player's own setting, so it goes
+        // back the moment the set ends, whatever ended it. A no-op when none is owed.
+        viewModelScope.launch { restoreMaCrossfade() }
+    }
+
+    // --- DJ Radio on Music Assistant -------------------------------------
+
+    /**
+     * DJ Radio when the library is Music Assistant's.
+     *
+     * The server builds and decodes the queue there, so the phone's half of DJ Radio
+     * (picking each track from its scans, crossfading on [localPlayer]) has nowhere to
+     * run. MA has both halves of its own: radio mode, which keeps adding tracks like
+     * the seed, and a per-player crossfade, Smart Fades on servers that have them. So
+     * the set is MA's radio from the seed the listener picked, on the speaker they are
+     * playing to, with that speaker's crossfade switched on for the set and put back
+     * when it ends ([restoreMaCrossfade]). A mood shapes which seeds are offered, from
+     * whatever scans exist; after the seed, MA chooses.
+     */
+    private fun startMaDjRadio(seed: MaItem?, mood: DjMood?) {
+        closeDjPicker()
+        val session = ++djSession
+        djMood = mood?.takeIf { !it.open }
+        // Lit on the tap, as the local set does.
+        _djRadio.value = true
+        djJob?.cancel()
+        djJob = viewModelScope.launch {
+            val opener = seed ?: pickMaOpener(mood)
+            val uri = opener?.uri
+            if (opener == null || uri == null) {
+                if (djStillRunning(session)) {
+                    _djRadio.value = false
+                    djMood = null
+                    _toast.tryEmit("Nothing to start a DJ set from")
+                }
+                return@launch
+            }
+            val target = playTarget()
+            val fade = enableMaCrossfade(target)
+            if (!djStillRunning(session)) {
+                restoreMaCrossfade()
+                return@launch
+            }
+            try {
+                localPlayer.stop()
+                maRepo.playOn(target, listOf(uri), "replace", radioMode = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (djStillRunning(session)) {
+                    _djRadio.value = false
+                    djMood = null
+                }
+                restoreMaCrossfade()
+                _toast.tryEmit(e.message ?: "Couldn't start DJ Radio")
+                return@launch
+            }
+            val brief = djMood?.let { " · ${it.title}" }.orEmpty()
+            _toast.tryEmit("DJ Radio - ${opener.name}$brief · $fade")
+        }
+    }
+
+    /** The opener when nothing was picked: the best answer to [mood] on a random page. */
+    private suspend fun pickMaOpener(mood: DjMood?): MaItem? {
+        val page = djSeedPool().shuffled()
+        if (page.isEmpty()) return null
+        if (mood == null || mood.open) return page.first()
+        val considered = page.take(MOOD_OPENER_PAGE)
+        val scans = scansFor(considered)
+        return considered.maxByOrNull { mood.fit(DjProfile.profileOf(it, scans[it.itemId])) }
+    }
+
+    /**
+     * Switch [playerId]'s own crossfade on for the set, remembering what to put back.
+     *
+     * Returns the clause for the toast. Never throws: a server that refuses the change
+     * (player settings need an admin login on MA) still plays the set, it just plays it
+     * with whatever crossfade the player already had, and the toast says so.
+     */
+    private suspend fun enableMaCrossfade(playerId: String): String = maFadeLock.withLock {
+        // A restore still owed from an earlier set goes back first, so the "previous"
+        // read below is the listener's own setting and not ours.
+        putBackMaCrossfade()
+        // Still owed means the server would not take it back. Overwriting the record
+        // now would lose that player's own setting for good, so this set goes without.
+        if (settings.maDjCrossfadeRestore.first() != null) return@withLock "crossfade unchanged"
+        val entries = runCatchingCancellable { maRepo.playerConfigEntries(playerId) }.getOrNull()
+            ?: return@withLock "crossfade unchanged"
+        val change = MaCrossfade.turnOn(entries)
+            ?: return@withLock if (entries.any { it.plainKey in MaCrossfade.KEYS }) "crossfade already on" else "no crossfade on this speaker"
+        val record = MaCrossfade.Restore(playerId, change.key, change.previous.toString())
+        settings.setMaDjCrossfadeRestore(Json.encodeToString(MaCrossfade.Restore.serializer(), record))
+        try {
+            maRepo.savePlayerConfigValue(playerId, change.key, change.on)
+            "${change.description} on"
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Nothing changed, so nothing is owed.
+            settings.setMaDjCrossfadeRestore(null)
+            "crossfade unchanged (changing it needs an admin login)"
+        }
+    }
+
+    /**
+     * Put back the crossfade a DJ set switched on, if one is owed. Safe to call any time:
+     * it does nothing when no restore is pending, keeps the record when the server
+     * cannot be reached (so the next call, or the next start, tries again), and stands
+     * aside while a set is running. That last part is what makes a stop followed at
+     * once by a new start safe: the new set's [enableMaCrossfade] has already put the
+     * old crossfade back, under the same lock, and the record now belongs to it.
+     */
+    private suspend fun restoreMaCrossfade() = maFadeLock.withLock {
+        if (_djRadio.value) return@withLock
+        putBackMaCrossfade()
+    }
+
+    /** Serialises every change to a Music Assistant crossfade made for DJ Radio. */
+    private val maFadeLock = Mutex()
+
+    private suspend fun putBackMaCrossfade() {
+        val raw = settings.maDjCrossfadeRestore.first() ?: return
+        val record = runCatching { Json.decodeFromString(MaCrossfade.Restore.serializer(), raw) }.getOrNull()
+        if (record == null) {
+            settings.setMaDjCrossfadeRestore(null)
+            return
+        }
+        val previous = runCatching { Json.parseToJsonElement(record.previousJson) }.getOrNull()
+        if (previous == null) {
+            settings.setMaDjCrossfadeRestore(null)
+            return
+        }
+        val done = runCatchingCancellable { maRepo.savePlayerConfigValue(record.playerId, record.key, previous) }
+        if (done.isSuccess) settings.setMaDjCrossfadeRestore(null)
     }
 
     /**

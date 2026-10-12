@@ -83,6 +83,11 @@ internal fun DjRadioCard(
      * toast that has already gone.
      */
     moodTitle: String?,
+    /**
+     * The set is Music Assistant's: its radio, with the speaker's own crossfade. The
+     * phone's crossfade length and smart mix do not apply, so the card does not quote them.
+     */
+    onMusicAssistant: Boolean = false,
     onStart: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
@@ -117,6 +122,7 @@ internal fun DjRadioCard(
     // from the analysis; a number says it comes from the clock. Both are more use
     // than the word "crossfade", which does not distinguish them.
     val mixLabel = when {
+        onMusicAssistant -> "Music Assistant radio"
         smartFade -> "smart mix"
         crossfadeSeconds > 0 -> "${crossfadeSeconds}s crossfade"
         else -> "straight in"
