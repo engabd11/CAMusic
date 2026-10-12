@@ -290,7 +290,7 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
         // One dial, not three switches. See [OutputMode] for why these were never
         // independent settings and what each rung is named after.
         val mode = OutputMode.of(bitPerfect, exclusiveOutput, bitPerfectAaudio, usbBitperfect)
-        val rungs = OutputMode.offered(advanced, mode)
+        val rungs = OutputMode.offered(mode)
         // Wrapping chips rather than one segmented row: the rungs' own titles —
         // "High resolution", "Direct to DAC" — are the longest strings in this
         // section, and four of them on one row squeezed every label past its
@@ -378,8 +378,8 @@ internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSc
             )
         }
 
-        // Shown in the simple view too: it is on unless turned off, and it can move the
-        // dial onto a rung that view does not list.
+        // Shown in the simple view too: it is on unless turned off, and it moves the
+        // dial on its own when a DAC is plugged in.
         if (!com.engabd.sendpin.data.Platform.isTelevision(context)) {
             val autoSwitch by settings.usbAutoSwitch.collectAsStateWithLifecycle(initialValue = true)
             ToggleRow(

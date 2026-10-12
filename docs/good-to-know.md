@@ -2,7 +2,7 @@
 
 Things that behave in a particular way by design. [Back to the README](../README.md).
 
-- **Settings default to Simple.** Advanced toggles (detailed signal-path readouts, the USB bit-perfect output mode, motion settings, listening-DNA and lyrics timing) sit behind one Advanced switch at the top of Settings, off until you go looking for them.
+- **Settings default to Simple.** Advanced toggles (detailed signal-path readouts, motion settings, listening-DNA and lyrics timing) sit behind one Advanced switch at the top of Settings, off until you go looking for them.
 - **A Hue entertainment area serves one client at a time.** If the Hue app takes the area,
   CAMusic's stream is handed over and stays stopped, deliberately, so its own stop button keeps
   working.
