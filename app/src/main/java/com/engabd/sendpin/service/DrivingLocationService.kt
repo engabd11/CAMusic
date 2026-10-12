@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.MainActivity
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,6 +54,22 @@ import kotlinx.coroutines.flow.asStateFlow
  * No `START_STICKY`, for the same reason [DrivingOverlayService] has none: if the
  * process goes, the drive is over as far as this is concerned. The car reconnecting
  * brings it all back.
+ *
+ * ## When Android lets it start
+ *
+ * The car connecting is what starts the watch, and the car almost always connects
+ * while CAMusic is in the background. From there Android refuses this service
+ * outright (`Background started FGS: Disallowed`, reproduced on an emulator): a
+ * `location` service only gets while-in-use location if it starts while the app is
+ * on screen, or from something the user tapped. Started from either of those, it
+ * keeps location for the rest of the drive after the app leaves the screen.
+ *
+ * So a refusal is not the end of it. It posts a "speed watch paused" notification
+ * whose tap starts this service directly, without opening the app or covering the
+ * map, and [SpeedMonitor] starts it again the next time CAMusic comes on screen.
+ * Previously nothing retried: the watch was marked as listening, so opening the
+ * app skipped the start, and location stopped every time the app left the screen
+ * for the whole drive.
  */
 class DrivingLocationService : Service() {
 
@@ -60,7 +77,12 @@ class DrivingLocationService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createChannel()
+        ensureChannels(this)
+    }
+
+    override fun onDestroy() {
+        _running.value = false
+        super.onDestroy()
     }
 
     /**
@@ -85,6 +107,8 @@ class DrivingLocationService : Service() {
             )
         }.onSuccess {
             _refusal.value = null
+            _running.value = true
+            cancelPaused(this)
         }.onFailure {
             // Survivable: the alert falls back to whatever location the platform
             // still hands a backgrounded app, which is little but not nothing, and
@@ -97,6 +121,7 @@ class DrivingLocationService : Service() {
             // subscription goes quiet with nothing to show for it. Said out loud.
             android.util.Log.w(TAG, "startForeground failed: ${it.message}")
             _refusal.value = REFUSED_MESSAGE
+            notifyPaused(this)
         }
         return START_NOT_STICKY
     }
@@ -118,21 +143,12 @@ class DrivingLocationService : Service() {
             .build()
     }
 
-    private fun createChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID, "Speed watching", NotificationManager.IMPORTANCE_LOW,
-        ).apply {
-            description = "Shown while driving mode is reading GPS speed."
-            setShowBadge(false)
-        }
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .createNotificationChannel(channel)
-    }
-
     companion object {
         private const val TAG = "DrivingLocation"
         private const val CHANNEL_ID = "driving_location"
         private const val NOTIFICATION_ID = 4131
+        private const val PAUSED_CHANNEL_ID = "driving_location_paused"
+        private const val PAUSED_NOTIFICATION_ID = 4132
 
         /**
          * One sentence, written for a driver rather than for a stack trace. Android
@@ -141,9 +157,18 @@ class DrivingLocationService : Service() {
          * the remedy is the same for all of them, so the remedy is what it says.
          */
         private const val REFUSED_MESSAGE =
-            "Android would not let the speed watch keep running in the background, so " +
-                "the alert only works while CAMusic is on screen. Opening CAMusic once " +
-                "after the car connects is usually enough to fix it for the drive."
+            "Android would not start the speed watch while CAMusic was in the background, " +
+                "so speed is only read while CAMusic is on screen. Tap the \"Speed watch " +
+                "paused\" notification, or open CAMusic, and it keeps running for the rest " +
+                "of the drive."
+
+        private val _running = MutableStateFlow(false)
+
+        /**
+         * True while the service is actually in the foreground, holding location.
+         * [SpeedMonitor] reads it to decide whether coming on screen needs to start it.
+         */
+        val running: StateFlow<Boolean> = _running.asStateFlow()
 
         private val _refusal = MutableStateFlow<String?>(null)
 
@@ -182,14 +207,72 @@ class DrivingLocationService : Service() {
                 // reported from here or this half of the failure stays silent.
                 android.util.Log.w(TAG, "startForegroundService refused: ${it.message}")
                 _refusal.value = REFUSED_MESSAGE
+                notifyPaused(context)
             }
         }
 
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, DrivingLocationService::class.java)) }
+            cancelPaused(context)
             // Not left to onDestroy: a service that never managed to start has none
             // to run, and a stale refusal would outlive the watch it was about.
             _refusal.value = null
+        }
+
+        /**
+         * Say the watch is paused, with a tap that starts it.
+         *
+         * The tap goes straight to this service, not to the app: a notification tap
+         * is one of the things Android accepts as the user asking, so the service
+         * started from it gets location, and the driver's map stays on screen.
+         */
+        private fun notifyPaused(context: Context) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                return
+            }
+            ensureChannels(context)
+            val resume = PendingIntent.getForegroundService(
+                context, 0,
+                Intent(context, DrivingLocationService::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notification = NotificationCompat.Builder(context, PAUSED_CHANNEL_ID)
+                .setContentTitle("Speed watch paused")
+                .setContentText("Tap to start reading your speed for this drive.")
+                .setSmallIcon(android.R.drawable.ic_menu_compass)
+                .setContentIntent(resume)
+                .setAutoCancel(true)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .build()
+            runCatching { NotificationManagerCompat.from(context).notify(PAUSED_NOTIFICATION_ID, notification) }
+        }
+
+        private fun cancelPaused(context: Context) {
+            runCatching { NotificationManagerCompat.from(context).cancel(PAUSED_NOTIFICATION_ID) }
+        }
+
+        private fun ensureChannels(context: Context) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "Speed watching", NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Shown while driving mode is reading GPS speed."
+                    setShowBadge(false)
+                },
+            )
+            // Default importance, silent: it has to be seen in the status bar to be
+            // tapped, but it arrives as the car connects and must not sound over that.
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    PAUSED_CHANNEL_ID, "Speed watch paused", NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply {
+                    description = "Shown when Android would not start the speed watch in the " +
+                        "background. Tap it to start the watch."
+                    setSound(null, null)
+                    setShowBadge(false)
+                },
+            )
         }
 
         fun hasLocationPermission(context: Context): Boolean =

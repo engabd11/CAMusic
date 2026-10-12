@@ -79,6 +79,11 @@ import kotlin.math.roundToInt
  * [DrivingLocationService] is started alongside the subscription and stopped with
  * it. That service exists for no other reason; see its own doc.
  *
+ * Android only lets that service hold location if it starts while CAMusic is on
+ * screen or from a tap, and the car usually connects with the app in the
+ * background. So it is started again whenever the app comes on screen while the
+ * watch is listening without it — see `foregroundJob` in [start].
+ *
  * ## What it asks the platform for
  *
  * A fix a second, from the fused provider where the platform has one and raw GPS
@@ -102,6 +107,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     private val alertTracker = SpeedAlert.Tracker()
     private var gateJob: Job? = null
     private var settingsJob: Job? = null
+    private var foregroundJob: Job? = null
     private var listening = false
 
     /** The offline speed-limit provider. Null until first needed. */
@@ -241,6 +247,18 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
                 .distinctUntilChanged()
                 .collect { gate -> applyGate(gate) }
         }
+        // The retry the location service needs. It is usually started as the car
+        // connects, with CAMusic in the background, and Android refuses it there; it
+        // is allowed the moment the app is on screen. Nothing used to ask again —
+        // `listening` was already true, so opening the app skipped the start — and
+        // location went with the app every time it left the screen, all drive.
+        foregroundJob?.cancel()
+        foregroundJob = scope.launch {
+            val foreground = AppLifecycleObserver.get()?.foreground ?: return@launch
+            combine(foreground, DrivingLocationService.running) { onScreen, running -> onScreen && !running }
+                .distinctUntilChanged()
+                .collect { needed -> if (needed && listening) DrivingLocationService.start(context) }
+        }
         settingsJob?.cancel()
         settingsJob = scope.launch {
             combine(
@@ -264,6 +282,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     fun stop() {
         gateJob?.cancel()
         settingsJob?.cancel()
+        foregroundJob?.cancel()
         stopLocationUpdates()
         _fixStatus.value = null
     }
