@@ -469,25 +469,18 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
     // Assistant server's own page — so reading each value once meant changing
     // bit-perfect on one and finding the other still showing the old answer. The
     // initial values are the same defaults AppSettings applies.
-    val preferHiRes by settings.preferHiRes.collectAsStateWithLifecycle(initialValue = true)
     val preferFlac by settings.preferFlac.collectAsStateWithLifecycle(initialValue = true)
     val preferOriginal by settings.preferOriginal.collectAsStateWithLifecycle(initialValue = false)
 
     SettingsCard(
         title = "What to ask Music Assistant for",
         lead = "What this phone is willing to be sent.",
-        info = "Music Assistant may only send a format this phone has advertised, so these decide " +
-            "what it is allowed to choose. Nothing here asks for a format, it widens or narrows " +
-            "what is on the table.\n\n44.1 and 48 kHz are always offered whatever you set, so " +
-            "CD-rate files stream untouched either way.\n\nTip: a change here only takes effect " +
-            "on the next connection. Disable and re-enable the player under Libraries if you " +
-            "want it now.",
+        info = "This phone offers Music Assistant every codec at every sample rate it can " +
+            "play, so the choice of what plays is yours, on the server: this player's " +
+            "Preferred audio format and Sample rate selection there decide it.\n\nTip: a " +
+            "change here only takes effect on the next connection. Disable and re-enable the " +
+            "player under Libraries if you want it now.",
     ) {
-        ToggleRow(
-            "Offer hi-res rates",
-            "Also accept 88.2 and 96 kHz, so hi-res masters aren't downsampled to 48",
-            preferHiRes, accent,
-        ) { scope.launch { settings.setPreferHiRes(it) } }
         ToggleRow(
             "Prefer FLAC over PCM",
             "Lossless either way, FLAC uses about half the bandwidth",

@@ -10,6 +10,7 @@ import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LoFiProcessor
 import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.OldRadioProcessor
+import com.engabd.sendpin.audio.QualityTier
 import com.engabd.sendpin.audio.RemoteAudioFormat
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
@@ -56,6 +57,15 @@ import kotlinx.serialization.json.JsonElement
  */
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
+
+    /** One player a Music Assistant stream is fed to, and the format it gets. */
+    data class GroupOutput(
+        val name: String,
+        val quality: StreamQuality,
+        val isSelf: Boolean,
+        /** MA's own grade of this output, or null when the server gave none. */
+        val tier: QualityTier? = null,
+    )
 
     data class State(
         val playerName: String = "",
@@ -137,6 +147,19 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * acts on the level, and the card already says so.
          */
         val loudness: MaLoudness = MaLoudness(),
+        /**
+         * Every player Music Assistant is feeding this stream to, and in what format,
+         * off `streamdetails.audio_processing.outputs`: the output half of MA's own
+         * pipeline view, one entry for a lone player. MA-path only.
+         */
+        val groupOutputs: List<GroupOutput> = emptyList(),
+        /**
+         * What Music Assistant does to the stream on its way to this player, off
+         * `streamdetails.audio_processing`: the shared stage, then this player's own
+         * leg. Both null off the MA path or on a server that does not report them.
+         */
+        val processing: com.engabd.sendpin.ma.MaQueueProcessing? = null,
+        val outputProcessing: com.engabd.sendpin.ma.MaOutputProcessing? = null,
         /**
          * Vinyl surface noise, applied in [com.engabd.sendpin.audio.LocalPlayer]'s
          * own processor chain — see [com.engabd.sendpin.audio.VinylNoiseProcessor].
@@ -561,7 +584,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val maState: StateFlow<State> = combine(_players, effectiveTarget, _queues, localQuality, _lastTrack) { players, target, queues, local, last ->
         val id = resolveTarget(players, target)
         val p = players.firstOrNull { it.playerId == id }
-        val isSelf = id == myPlayerId
+        // From MA 2.10 the targeted player is a `universal_player` wrapper around this
+        // phone's Sendspin client, whose id never equals ours. See [MaPlayer.isSelfOrActiveOutput].
+        val isSelf = id == myPlayerId || p?.isSelfOrActiveOutput(myPlayerId) == true
         // A synced member plays the leader's stream, so read quality off the leader's queue.
         val streamId = p?.syncedTo ?: id
         val queue = queues.firstOrNull { it.queueId == streamId }
@@ -653,6 +678,17 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // rather than for what came out of it.
             dsp = queue?.dspFor(playerId = id, leaderId = streamId),
             loudness = queue?.loudness ?: MaLoudness(),
+            processing = queue?.processing,
+            outputProcessing = queue?.processingFor(playerId = id, leaderId = streamId),
+            groupOutputs = queue?.outputs?.map { (outputId, format) ->
+                val player = players.firstOrNull { it.playerId == outputId }
+                GroupOutput(
+                    name = player?.name ?: outputId,
+                    quality = format,
+                    isSelf = outputId == myPlayerId || player?.isSelfOrActiveOutput(myPlayerId) == true,
+                    tier = queue?.outputTiers?.get(outputId),
+                )
+            }.orEmpty(),
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 

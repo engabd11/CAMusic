@@ -227,23 +227,21 @@ bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool drif
     flushRequested_.store(false);
     disconnected_.store(false);
 
-    // PerformanceMode::None: the system's ordinary media path, the same one
-    // ExoPlayer's AudioTrack (local and Navidrome playback) lands on. Every
-    // manufacturer hangs its output processing off that path and nowhere else:
-    // speaker tuning, protection limiters, Dolby / Dirac / SoundAlive, and any
-    // system-wide EQ the listener has set up. A LowLatency stream goes MMAP or
-    // FAST, which skip all of it, so Music Assistant on the phone's own speaker
-    // sounded harsher, louder and noisier than the same track from Navidrome
-    // (seen on an S23: deep-buffer thread ran Dolby_FX + SoundAlivePlus, the
-    // MMAP thread ran nothing). Low latency buys Sendspin nothing: chunks arrive
-    // seconds ahead and are placed by timestamp, and the timeline already follows
-    // calculateLatencyMillis, whatever size it is.
+    // LowLatency, as the official Music Assistant app opens its Sendspin
+    // AudioTrack (PERFORMANCE_MODE_LOW_LATENCY), because only that path tells the
+    // truth about the speaker's clock. Its output (MMAP or FAST) reports the
+    // hardware position. The normal media path (PerformanceMode::None, tried in
+    // #319 to keep Samsung's Dolby/SoundAlive) reports timestamps worked out from
+    // the system clock at the nominal rate: on an S23 that thread's timestamps ran
+    // at 48000.1 Hz while the low-latency threads on the same speaker measured
+    // 47998.3-47999.1 Hz. The drift correction cannot see a speaker running 20-35
+    // ppm slow through timestamps that say it is not, so a grouped phone slid
+    // ~1-2 ms a minute behind every other player and never came back. The cost is
+    // the vendor effects, which the official app does without too.
     //
-    // This used to be LowLatency for both timing policies because a None stream
-    // opened first left the next LowLatency stream (the DIRECT->SYNC swap on a
-    // group join) with a sawtoothing getTimestamp. There is one stream with one
-    // timeline now and no swap, and no LowLatency stream to hand over to.
-    const oboe::PerformanceMode perfMode = oboe::PerformanceMode::None;
+    // The normal-path handling below (anchorTimeline_) stays for a device that
+    // will not give us LowLatency.
+    const oboe::PerformanceMode perfMode = oboe::PerformanceMode::LowLatency;
     oboe::AudioStreamBuilder b;
     b.setDirection(oboe::Direction::Output)
         ->setPerformanceMode(perfMode)

@@ -1053,35 +1053,16 @@ class Playback(private val app: Context) {
         SendspinConnectionService.start(app)
         registerNoisyReceiver()
 
-        // The advertised format list is what stops the server converting: it may only
-        // stream something we listed. Built from the user's audio preferences, and sent
-        // once in the hello — which is why changing those settings needs a reconnect.
+        // The advertised format list is everything this phone can play: every codec at
+        // every rate the device opens (see FormatNegotiator). Which one plays is the
+        // listener's choice in Music Assistant. Sent once in the hello, which is why
+        // changing the codec order needs a reconnect.
         sessionScope.launch {
             val codec = settings.sendspinCodec.first()
-            connectedCodec = codec
-            val bitPerfect = settings.bitPerfect24Bit.first()
-            // Only reach past 96 kHz when the user has asked for the bit-perfect path
-            // *and* the device will actually open a track at the rate. Advertising a
-            // rate is a commitment — the server may only send what was listed.
-            val maxRate = if (bitPerfect) {
-                AudioOutputs.maxSupportedSampleRate()
-            } else {
-                FormatNegotiator.DEFAULT_MAX_RATE
-            }
-            // The depth this setting can actually widen on this path is capped at
-            // what SendspinNativeEngine renders: its Oboe ring is int16 end to end
-            // (see OUTPUT_BIT_DEPTH), so advertising 24-bit bought Music Assistant
-            // nothing but bandwidth for bits truncated on arrival — see
-            // convertPcm24To16. The *rate* half of bitPerfect above stays
-            // unconditional: the engine does follow the stream's sample rate, it
-            // only flattens the depth.
-            val engineBitPerfect = bitPerfect && SendspinNativeEngine.OUTPUT_BIT_DEPTH >= FormatNegotiator.HIRES_BIT_DEPTH
             val formats = FormatNegotiator.supportedFormats(
-                preferHiRes = settings.preferHiRes.first(),
+                maxSampleRate = AudioOutputs.maxSupportedSampleRate(),
+                firstCodec = codec.takeIf { it != "auto" },
                 preferFlac = settings.preferFlac.first(),
-                codec = codec.takeIf { it != "auto" },
-                bitPerfect = engineBitPerfect,
-                maxSampleRate = maxRate,
             )
             // The dialect comes from the server's schema version, never from probing
             // (a failed encrypted handshake is never downgraded to cleartext).
@@ -1090,10 +1071,9 @@ class Playback(private val app: Context) {
             c.connect(sendspinEndpoints(base, token), encryption, name, deviceInfo, formats)
             // The hello only *registers* a name; a player Music Assistant already
             // knows keeps whatever it was first registered under until its config is
-            // changed. Push both the name and the format preference over the MA API
-            // once the socket is up, so a rename sticks and MA's own per-player
-            // setting agrees with what we just advertised.
-            syncPlayerConfig(name, codec)
+            // changed. Push the name over the MA API once the socket is up, so a
+            // rename sticks.
+            syncPlayerConfig(name)
         }
     }
 
@@ -1160,7 +1140,7 @@ class Playback(private val app: Context) {
     val configStatus: StateFlow<String> = _configStatus.asStateFlow()
 
     /**
-     * Tell Music Assistant what this player is called and what it should be sent.
+     * Tell Music Assistant what this player is called.
      *
      * The Sendspin hello only *registers* a name — the spec is explicit that the
      * protocol "provides no mechanism for updating the client name post-connection" —
@@ -1173,7 +1153,7 @@ class Playback(private val app: Context) {
      * command, so on a server where that client wasn't an admin the save was refused
      * and the error was swallowed. The result is verified by reading the config back.
      */
-    private suspend fun syncPlayerConfig(name: String, codec: String) {
+    private suspend fun syncPlayerConfig(name: String) {
         if (settings.maBaseUrl.first().isBlank()) return
         // MA has to have seen the hello before there is a player to configure. Asked
         // directly with `players/get` rather than scanning `players/all`, whose default
@@ -1198,11 +1178,9 @@ class Playback(private val app: Context) {
         } catch (_: Exception) {
             // Refused (it is an admin command) — but the registration name stands.
         }
-        // Best-effort by contrast: not every server build has this key, and the
-        // advertised format list already decides what we actually receive.
-        runCatchingCancellable {
-            maRepo.setPreferredSendspinFormat(playerId, if (codec == "auto") "automatic" else codec)
-        }
+        // Music Assistant's "Preferred audio format" is not written from here. It is the
+        // listener's choice on the server, and pinning it would also switch off the
+        // server's Sample rate selection, which only applies under Automatic.
     }
 
     // --- transport ---------------------------------------------------------
@@ -1329,16 +1307,10 @@ class Playback(private val app: Context) {
     /**
      * Whether a codec change can be applied to the live connection.
      *
-     * The server may only send a format the client advertised in its hello, so a
-     * mid-stream switch is only legal when everything was advertised — which is
-     * what "auto" does. Connect on a single codec and the list has one entry, so
-     * asking for another would be asking for something never offered; that case
-     * still needs the reconnect.
+     * The server may only send a format the client advertised in its hello, and the
+     * hello advertises every codec, so any of them can be asked for mid-stream.
      */
-    val canSwitchFormatLive: Boolean get() = connectedCodec == "auto" && _connected.value
-
-    /** The codec setting the current connection was opened with. */
-    @Volatile private var connectedCodec: String = "auto"
+    val canSwitchFormatLive: Boolean get() = _connected.value
 
     /**
      * Ask the server to switch codec mid-stream. It replies with a new
@@ -1414,7 +1386,7 @@ class Playback(private val app: Context) {
     fun renamePlayer(name: String) = scope.launch {
         if (name.isBlank()) return@launch
         settings.setPlayerName(name)
-        syncPlayerConfig(name, settings.sendspinCodec.first())
+        syncPlayerConfig(name)
     }
 
     fun disablePlayer() = disconnect()

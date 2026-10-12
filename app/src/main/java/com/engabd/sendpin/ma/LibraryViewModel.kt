@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AlbumContinuation
+import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.Camelot
 import com.engabd.sendpin.audio.DjMood
 import com.engabd.sendpin.audio.DjProfile
@@ -410,8 +411,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * a change still lands immediately.
      */
     private val preferOriginalNow = settings.preferOriginal
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-    private val preferHiResNow = settings.preferHiRes
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _node = MutableStateFlow(Node("Library", emptyList())); val node: StateFlow<Node> = _node
@@ -1806,8 +1805,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (_targetPlayer.value.isNotBlank() && _targetPlayer.value != myPlayerId) return null
 
         val fmt = item.audioFormat ?: return null
-        val hiRes = preferHiResNow.value
-        if (FormatNegotiator.canStreamUntouched(fmt.sampleRate, fmt.bitDepth, hiRes)) return null
+        if (FormatNegotiator.canStreamUntouched(fmt.sampleRate, fmt.bitDepth, AudioOutputs.maxSupportedSampleRate())) return null
 
         val sc = navidromeClient() ?: return null
         // MA and Navidrome have different ids for the same file, so match by name.

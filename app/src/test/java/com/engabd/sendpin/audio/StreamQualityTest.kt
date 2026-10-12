@@ -8,6 +8,20 @@ import kotlin.test.assertTrue
 
 class StreamQualityTest {
 
+    /** Music Assistant reports raw PCM by sample format, as it sends it to a Sendspin player. */
+    @Test
+    fun `a raw PCM sample format reads as lossless PCM`() {
+        val q = StreamQuality("s24le", sampleRateHz = 48_000, bitDepth = 24)
+        assertTrue(q.lossless)
+        assertEquals("PCM • 48/24", q.label)
+        assertTrue(StreamQuality("f32le", 96_000, 32).hiRes)
+        assertTrue(q.sameFormatAs(StreamQuality("pcm", 48_000, 24)))
+        assertEquals(24, StreamQuality.rawPcmBitDepth("s24le"))
+        assertEquals(16, StreamQuality.rawPcmBitDepth("pcm_s16le"))
+        assertEquals(0, StreamQuality.rawPcmBitDepth("flac"))
+        assertFalse(StreamQuality.isRawPcm("mpeg"))
+    }
+
     @Test
     fun `lossless shows rate depth and bitrate`() {
         val q = StreamQuality("flac", sampleRateHz = 96_000, bitDepth = 24, bitrateKbps = 1411)

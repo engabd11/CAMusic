@@ -79,7 +79,7 @@ class MaStreamDetailsTest {
     }
 
     @Test
-    fun `no dsp map at all falls back to what MA opened`() {
+    fun `no output report at all is unknown, not the source`() {
         val q = queue(
             """
             {
@@ -93,9 +93,71 @@ class MaStreamDetailsTest {
             }
             """
         )
-        val out = q.outputFor("p1")
-        assertEquals("mpeg", out?.codec)
-        assertEquals(320, out?.bitrateKbps)
+        // The input still parses; it is only not passed off as what the player is fed.
+        assertEquals("mpeg", q.inputFormat?.codec)
+        assertEquals(320, q.inputFormat?.bitrateKbps)
+        assertNull(q.outputFor("p1"))
+    }
+
+    /**
+     * Music Assistant's current report, the one its own pipeline view and the official
+     * app read: a 24-bit file sent to this phone as 16-bit has to read 16-bit.
+     */
+    @Test
+    fun `audio_processing outputs are what each player is fed`() {
+        val q = queue(
+            """
+            {
+              "queue_id": "up1",
+              "current_item": {
+                "queue_item_id": "q1",
+                "streamdetails": {
+                  "audio_format": {"content_type": "flac", "sample_rate": 48000, "bit_depth": 24},
+                  "dsp": {"up1": {"state": "disabled"}},
+                  "audio_processing": {
+                    "input_fidelity": {"quality": "hi_res"},
+                    "outputs": [
+                      {"player_ids": ["up1"], "output_format": {"content_type": "flac", "sample_rate": 48000, "bit_depth": 16}},
+                      {"player_ids": ["pc", "kitchen"], "output_format": {"content_type": "pcm", "sample_rate": 96000, "bit_depth": 24}}
+                    ]
+                  }
+                }
+              }
+            }
+            """
+        )
+        assertEquals(16, q.outputFor("up1")?.bitDepth)
+        assertEquals(48000, q.outputFor("up1")?.sampleRateHz)
+        assertEquals(24, q.outputFor("kitchen")?.bitDepth)
+        assertEquals(96000, q.outputFor("pc")?.sampleRateHz)
+        assertEquals(24, q.inputFormat?.bitDepth)
+    }
+
+    @Test
+    fun `each output carries MA's own grade`() {
+        val q = queue(
+            """
+            {
+              "queue_id": "up1",
+              "current_item": {
+                "queue_item_id": "q1",
+                "streamdetails": {
+                  "audio_format": {"content_type": "flac", "sample_rate": 96000, "bit_depth": 24},
+                  "audio_processing": {
+                    "input_fidelity": {"quality": "hi_res"},
+                    "outputs": [
+                      {"player_ids": ["up1"], "output_format": {"content_type": "flac", "sample_rate": 48000, "bit_depth": 16}, "fidelity": {"quality": "lossless"}},
+                      {"player_ids": ["pc"], "output_format": {"content_type": "s24le", "sample_rate": 48000, "bit_depth": 24}, "fidelity": {"quality": "hi_res"}}
+                    ]
+                  }
+                }
+              }
+            }
+            """
+        )
+        assertEquals(com.engabd.sendpin.audio.QualityTier.LOSSLESS, q.outputTiers["up1"])
+        assertEquals(com.engabd.sendpin.audio.QualityTier.HI_RES, q.outputTiers["pc"])
+        assertEquals("PCM • 48/24", q.outputFor("pc")?.label)
     }
 
     @Test
@@ -259,9 +321,8 @@ class MaStreamDetailsTest {
             """
         )
         assertEquals("disabled_by_unsupported_group", q.dspFor("p1")?.state)
-        // Falls through to what MA opened, exactly as a missing dsp map would.
-        assertEquals("flac", q.outputFor("p1")?.codec)
-        assertEquals(96000, q.outputFor("p1")?.sampleRateHz)
+        // No format reported for the player, so none is claimed.
+        assertNull(q.outputFor("p1"))
     }
 
     @Test
