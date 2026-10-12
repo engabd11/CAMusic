@@ -206,7 +206,9 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.15.2** (summaries moved here from the README):
+**v0.11.1 to v0.15.3** (summaries moved here from the README):
+
+**v0.15.3**: **grouped speakers stay in sync, and the quality card says what each speaker gets.** Music Assistant playback is back on the low-latency output (as in the official app), where the speaker's real clock is visible, so a phone in a Sendspin group no longer drifts behind; the speaker's own Dolby/SoundAlive tuning no longer applies to it. CAMusic offers Music Assistant every codec at every rate the phone opens and leaves the choice to the server (Preferred audio format, Sample rate selection); "Offer hi-res rates" is gone. The quality card reads what Music Assistant reports per player (processing steps, every output with an LQ/SQ/HQ/HR badge), library playback shows its real chain (what arrived, every processing stage, the output or USB DAC with its badge), and the device card shows the same output. Speed alerts no longer report impossible GPS speeds and keep running in the background.
 
 **v0.15.2**: **a toolchain refresh, not a feature release** — nothing in the app's behaviour
 changes. Kotlin 2.4.20 → 2.4.21, Material 3 1.5.0-alpha29 → 1.5.0-beta01, Gradle 9.8.0 → 9.8.1, and
