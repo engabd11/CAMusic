@@ -612,6 +612,10 @@ fun BoxScope.PlayerOverlays(
         artworkUrl = state.artworkUrl,
         title = state.title,
         artist = state.artist,
+        groupOutputs = state.groupOutputs,
+        processing = state.processing,
+        outputProcessing = state.outputProcessing,
+        decodesHere = state.isSelf && !state.serverPlayer,
     )
     DeviceDetailOverlay(
         visible = sheets.device,

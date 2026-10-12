@@ -45,8 +45,12 @@ data class StreamQuality(
             sampleRateHz == other.sampleRateHz &&
             bitDepth == other.bitDepth
 
-    /** `audio/flac` and `FLAC` are the same codec — MA sends both spellings. */
-    private val normalizedCodec: String get() = codec.substringAfterLast('/').lowercase().trim()
+    /**
+     * `audio/flac` and `FLAC` are the same codec — MA sends both spellings. Raw PCM
+     * arrives as a sample format (`s24le`, `f32le`, `pcm_s16le`), which is PCM.
+     */
+    private val normalizedCodec: String
+        get() = codec.substringAfterLast('/').lowercase().trim().let { if (isRawPcm(it)) "pcm" else it }
 
     /**
      * The codec as a listener would name it.
@@ -138,6 +142,15 @@ data class StreamQuality(
 
     companion object {
         private val LOSSLESS = setOf("flac", "alac", "wav", "aiff", "pcm", "dsf", "dff", "ape", "wavpack")
+
+        /** A raw PCM sample format: `s16le`, `s24le`, `s32be`, `f32le`, `pcm_s24le`, `u8`. */
+        private val RAW_PCM = Regex("(pcm_)?[suf](8|16|24|32|64)(le|be)?")
+
+        fun isRawPcm(codec: String): Boolean = RAW_PCM.matches(codec.lowercase().trim())
+
+        /** The bit depth a raw PCM sample format names (`s24le` → 24), or 0. */
+        fun rawPcmBitDepth(codec: String): Int =
+            RAW_PCM.matchEntire(codec.lowercase().trim())?.groupValues?.get(2)?.toIntOrNull() ?: 0
 
         /**
          * What a [RemotePlayback] is decoding right now, named by the file's own

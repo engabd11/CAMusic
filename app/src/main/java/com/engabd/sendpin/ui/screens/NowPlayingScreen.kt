@@ -56,12 +56,15 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.QualityTier
 import com.engabd.sendpin.audio.RemoteAudioFormat
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaDspDetails
+import com.engabd.sendpin.ma.MaOutputProcessing
+import com.engabd.sendpin.ma.MaQueueProcessing
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ui.design.*
@@ -654,6 +657,13 @@ fun BoxScope.QualityDetailOverlay(
     artworkUrl: String? = null,
     title: String = "",
     artist: String = "",
+    /** Every player a grouped Music Assistant stream is fed to; empty when solo. */
+    groupOutputs: List<NowPlayingViewModel.GroupOutput> = emptyList(),
+    /** Music Assistant's shared processing and this player's own leg of it. */
+    processing: MaQueueProcessing? = null,
+    outputProcessing: MaOutputProcessing? = null,
+    /** This phone is the one making the sound, so its own mixer is in the path. */
+    decodesHere: Boolean = false,
 ) {
     if (visible) BackHandler { onDismiss() }
 
@@ -699,6 +709,10 @@ fun BoxScope.QualityDetailOverlay(
                 artworkUrl = artworkUrl,
                 title = title,
                 artist = artist,
+                groupOutputs = groupOutputs,
+                processing = processing,
+                outputProcessing = outputProcessing,
+                decodesHere = decodesHere,
             )
         }
     }
@@ -724,6 +738,13 @@ private fun QualityDetailCard(
     artworkUrl: String? = null,
     title: String = "",
     artist: String = "",
+    /** Every player a grouped Music Assistant stream is fed to; empty when solo. */
+    groupOutputs: List<NowPlayingViewModel.GroupOutput> = emptyList(),
+    /** Music Assistant's shared processing and this player's own leg of it. */
+    processing: MaQueueProcessing? = null,
+    outputProcessing: MaOutputProcessing? = null,
+    /** This phone is the one making the sound, so its own mixer is in the path. */
+    decodesHere: Boolean = false,
 ) {
     val accent = LocalAccent.current
     val palette = LocalPalette.current
@@ -788,7 +809,14 @@ private fun QualityDetailCard(
             val dspState = dsp?.state
             // ── Signal Path Inspector (Audiophile Transparency) ────────────
             val sourceLabel = (source ?: playing)?.label ?: "PCM"
+            val maSteps = maProcessingSteps(processing, outputProcessing)
             val dspLabel = when {
+                // Music Assistant's own report of what it did, when it sends one.
+                processing != null || outputProcessing != null -> when {
+                    maSteps.isEmpty() -> null
+                    maSteps.size == 1 -> maSteps.single()
+                    else -> "${maSteps.size} steps"
+                }
                 dspState == "enabled" -> "EQ / DSP"
                 gainMode != ReplayGain.OFF && localSession -> "ReplayGain"
                 else -> null
@@ -824,23 +852,54 @@ private fun QualityDetailCard(
                 if (facts.isNotEmpty()) QualityNote(facts.joinToString(" • "))
             }
 
+            // ── Processing ────────────────────────────────────────────────
+            // Every stage Music Assistant reports between the file and this player,
+            // in its own order: the shared stage, then this player's leg.
+            if (!localSession && (processing != null || outputProcessing != null)) {
+                QualityBlock("Processing") {
+                    MaProcessingSteps(processing, outputProcessing, accent)
+                    if (maSteps.isEmpty()) {
+                        QualityNote(
+                            "Direct signal path - Music Assistant applies no normalisation, " +
+                                "crossfade, speed change, overlay or DSP",
+                        )
+                    }
+                }
+            }
+
+            // ── Outputs ───────────────────────────────────────────────────
+            // What Music Assistant feeds each player, as its own pipeline view lists
+            // them: one source, then every player with its own format and its own
+            // grade. A lone player is listed too, so its grade is always shown.
+            if (groupOutputs.isNotEmpty()) {
+                QualityBlock("Outputs") {
+                    groupOutputs.forEach { GroupOutputRow(it, accent) }
+                }
+            }
+
             // ── Output ────────────────────────────────────────────────────
             // What happens to the stream after the format is decided: this phone's
             // own 24-bit setting, whether the Android mixer is resampling under it,
             // and — on a Music Assistant player — whether MA's DSP chain ran.
             val deviceRate = remember(bitPerfect) { FormatNegotiator.deviceOutputQuality(bitPerfect) }
             val decodingHere = localSession && !serverPlayer
-            val showOutput = decodingHere || dspState != null
+            // A Music Assistant stream this phone plays still goes through its mixer.
+            val maHere = !localSession && decodesHere
+            val showOutput = decodingHere || maHere || (dspState != null && outputProcessing == null)
             if (showOutput) {
                 QualityBlock("Output") {
                     if (decodingHere) {
                         QualityNote(if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it" else "Bit-perfect off - 16-bit output")
                         MixerNote(playingRateHz = playing?.sampleRateHz ?: 0, mixerRateHz = deviceRate.sampleRateHz)
                     }
+                    if (maHere) {
+                        QualityNote("This phone plays it through its low-latency output, no effects")
+                        MixerNote(playingRateHz = playing?.sampleRateHz ?: 0, mixerRateHz = deviceRate.sampleRateHz)
+                    }
                     // Whether MA's own equaliser is in the path. Worth saying here
                     // because the DSP panel can be full of carefully set bands that
                     // the server is not applying, and nothing else would tell you.
-                    if (dsp != null && dspState != null && !localSession) {
+                    if (dsp != null && dspState != null && !localSession && outputProcessing == null) {
                         QualityNote(
                             when (dspState) {
                                 "enabled" -> "DSP active" +
@@ -874,7 +933,8 @@ private fun QualityDetailCard(
             // A carefully mastered record pulled to a target LUFS looked exactly like
             // one left alone, and the difference is the whole reason someone opens
             // this card twice.
-            val loudnessLine = loudness.summary?.takeIf { !localSession }
+            // Covered by the Processing block when Music Assistant reports its pipeline.
+            val loudnessLine = loudness.summary?.takeIf { !localSession && processing == null }
             if (gainLine != null || providerLine != null || loudnessLine != null) {
                 QualityBlock("Level and origin") {
                     loudnessLine?.let { QualityNote(it) }
@@ -1253,6 +1313,185 @@ private fun fileSize(bytes: Long): String = when {
     bytes >= 1024L * 1024 * 1024 -> String.format("%.1f GB", bytes / (1024.0 * 1024 * 1024))
     bytes >= 1024L * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024))
     else -> "${bytes / 1024} KB"
+}
+
+/**
+ * The short names of the stages that change the audio, for the signal path's middle
+ * box. Headroom is not one of them: it is how Music Assistant processes, not a change.
+ */
+private fun maProcessingSteps(p: MaQueueProcessing?, o: MaOutputProcessing?): List<String> = buildList {
+    if (p != null) {
+        if (p.normalizationMode != null && p.normalizationMode !in PASSIVE_NORMALISATION) add("Normalised")
+        if (p.crossfadeMode != null && p.crossfadeMode !in PASSIVE_CROSSFADE) add("Crossfade")
+        if (p.playbackSpeed != 1f) add("Speed")
+        if (p.overlayActive) add("Overlay")
+    }
+    if (o != null) {
+        if (o.dspActive) add("EQ / DSP")
+        if (o.sourceChannel == "FL" || o.sourceChannel == "FR") add("Channel")
+    }
+}
+
+/** Normalisation modes that leave the level alone (or leave it to the source). */
+private val PASSIVE_NORMALISATION = setOf("disabled", "measurement_only", "source", "unknown")
+private val PASSIVE_CROSSFADE = setOf("disabled", "source", "unknown")
+
+/** Music Assistant's processing stages for this player, one row each, worded as MA words them. */
+@Composable
+private fun MaProcessingSteps(p: MaQueueProcessing?, o: MaOutputProcessing?, accent: Color) {
+    p?.pcmFormat?.let { f ->
+        val float = f.codec.lowercase().trim().startsWith("f")
+        ProcessingStep(
+            "Processing headroom",
+            if (float && f.bitDepth > 0) "${f.bitDepth}-bit float PCM" else f.label,
+            accent, active = false,
+        )
+    }
+    if (p != null) {
+        p.normalizationMode?.takeIf { it != "disabled" && it != "unknown" }?.let { mode ->
+            val detail = listOfNotNull(
+                NORMALISATION_LABELS[mode] ?: mode.replace('_', ' '),
+                p.appliedGainDb?.takeIf { kotlin.math.abs(it) >= 0.05f }?.let { "%+.1f dB".format(it) },
+                p.targetLufs?.let { "target %.0f LUFS".format(it) },
+                p.measuredLufs?.let { "measured %.1f LUFS".format(it) },
+            ).joinToString(" • ")
+            ProcessingStep("Volume normalisation", detail, accent, active = mode !in PASSIVE_NORMALISATION)
+        }
+        p.crossfadeMode?.takeIf { it !in PASSIVE_CROSSFADE }?.let {
+            ProcessingStep("Crossfade", CROSSFADE_LABELS[it] ?: it.replace('_', ' '), accent, active = true)
+        }
+        if (p.playbackSpeed != 1f) ProcessingStep("Playback speed", "%.2fx".format(p.playbackSpeed), accent, active = true)
+        if (p.overlayActive) ProcessingStep("Audio overlay", "Active", accent, active = true)
+    }
+    if (o != null) {
+        when (o.dspState) {
+            "enabled" -> {
+                val detail = listOfNotNull(
+                    o.filters.takeIf { it.isNotEmpty() }
+                        ?.joinToString(", ") { FILTER_LABELS[it] ?: it.replace('_', ' ') },
+                    o.inputGainDb.takeIf { it != 0f }?.let { "in %+.1f dB".format(it) },
+                    o.outputGainDb.takeIf { it != 0f }?.let { "out %+.1f dB".format(it) },
+                    o.presetId?.let { "preset" },
+                ).joinToString(" • ").ifBlank { "Active, no filters" }
+                ProcessingStep("DSP", detail, accent, active = true)
+            }
+            "disabled_by_unsupported_group" -> QualityNote("DSP unavailable for this group", warn = true)
+        }
+        when (o.sourceChannel) {
+            "FL" -> ProcessingStep("Channel", "Left only", accent, active = true)
+            "FR" -> ProcessingStep("Channel", "Right only", accent, active = true)
+        }
+        when (o.bitPerfect) {
+            true -> QualityNote("Bit-perfect: decoded source samples reach the output unchanged")
+            false -> QualityNote("Not bit-perfect: format conversion or processing changed the samples")
+            null -> Unit
+        }
+    }
+}
+
+private val NORMALISATION_LABELS = mapOf(
+    "dynamic" to "Dynamic",
+    "measurement_only" to "Measured only",
+    "fallback_fixed_gain" to "Fallback fixed gain",
+    "fixed_gain" to "Fixed gain",
+    "fallback_dynamic" to "Fallback dynamic",
+    "source" to "Applied by the source",
+)
+private val CROSSFADE_LABELS = mapOf(
+    "smart_crossfade" to "Smart",
+    "standard_crossfade" to "Standard",
+    "voice_over" to "Voice-over, music ducked under it",
+)
+private val FILTER_LABELS = mapOf(
+    "parametric_eq" to "Parametric EQ",
+    "tone_control" to "Tone control",
+    "gain" to "Gain",
+    "balance" to "Balance",
+    "transpose" to "Transpose",
+    "safety_limiter" to "Safety limiter",
+    "compressor" to "Compressor",
+    "high_low_pass" to "High/low pass",
+    "convolution" to "Convolution",
+    "stereo_width" to "Stereo width",
+)
+
+/** One processing stage: its name, then what it did. [active] lights the dot for a stage that changes the audio. */
+@Composable
+private fun ProcessingStep(title: String, detail: String, accent: Color, active: Boolean) {
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            Modifier.padding(top = 4.dp).size(6.dp).clip(CircleShape)
+                .background(if (active) accent else TextMuted)
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                title,
+                color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+                fontSize = 12.sp, lineHeight = 17.sp,
+            )
+            Text(
+                detail,
+                color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+                fontSize = 13.sp, lineHeight = 17.sp,
+            )
+        }
+    }
+}
+
+/** One group member: its name, then the format Music Assistant feeds it. */
+@Composable
+private fun GroupOutputRow(output: NowPlayingViewModel.GroupOutput, accent: Color) {
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            Modifier.padding(top = 4.dp).size(6.dp).clip(CircleShape)
+                .background(if (output.quality.lossless) accent else TextMuted)
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                if (output.isSelf) "${output.name} (this phone)" else output.name,
+                color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+                fontSize = 12.sp, lineHeight = 17.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    output.quality.label,
+                    color = TextPrimary, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp, lineHeight = 17.sp,
+                )
+                (output.tier ?: QualityTier.of(output.quality))?.let { QualityTierBadge(it) }
+            }
+        }
+    }
+}
+
+/**
+ * Music Assistant's quality grade, drawn as its pipeline view draws it: the tier's own
+ * colour in the dot, its code, and its name.
+ */
+@Composable
+private fun QualityTierBadge(tier: QualityTier) {
+    val colour = when (tier) {
+        QualityTier.LOW -> Color(0xFFFFA500)       // orange
+        QualityTier.STANDARD -> Color(0xFF90EE90)  // lightgreen
+        QualityTier.LOSSLESS -> Color(0xFF2EB82E)  // green
+        QualityTier.HI_RES -> Color(0xFF00E5FF)    // cyan
+    }
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .border(1.dp, colour.copy(alpha = 0.45f), RoundedCornerShape(50))
+            .padding(horizontal = 6.dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(Modifier.size(6.dp).clip(CircleShape).background(colour))
+        Text(
+            "${tier.code} ${tier.label}",
+            color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+            fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1,
+        )
+    }
 }
 
 @Composable

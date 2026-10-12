@@ -1,6 +1,7 @@
 package com.engabd.sendpin.ma
 
 import androidx.compose.runtime.Immutable
+import com.engabd.sendpin.audio.QualityTier
 import com.engabd.sendpin.audio.StreamQuality
 import kotlinx.serialization.json.*
 import java.net.URLEncoder
@@ -378,6 +379,42 @@ data class MaDspDetails(
     val active: Boolean get() = state == "enabled"
 }
 
+/**
+ * What Music Assistant does to a stream before it splits per player, off
+ * `streamdetails.audio_processing.queue_processing`: the "Processing" section of its
+ * own pipeline view. Wire values are carried verbatim, as [MaDspDetails.state] is.
+ */
+@Immutable
+data class MaQueueProcessing(
+    /** The shared internal format, normally 32-bit float: the headroom stage. */
+    val pcmFormat: StreamQuality? = null,
+    val normalizationMode: String? = null,
+    val measurementSource: String? = null,
+    val targetLufs: Float? = null,
+    val measuredLufs: Float? = null,
+    val appliedGainDb: Float? = null,
+    val playbackSpeed: Float = 1f,
+    val crossfadeMode: String? = null,
+    val overlayActive: Boolean = false,
+)
+
+/** One player's leg of the pipeline, off an `audio_processing.outputs` entry. */
+@Immutable
+data class MaOutputProcessing(
+    val dspState: String? = null,
+    /** Wire types (`parametric_eq`, `tone_control`, …) of the filters that are switched on. */
+    val filters: List<String> = emptyList(),
+    val inputGainDb: Float = 0f,
+    val outputGainDb: Float = 0f,
+    val presetId: String? = null,
+    /** Explicit left/right routing (`FL`/`FR`); null or `ALL` for the full signal. */
+    val sourceChannel: String? = null,
+    /** MA's verdict: decoded source samples reach the output unchanged. Null when it cannot say. */
+    val bitPerfect: Boolean? = null,
+) {
+    val dspActive: Boolean get() = dspState == "enabled"
+}
+
 /** A player queue: what's streaming, and how the queue itself is set up. */
 @Immutable
 data class MaQueue(
@@ -401,6 +438,19 @@ data class MaQueue(
      * directly; a synced member may have no entry of its own.
      */
     val dsp: Map<String, MaDspDetails> = emptyMap(),
+    /**
+     * What each player is fed, off `current_item.streamdetails.audio_processing.outputs`
+     * (player_id → `output_format`): the newer report Music Assistant's own pipeline
+     * view and the official app read. Preferred over [dsp], whose entries on a current
+     * server can carry a `state` and no `output_format` at all.
+     */
+    val outputs: Map<String, StreamQuality> = emptyMap(),
+    /** MA's own grade of each output, off the same entries' `fidelity.quality`. */
+    val outputTiers: Map<String, QualityTier> = emptyMap(),
+    /** The shared processing stage; null on a server that does not report it. */
+    val processing: MaQueueProcessing? = null,
+    /** Each player's own leg: DSP, routing, bit-perfect. */
+    val outputProcessing: Map<String, MaOutputProcessing> = emptyMap(),
     /**
      * MA's own `active` flag: is this queue the thing the player is playing?
      *
@@ -497,16 +547,20 @@ data class MaQueue(
             ?: entries.values.singleOrNull()
 
     /**
-     * The format [playerId] is being fed, or the input format — which is at least
-     * honest about the file, if not about the wire.
+     * The format [playerId] is being fed: [outputs] first, then the older [dsp]
+     * entries that carry a format.
      *
-     * Resolved over the entries that actually carry a format. An entry may now arrive
-     * with a `state` and no `output_format`, and letting one of those win the "lone
-     * entry" rung would report nothing for a player MA is demonstrably feeding.
+     * Null when the server reports neither, never the input format: the file's own
+     * format standing in for the wire's is how a 24-bit source read as "Playing
+     * 48/24" while Music Assistant was sending this phone 16-bit.
      */
     fun outputFor(playerId: String, leaderId: String? = null): StreamQuality? =
-        resolve(dsp.filterValues { it.outputFormat != null }, playerId, leaderId)?.outputFormat
-            ?: inputFormat
+        resolve(outputs, playerId, leaderId)
+            ?: resolve(dsp.filterValues { it.outputFormat != null }, playerId, leaderId)?.outputFormat
+
+    /** [playerId]'s own leg of the pipeline, or null when the server reports none. */
+    fun processingFor(playerId: String, leaderId: String? = null): MaOutputProcessing? =
+        resolve(outputProcessing, playerId, leaderId)
 
     /** What MA's pipeline did for [playerId], including whether it ran. */
     fun dspFor(playerId: String, leaderId: String? = null): MaDspDetails? =
@@ -1019,6 +1073,10 @@ object MaParse {
             queueId = id,
             inputFormat = inputFormat,
             dsp = dsp,
+            outputs = processingOutputs(current) { it.format },
+            outputTiers = processingOutputs(current) { it.tier },
+            processing = queueProcessing(processing(current)?.get("queue_processing") as? JsonObject),
+            outputProcessing = processingOutputs(current) { it.processing },
             active = o["active"]?.jsonPrimitive?.booleanOrNull ?: true,
             shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
             repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
@@ -1065,7 +1123,7 @@ object MaParse {
         return StreamQuality(
             codec = codec,
             sampleRateHz = (f["sample_rate"] as? JsonPrimitive)?.intOrNull ?: 0,
-            bitDepth = (f["bit_depth"] as? JsonPrimitive)?.intOrNull ?: 0,
+            bitDepth = (f["bit_depth"] as? JsonPrimitive)?.intOrNull ?: StreamQuality.rawPcmBitDepth(codec),
             bitrateKbps = if (br > 10_000) br / 1000 else br,
             channels = (f["channels"] as? JsonPrimitive)?.intOrNull ?: 0,
         )
@@ -1108,6 +1166,68 @@ object MaParse {
             target = f("target_loudness"),
         )
     }
+
+    /**
+     * `streamdetails.audio_processing.outputs`, flattened to player_id → [pick] of the
+     * entry (its output format, or MA's grade of it). Each output names the players it
+     * feeds in `player_ids`; one that names several feeds each of them the same.
+     */
+    private fun <T : Any> processingOutputs(currentItem: JsonElement?, pick: (ProcessingOutput) -> T?): Map<String, T> {
+        val outputs = processing(currentItem)?.get("outputs") as? JsonArray ?: return emptyMap()
+        return buildMap {
+            for (el in outputs) {
+                val o = el as? JsonObject ?: continue
+                val fidelity = o["fidelity"] as? JsonObject
+                val dsp = o["dsp"] as? JsonObject
+                val output = ProcessingOutput(
+                    format = audioFormatQuality(o["output_format"] as? JsonObject),
+                    tier = QualityTier.fromWire(str(fidelity?.get("quality"))),
+                    processing = MaOutputProcessing(
+                        dspState = str(dsp?.get("state")),
+                        filters = (dsp?.get("filters") as? JsonArray).orEmpty().mapNotNull { f ->
+                            (f as? JsonObject)?.takeIf { (it["enabled"] as? JsonPrimitive)?.booleanOrNull != false }
+                                ?.let { str(it["type"]) }
+                        },
+                        inputGainDb = (dsp?.get("input_gain") as? JsonPrimitive)?.floatOrNull ?: 0f,
+                        outputGainDb = (dsp?.get("output_gain") as? JsonPrimitive)?.floatOrNull ?: 0f,
+                        presetId = str(dsp?.get("preset_id")),
+                        sourceChannel = str(o["source_channel"]),
+                        bitPerfect = (fidelity?.get("bit_perfect") as? JsonPrimitive)?.booleanOrNull,
+                    ),
+                )
+                val value = pick(output) ?: continue
+                for (id in strList(o["player_ids"])) put(id, value)
+            }
+        }
+    }
+
+    private class ProcessingOutput(
+        val format: StreamQuality?,
+        val tier: QualityTier?,
+        val processing: MaOutputProcessing,
+    )
+
+    /** `audio_processing.queue_processing`, or null when absent. */
+    private fun queueProcessing(o: JsonObject?): MaQueueProcessing? {
+        if (o == null) return null
+        val norm = o["normalization"] as? JsonObject
+        fun f(obj: JsonObject?, key: String) = (obj?.get(key) as? JsonPrimitive)?.floatOrNull
+        return MaQueueProcessing(
+            pcmFormat = audioFormatQuality(o["pcm_format"] as? JsonObject),
+            normalizationMode = str(norm?.get("mode")),
+            measurementSource = str(norm?.get("measurement_source")),
+            targetLufs = f(norm, "target_lufs"),
+            measuredLufs = f(norm, "measured_lufs"),
+            appliedGainDb = f(norm, "applied_gain_db"),
+            playbackSpeed = f(o, "playback_speed") ?: 1f,
+            crossfadeMode = str(o["crossfade_mode"]),
+            overlayActive = (o["overlay_active"] as? JsonPrimitive)?.booleanOrNull ?: false,
+        )
+    }
+
+    /** `current_item.streamdetails.audio_processing`, or null. */
+    private fun processing(currentItem: JsonElement?): JsonObject? =
+        ((currentItem as? JsonObject)?.get("streamdetails") as? JsonObject)?.get("audio_processing") as? JsonObject
 
     private fun streamFormats(currentItem: JsonElement?): Pair<StreamQuality?, Map<String, MaDspDetails>> {
         val sd = (currentItem as? JsonObject)?.get("streamdetails") as? JsonObject
