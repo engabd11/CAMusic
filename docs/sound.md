@@ -13,9 +13,14 @@ Playback is built to be worth good headphones and a good DAC.
   save curves by name, and optionally keep a curve for each output: the headphones' curve
   comes back when they reconnect, and the speaker keeps its own. Music Assistant's own
   parametric DSP is exposed separately for the rooms it runs.
-- **The real signal path**, reported a stage at a time: what the file declares, what the
-  decoder handed over, what the sink was configured with, and whether the high resolution
-  float path is engaged. Where resolution is being lost, the card says so in a sentence.
+- **The real signal path**, reported a stage at a time and read from the player, never from the
+  settings. The quality card (the badge above the play button) shows what arrived, so a
+  server's transcode shows even when it chose to make one, then every processing step that is on
+  (decoding, ReplayGain, the equaliser curve in use, sound modes, speed, crossfade, and whether a
+  24-bit file is being cut to 16-bit), then the output with its LQ, SQ, HQ or HR grade. With USB
+  bit-perfect that output is the DAC: the rate it confirmed, its bit depth, and whether the
+  samples reach it untouched. The device card (tap "This phone" above the cover) shows the same
+  output, beside what the device accepts.
 - **High resolution output** and a quality badge that reads `FLAC • 96/24 • 3 Mb/s` with a
   detail card behind it.
 - **ReplayGain that can lift as well as cut** (track or album). A quiet master is raised by up to +6 dB through a limiter, so peaks stay clean, and untagged files can be turned down 3, 6 or 9 dB to sit beside the levelled ones.
