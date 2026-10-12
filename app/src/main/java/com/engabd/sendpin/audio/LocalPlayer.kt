@@ -2392,6 +2392,17 @@ class LocalPlayer(private val context: Context) {
     private val crossfading: Boolean get() = crossfadeSeconds > 0
 
     /**
+     * How tracks join right now, for the quality card's processing list, or null for
+     * a plain cut: a crossfade (and whether it is beat-matched), else a fade.
+     */
+    val transitionSummary: String?
+        get() = when {
+            crossfadeSeconds > 0 -> "Crossfade ${crossfadeSeconds}s" + if (smartJoins) ", beat-matched" else ""
+            fadeSeconds > 0 -> "Fade ${fadeSeconds}s"
+            else -> null
+        }
+
+    /**
      * Overlap ordinary transitions too, for [fadeSeconds] — the same deck DJ Radio
      * uses, on any queue that is not one album. Off by default: see
      * `AppSettings.navCrossfadeOverlap`. Collected here rather than pushed from a

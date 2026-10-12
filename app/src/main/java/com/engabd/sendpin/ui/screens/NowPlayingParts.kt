@@ -616,6 +616,7 @@ fun BoxScope.PlayerOverlays(
         processing = state.processing,
         outputProcessing = state.outputProcessing,
         decodesHere = state.isSelf && !state.serverPlayer,
+        localChain = state.localChain,
     )
     DeviceDetailOverlay(
         visible = sheets.device,
@@ -624,6 +625,8 @@ fun BoxScope.PlayerOverlays(
         serverPlayer = state.serverPlayer,
         serverOutputDeviceName = state.serverOutputDeviceName,
         serverOutputFormat = state.serverOutputFormat,
+        localChain = state.localChain,
+        arrived = state.quality,
     )
     // AirPlay: the receiver picker. The receiver's own Now Playing (name, cover,
     // progress) is kept current by LocalPlayer itself, so it follows the track

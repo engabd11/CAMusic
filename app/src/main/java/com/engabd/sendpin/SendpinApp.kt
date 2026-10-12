@@ -70,6 +70,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * instance meant the phone could be playing something no other screen knew
      * about — and that nothing but the Library tab could pause.
      */
+    private val _appliedEq = kotlinx.coroutines.flow.MutableStateFlow(com.engabd.sendpin.audio.LocalDsp.Config())
+
+    /**
+     * The curve the local equaliser was last given: the output's own when "a curve for
+     * each output" is on, the shared one otherwise. Read by the quality card, so it
+     * reports the curve actually in the chain rather than whichever one Settings shows.
+     */
+    val appliedEq: kotlinx.coroutines.flow.StateFlow<com.engabd.sendpin.audio.LocalDsp.Config> = _appliedEq
+
     val localPlayer: LocalPlayer by lazy {
         LocalPlayer(this).also { player ->
             // Announce a takeover to the Sendspin side rather than letting the two
@@ -1065,7 +1074,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val settings = AppSettings(this@SendpinApp)
             combine(settings.localDsp, settings.eqProfiles, outputRoute.current) { global, profiles, output ->
                 com.engabd.sendpin.audio.EqSelection.effective(global, profiles, output)
-            }.distinctUntilChanged().collect { localPlayer.localDsp.setConfig(it) }
+            }.distinctUntilChanged().collect {
+                localPlayer.localDsp.setConfig(it)
+                _appliedEq.value = it
+            }
         }
 
         // Show presets chosen for you: this song's own, else this song's genre.

@@ -8,6 +8,24 @@ import kotlin.test.assertTrue
 
 class StreamQualityTest {
 
+    /**
+     * A decoder's input format and a library's tags each leave fields out; only a
+     * field both report can count as a difference, and a MIME name is the same codec
+     * as the tag a library writes.
+     */
+    @Test
+    fun `formats match on what both readings know`() {
+        val arrived = StreamQuality("mpeg", sampleRateHz = 44_100, bitrateKbps = 320)
+        val tags = StreamQuality("mp3", sampleRateHz = 0, bitDepth = 0, bitrateKbps = 320)
+        assertTrue(arrived.sameCodecAs(tags))
+        assertTrue(arrived.matches(tags))
+        assertTrue(StreamQuality("flac", 48_000, 0).matches(StreamQuality("FLAC", 48_000, 24)))
+        assertFalse(StreamQuality("flac", 48_000, 16).matches(StreamQuality("flac", 48_000, 24)))
+        assertFalse(StreamQuality("mpeg", 44_100).matches(StreamQuality("flac", 44_100, 16)))
+        assertTrue(StreamQuality("mp4a-latm", 44_100).sameCodecAs(StreamQuality("aac", 44_100)))
+        assertTrue(StreamQuality("raw", 48_000, 24).lossless)
+    }
+
     /** Music Assistant reports raw PCM by sample format, as it sends it to a Sendspin player. */
     @Test
     fun `a raw PCM sample format reads as lossless PCM`() {

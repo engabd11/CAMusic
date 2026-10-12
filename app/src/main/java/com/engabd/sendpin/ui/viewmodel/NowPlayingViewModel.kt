@@ -8,11 +8,13 @@ import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LoFiProcessor
+import com.engabd.sendpin.audio.LocalDsp
 import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.OldRadioProcessor
 import com.engabd.sendpin.audio.QualityTier
 import com.engabd.sendpin.audio.RemoteAudioFormat
 import com.engabd.sendpin.audio.ReplayGain
+import com.engabd.sendpin.audio.SignalPath
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.audio.VinylNoiseProcessor
 import com.engabd.sendpin.data.AppSettings
@@ -57,6 +59,23 @@ import kotlinx.serialization.json.JsonElement
  */
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
+
+    /**
+     * What this phone's own player is doing to a library stream, read from the chain
+     * itself rather than from settings: [signal] is what ExoPlayer and the sink report
+     * ([com.engabd.sendpin.audio.SignalPath]), [eq] the curve the equaliser was given.
+     */
+    data class LocalChain(
+        val signal: SignalPath.State = SignalPath.State(),
+        val eq: LocalDsp.Config = LocalDsp.Config(),
+        /** Where Android is sending it: "Speaker", a DAC's or headset's own name. */
+        val outputLabel: String = "This phone",
+        /** How tracks join, or null for a plain cut. See [com.engabd.sendpin.audio.LocalPlayer.transitionSummary]. */
+        val transition: String? = null,
+        /** The sound effects switched on, named with their strength: "Vinyl 50%". */
+        val effects: List<String> = emptyList(),
+        val speed: Float = 1f,
+    )
 
     /** One player a Music Assistant stream is fed to, and the format it gets. */
     data class GroupOutput(
@@ -153,6 +172,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * pipeline view, one entry for a lone player. MA-path only.
          */
         val groupOutputs: List<GroupOutput> = emptyList(),
+        /** This phone's own chain while it plays a library itself; null on the MA path. */
+        val localChain: LocalChain? = null,
         /**
          * What Music Assistant does to the stream on its way to this player, off
          * `streamdetails.audio_processing`: the shared stage, then this player's own
@@ -293,6 +314,26 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         StreamQuality.live(track?.sourceQuality, live)
 
     /**
+     * The stream ExoPlayer was handed, as a quality: its own codec, rate and depth, with
+     * the library's tags filling only what the decoder did not report — and only when
+     * the codec is the file's own, so a transcode never inherits the file's numbers.
+     */
+    private fun arrivedQuality(arrived: SignalPath.Stage, tags: StreamQuality?): StreamQuality {
+        val codec = arrived.codec?.takeIf { it.isNotBlank() } ?: tags?.codec ?: "PCM"
+        val own = tags?.takeIf { StreamQuality(codec).sameCodecAs(it) }
+        return StreamQuality(
+            codec = codec,
+            sampleRateHz = arrived.sampleRateHz ?: own?.sampleRateHz ?: 0,
+            bitDepth = arrived.bitDepth ?: own?.bitDepth ?: 0,
+            bitrateKbps = arrived.bitrateKbps ?: own?.bitrateKbps ?: 0,
+            replayGainTrack = tags?.replayGainTrack,
+            replayGainAlbum = tags?.replayGainAlbum,
+            channels = arrived.channels ?: own?.channels ?: 0,
+            sizeBytes = own?.sizeBytes ?: 0,
+        )
+    }
+
+    /**
      * The format a Navidrome transcode token describes, for the Source row. Rates and
      * depths are the codecs' own defaults — the token only pins codec and bitrate, and
      * claiming a sample rate the server never promised would be worse than omitting it.
@@ -387,6 +428,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val backend: String,
         val toggles: ToggleSnap,
     )
+
+    private val localChain: StateFlow<LocalChain> = combine(
+        SignalPath.state,
+        (app as SendpinApp).appliedEq,
+        (app as SendpinApp).outputRoute.current,
+    ) { signal, eq, output -> LocalChain(signal = signal, eq = eq, outputLabel = output.label) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, LocalChain())
 
     private val localSnap: StateFlow<LocalSnap> = combine(
         local.active, local.current, local.playing, local.durationMs,
@@ -703,7 +751,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         },
         activeServerName,
         sendspinHere,
-    ) { info, serverName, here ->
+        localChain,
+    ) { info, serverName, here, chain ->
         val (ma, l, devVol, backend, toggles) = info
         // Either the local player has a session, or the library is Navidrome and this
         // phone is the only player there is. The second case is the one that was
@@ -751,6 +800,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 // the bitrate in it is the one number on this screen that moves
                 // while a VBR track plays. See [serverQuality].
                 toggles.server.active -> serverQuality(t, l.outputFormat)
+                // What ExoPlayer was actually handed: the file itself, or whatever the
+                // server transcoded it to, on purpose or on its own.
+                chain.signal.source.known -> arrivedQuality(chain.signal.source, t.sourceQuality)
                 t.offline -> t.sourceQuality ?: deviceQuality
                 else -> navFormat?.let { transcodeQuality(it) } ?: t.sourceQuality ?: deviceQuality
             },
@@ -788,6 +840,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             serverOutputDeviceName = l.outputDeviceName,
             replayGain = toggles.server.replayGain,
             libraryReplayGain = toggles.server.libraryGain,
+            localChain = if (toggles.server.active) null else chain.copy(
+                transition = local.transitionSummary,
+                effects = listOfNotNull(
+                    toggles.vinylNoiseConfig.takeIf { it.isActive() }?.let { "Vinyl ${(it.intensity * 100).toInt()}%" },
+                    toggles.loFiConfig.takeIf { it.isActive() }?.let { "Lo-fi ${(it.intensity * 100).toInt()}%" },
+                    toggles.oldRadioConfig.takeIf { it.isActive() }?.let { "Old radio ${(it.intensity * 100).toInt()}%" },
+                ),
+                speed = l.speed,
+            ),
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
@@ -2136,7 +2197,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.oldRadioConfig.collect { _oldRadioConfig.value = it } }
         viewModelScope.launch { settings.exclusiveOutput.collect { _exclusiveOutputOn.value = it } }
         viewModelScope.launch {
-            settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
+            // The active server's own format on this network, as playback picks it, not
+            // the global mirror kept for downloads.
+            combine(settings.activeServer, com.engabd.sendpin.library.StreamNetwork.metered) { config, metered ->
+                config?.streamFormatFor(metered) ?: "raw"
+            }.collect { navFormat = it.takeIf { f -> f != "raw" } }
         }
         // Remember whatever the selected player last had loaded.
         viewModelScope.launch {

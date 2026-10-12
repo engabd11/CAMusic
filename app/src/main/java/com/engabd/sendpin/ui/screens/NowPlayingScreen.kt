@@ -56,6 +56,7 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.LocalDsp
 import com.engabd.sendpin.audio.QualityTier
 import com.engabd.sendpin.audio.RemoteAudioFormat
 import com.engabd.sendpin.audio.ReplayGain
@@ -664,6 +665,8 @@ fun BoxScope.QualityDetailOverlay(
     outputProcessing: MaOutputProcessing? = null,
     /** This phone is the one making the sound, so its own mixer is in the path. */
     decodesHere: Boolean = false,
+    /** This phone's own chain while it plays a library itself; null on the MA path. */
+    localChain: NowPlayingViewModel.LocalChain? = null,
 ) {
     if (visible) BackHandler { onDismiss() }
 
@@ -713,6 +716,7 @@ fun BoxScope.QualityDetailOverlay(
                 processing = processing,
                 outputProcessing = outputProcessing,
                 decodesHere = decodesHere,
+                localChain = localChain,
             )
         }
     }
@@ -745,6 +749,8 @@ private fun QualityDetailCard(
     outputProcessing: MaOutputProcessing? = null,
     /** This phone is the one making the sound, so its own mixer is in the path. */
     decodesHere: Boolean = false,
+    /** This phone's own chain while it plays a library itself; null on the MA path. */
+    localChain: NowPlayingViewModel.LocalChain? = null,
 ) {
     val accent = LocalAccent.current
     val palette = LocalPalette.current
@@ -758,7 +764,7 @@ private fun QualityDetailCard(
     // whether they differ. Hiding "Source" on a match was the old behaviour, and it
     // meant the common case — a direct, untranscoded stream — showed a single
     // unexplained row that read as the card having failed to load the other one.
-    val transcoded = playing != null && source != null && !source.sameFormatAs(playing)
+    val transcoded = playing != null && source != null && !source.matches(playing)
     val shape = RoundedCornerShape(20.dp)
     val art = rememberArtRequest(artworkUrl, pixels = 96)
 
@@ -810,6 +816,8 @@ private fun QualityDetailCard(
             // ── Signal Path Inspector (Audiophile Transparency) ────────────
             val sourceLabel = (source ?: playing)?.label ?: "PCM"
             val maSteps = maProcessingSteps(processing, outputProcessing)
+            val localGainDb = if (localSession) source?.let { ReplayGain.decibels(it, gainMode) } else null
+            val localSteps = localChain?.let { localProcessingSteps(it, localGainDb) }.orEmpty()
             val dspLabel = when {
                 // Music Assistant's own report of what it did, when it sends one.
                 processing != null || outputProcessing != null -> when {
@@ -817,16 +825,31 @@ private fun QualityDetailCard(
                     maSteps.size == 1 -> maSteps.single()
                     else -> "${maSteps.size} steps"
                 }
+                localChain != null -> localSteps.let { steps ->
+                    when {
+                        steps.isEmpty() -> null
+                        steps.size == 1 -> steps.single()
+                        else -> "${steps.size} steps"
+                    }
+                }
                 dspState == "enabled" -> "EQ / DSP"
                 gainMode != ReplayGain.OFF && localSession -> "ReplayGain"
                 else -> null
             }
             val engineLabel = when {
-                bitPerfect -> "24-bit Direct"
+                localChain?.signal?.usb != null -> "USB driver"
+                localChain?.signal?.aaudioBitperfect == true -> "AAudio direct"
+                localChain?.signal?.floatEngaged == true -> "Float"
+                bitPerfect && localChain == null -> "24-bit Direct"
                 localSession -> "AAudio/Track"
                 else -> "Sendspin"
             }
-            val devName = if (serverPlayer) "Remote Player" else "This Device"
+            val devName = when {
+                serverPlayer -> "Remote Player"
+                localChain?.signal?.usb != null -> localChain.signal.usb.dacName
+                localChain != null -> localChain.outputLabel
+                else -> "This Device"
+            }
             SignalPathDiagram(
                 sourceFormat = sourceLabel,
                 dspInfo = dspLabel,
@@ -867,6 +890,21 @@ private fun QualityDetailCard(
                 }
             }
 
+            // ── This phone's own chain ────────────────────────────────────
+            // A library this phone plays itself: every stage of its own player, then
+            // the one output it feeds, read from the chain rather than the settings.
+            if (localChain != null) {
+                QualityBlock("Processing") {
+                    LocalProcessingSteps(localChain, localGainDb, accent)
+                    if (localSteps.isEmpty()) {
+                        QualityNote("Direct signal path - nothing of this app's changes the audio")
+                    }
+                }
+                QualityBlock("Outputs") {
+                    LocalOutputRow(localChain, playing ?: source, accent)
+                }
+            }
+
             // ── Outputs ───────────────────────────────────────────────────
             // What Music Assistant feeds each player, as its own pipeline view lists
             // them: one source, then every player with its own format and its own
@@ -882,7 +920,7 @@ private fun QualityDetailCard(
             // own 24-bit setting, whether the Android mixer is resampling under it,
             // and — on a Music Assistant player — whether MA's DSP chain ran.
             val deviceRate = remember(bitPerfect) { FormatNegotiator.deviceOutputQuality(bitPerfect) }
-            val decodingHere = localSession && !serverPlayer
+            val decodingHere = localSession && !serverPlayer && localChain == null
             // A Music Assistant stream this phone plays still goes through its mixer.
             val maHere = !localSession && decodesHere
             val showOutput = decodingHere || maHere || (dspState != null && outputProcessing == null)
@@ -1000,6 +1038,10 @@ fun BoxScope.DeviceDetailOverlay(
     serverOutputDeviceName: String? = null,
     /** MPD's live decode format, when it said. */
     serverOutputFormat: RemoteAudioFormat? = null,
+    /** This phone's own chain, so "Right now" reports it rather than the settings. */
+    localChain: NowPlayingViewModel.LocalChain? = null,
+    /** What arrived, which caps the output's grade exactly as on the quality card. */
+    arrived: StreamQuality? = null,
 ) {
     if (visible) BackHandler { onDismiss() }
 
@@ -1036,6 +1078,8 @@ fun BoxScope.DeviceDetailOverlay(
                 serverPlayer = serverPlayer,
                 serverOutputDeviceName = serverOutputDeviceName,
                 serverOutputFormat = serverOutputFormat,
+                localChain = localChain,
+                arrived = arrived,
             )
         }
     }
@@ -1056,6 +1100,8 @@ private fun DeviceDetailCard(
     serverPlayer: Boolean = false,
     serverOutputDeviceName: String? = null,
     serverOutputFormat: RemoteAudioFormat? = null,
+    localChain: NowPlayingViewModel.LocalChain? = null,
+    arrived: StreamQuality? = null,
 ) {
     val accent = LocalAccent.current
     val palette = LocalPalette.current
@@ -1075,7 +1121,7 @@ private fun DeviceDetailCard(
             if (serverPlayer) {
                 ServerDeviceDetail(accent, serverOutputDeviceName, serverOutputFormat)
             } else {
-                LocalDeviceDetail(accent, playingRateHz)
+                LocalDeviceDetail(accent, playingRateHz, localChain, arrived)
             }
         }
     }
@@ -1149,7 +1195,12 @@ private fun remoteChannelLabel(channels: Int): String = when (channels) {
  * card, unchanged in behaviour.
  */
 @Composable
-private fun LocalDeviceDetail(accent: Color, playingRateHz: Int) {
+private fun LocalDeviceDetail(
+    accent: Color,
+    playingRateHz: Int,
+    localChain: NowPlayingViewModel.LocalChain? = null,
+    arrived: StreamQuality? = null,
+) {
     val context = LocalContext.current
     val settings = remember(context) { AppSettings(context) }
     val bitPerfect by settings.bitPerfect24Bit.collectAsState(initial = false)
@@ -1218,12 +1269,18 @@ private fun LocalDeviceDetail(accent: Color, playingRateHz: Int) {
 
         // ── Right now ─────────────────────────────────────────────
         QualityBlock("Right now") {
-            MixerNote(playingRateHz = playingRateHz, mixerRateHz = mixerRate)
-            QualityNote(
-                if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it"
-                else "Bit-perfect off - 16-bit output",
-            )
-            frames?.let { QualityNote("Mixer buffer $it frames") }
+            // The same row the quality card's Outputs shows, so the two cards can
+            // never tell different stories about one output.
+            if (localChain != null && (localChain.signal.usb != null || localChain.signal.sink.known)) {
+                LocalOutputRow(localChain, arrived, accent)
+            } else {
+                MixerNote(playingRateHz = playingRateHz, mixerRateHz = mixerRate)
+                QualityNote(
+                    if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it"
+                    else "Bit-perfect off - 16-bit output",
+                )
+            }
+            if (localChain?.signal?.usb == null) frames?.let { QualityNote("Mixer buffer $it frames") }
             route.bluetoothCodecNote?.let { QualityNote(it) }
         }
     }
@@ -1313,6 +1370,137 @@ private fun fileSize(bytes: Long): String = when {
     bytes >= 1024L * 1024 * 1024 -> String.format("%.1f GB", bytes / (1024.0 * 1024 * 1024))
     bytes >= 1024L * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024))
     else -> "${bytes / 1024} KB"
+}
+
+/**
+ * The short names of this phone's own stages that change the audio, for the signal
+ * path's middle box. [gainDb] is the ReplayGain actually applied, or null.
+ */
+private fun localProcessingSteps(c: NowPlayingViewModel.LocalChain, gainDb: Float?): List<String> = buildList {
+    val s = c.signal
+    if (s.usb != null && !s.usb.samplesUntouched) add("Volume")
+    if (!s.processorsBypassed) {
+        if (gainDb != null) add("ReplayGain")
+        if (eqAltersSignal(c.eq)) add("EQ")
+        addAll(c.effects.map { it.substringBefore(' ') })
+    }
+    if (c.speed != 1f) add("Speed")
+    if (c.transition != null) add(c.transition.substringBefore(' '))
+    if (s.truncating) add("16-bit")
+}
+
+/** The equaliser is on and something in it changes the sound. */
+private fun eqAltersSignal(eq: LocalDsp.Config): Boolean =
+    eq.enabled && (eq.effectivePreampDb() != 0f || eq.activeBands().any { it.altersSignal() })
+
+/**
+ * Every stage between what arrived and what Android (or the DAC) is handed, as this
+ * phone's own player runs it — read from the chain, not from settings.
+ */
+@Composable
+private fun LocalProcessingSteps(c: NowPlayingViewModel.LocalChain, gainDb: Float?, accent: Color) {
+    val s = c.signal
+    if (s.decoded.known) {
+        ProcessingStep("Decoded", s.decoded.summary().removePrefix("Unknown"), accent, active = false)
+        if (s.decoderLostBits) {
+            QualityNote(
+                "The file is ${s.source.depthLabel()} and this phone's decoder handed over " +
+                    "${s.decoded.depthLabel()}; nothing later can put those bits back",
+                warn = true,
+            )
+        }
+    }
+    if (s.processorsBypassed) {
+        QualityNote(
+            when {
+                s.usb != null -> "CAMusic's USB driver takes the decoded audio straight to the DAC"
+                s.aaudioBitperfect -> "Direct output: the decoded audio goes straight to the DAC"
+                s.floatEngaged -> "Float output: media3 runs none of this app's processors"
+                else -> "Exclusive output: nothing of this app's between decoder and DAC"
+            } + ", so ReplayGain boost, the equaliser and the effects are out of the chain",
+        )
+    } else {
+        gainDb?.let { ProcessingStep("ReplayGain", "%+.1f dB".format(it), accent, active = true) }
+        if (eqAltersSignal(c.eq)) {
+            val bands = c.eq.activeBands().count { it.altersSignal() }
+            val preamp = c.eq.effectivePreampDb()
+            ProcessingStep(
+                "Equaliser",
+                listOfNotNull(
+                    "$bands band${if (bands == 1) "" else "s"}",
+                    preamp.takeIf { it != 0f }?.let { "preamp %+.1f dB".format(it) },
+                    "for ${c.outputLabel}",
+                ).joinToString(" • "),
+                accent, active = true,
+            )
+        }
+        c.effects.forEach { ProcessingStep("Effect", it, accent, active = true) }
+    }
+    if (c.speed != 1f) ProcessingStep("Playback speed", "%.2fx".format(c.speed), accent, active = true)
+    c.transition?.let { ProcessingStep("Between tracks", it, accent, active = true) }
+    when {
+        s.usb != null -> Unit // the output row says what the DAC is given
+        s.floatEngaged -> ProcessingStep("Handed to Android", "32-bit float", accent, active = false)
+        s.sink.known -> ProcessingStep("Handed to Android", s.sink.depthLabel() ?: "PCM", accent, active = s.truncating)
+    }
+    if (s.truncating) {
+        QualityNote(
+            "The decoder produced ${s.decoded.depthLabel()} and the sink carries " +
+                "${s.sink.depthLabel()}. Turn on high-resolution output to keep it",
+            warn = true,
+        )
+    }
+}
+
+/**
+ * The one output this phone's own player feeds, graded the way Music Assistant grades
+ * a player: by what reaches it, never better than what arrived.
+ */
+@Composable
+private fun LocalOutputRow(c: NowPlayingViewModel.LocalChain, arrived: StreamQuality?, accent: Color) {
+    val s = c.signal
+    val usb = s.usb
+    val name: String
+    val format: StreamQuality?
+    if (usb != null) {
+        name = usb.dacName
+        format = StreamQuality("pcm", usb.confirmedRateHz, usb.dacBits)
+    } else {
+        name = c.outputLabel
+        val rate = s.mixerRateHz.takeIf { it > 0 } ?: s.sink.sampleRateHz ?: 0
+        val depth = if (s.sink.isFloat) 32 else s.sink.bitDepth ?: 0
+        format = if (s.sink.known) StreamQuality("pcm", rate, depth) else null
+    }
+    val tier = listOfNotNull(QualityTier.of(arrived), QualityTier.of(format)).minOrNull()
+    if (format != null) GroupOutputRow(NowPlayingViewModel.GroupOutput(name, format, isSelf = false, tier = tier), accent)
+    else QualityRow("Output", name, accent)
+    when {
+        usb != null -> QualityNote("CAMusic's USB driver, Android's mixer bypassed")
+        s.aaudioBitperfect -> QualityNote("Direct output: decoded audio straight to the DAC")
+        s.exclusive -> QualityNote("Exclusive output: nothing of this app's in the chain")
+    }
+    if (usb != null) {
+        QualityNote("${usb.dacBits}-bit in a ${usb.slotBits}-bit slot, rate confirmed by the DAC")
+        usb.convertedFromHz?.let {
+            QualityNote("Converted from ${StreamQuality.khz(it)} to the DAC's ${StreamQuality.khz(usb.confirmedRateHz)} kHz", warn = true)
+        }
+        QualityNote(
+            if (usb.samplesUntouched) "Bit-perfect: the file's own samples reach the DAC (${usb.volume})"
+            else "Not bit-perfect: ${usb.volume}",
+            warn = !usb.samplesUntouched,
+        )
+        if (usb.asyncClock) {
+            QualityNote(
+                "This DAC runs on its own clock and CAMusic streams on the nominal schedule, " +
+                    "so a very long session can drift into a click",
+                warn = true,
+            )
+        }
+    } else if (s.resampling) {
+        MixerNote(playingRateHz = s.sink.sampleRateHz ?: 0, mixerRateHz = s.mixerRateHz)
+    } else if (s.mixerRateHz > 0) {
+        QualityNote("Android's mixer at ${StreamQuality.khz(s.mixerRateHz)} kHz, no resampling")
+    }
 }
 
 /**
