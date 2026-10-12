@@ -132,13 +132,14 @@ internal fun PlayerSection(
 
         SettingsCard(
             title = "Stream format",
-            lead = "What this phone tells Music Assistant it can decode.",
-            info = "The server may only send a format the client has listed, so naming one here is " +
-                "what actually forces its hand. There is no way to ask for a format the phone " +
-                "has not advertised.\n\nAuto advertises all three and lets Music Assistant " +
-                "pick, which is also what makes switching format on a live connection " +
-                "possible.\n\nTip: leave it on Auto unless you are testing something. FLAC and " +
-                "PCM are both lossless, and FLAC uses roughly half the bandwidth.",
+            lead = "Which codec this phone offers Music Assistant first.",
+            info = "This phone offers Music Assistant every codec it decodes, at every sample " +
+                "rate it can play. What actually plays is chosen on the server, under this " +
+                "player's settings there: Preferred audio format picks an exact format, and " +
+                "on Automatic, Sample rate selection picks the rate.\n\nThe codec chosen here is " +
+                "listed first, and that is the one Automatic and Sample rate selection work " +
+                "from.\n\nTip: leave it on Auto unless you have a reason. FLAC and PCM are both " +
+                "lossless, and FLAC uses roughly half the bandwidth.",
         ) {
             SegmentedToggleRow(
                 labels = CodecLabels,
@@ -148,45 +149,32 @@ internal fun PlayerSection(
             }
             Note(
                 when (codec) {
-                    "flac" -> "Lossless, about half the bandwidth of PCM. Music Assistant must " +
-                        "send FLAC, it is the only format offered."
-                    "pcm" -> "Lossless and uncompressed. Highest bandwidth, no decode cost."
-                    "opus" -> "Compressed. Lowest bandwidth, 48 kHz only."
-                    else -> "Offer all three and let Music Assistant choose, FLAC first, then " +
-                        "PCM, then Opus."
+                    "flac" -> "FLAC first. Lossless, about half the bandwidth of PCM."
+                    "pcm" -> "PCM first. Lossless and uncompressed, highest bandwidth, no decode cost."
+                    "opus" -> "Opus first. Compressed, lowest bandwidth, 48 kHz only."
+                    else -> "FLAC first, then PCM, then Opus."
                 },
             )
 
             if (connected) {
-                // On "Auto" the hello advertised every codec, so the server is free to
-                // switch to any of them on request — `client/request_format`, answered
-                // with a fresh stream/start. Connect on a single codec and the
-                // advertised list has one entry, so there is nothing to switch to
-                // without reconnecting.
+                // The hello advertised every codec, so the server is free to switch to
+                // any of them on request — `client/request_format`, answered with a
+                // fresh stream/start.
                 val live = viewModel.canSwitchFormatLive && codec != "auto"
                 if (live) {
                     OledButton(
                         "Switch to ${CodecLabels[CodecValues.indexOf(codec)]} now",
                         modifier = Modifier.fillMaxWidth(), accent = accent,
                     ) { viewModel.requestFormat(codec) }
+                    Note(
+                        "Can be applied to the running stream.",
+                        title = "Switching format",
+                        info = "Every codec was advertised, so the server can switch on request. " +
+                            "The new order sticks for good on the next reconnect.\n\nTip: switch " +
+                            "while something is playing if you want to hear the difference. The " +
+                            "stream restarts at the new format within a second or two.",
+                    )
                 }
-                Note(
-                    if (live) "Can be applied to the running stream."
-                    else "Needs the player disabled and enabled again.",
-                    title = "Switching format",
-                    info = if (live)
-                        "This connection opened on Auto, so it advertised every format and " +
-                            "the server is free to switch between them on request. The change " +
-                            "sticks for good on the next reconnect.\n\nTip: switch while " +
-                            "something is playing if you want to hear the difference. The " +
-                            "stream restarts at the new format within a second or two."
-                    else
-                        "The advertised list is only sent when the connection opens, and " +
-                            "this one opened on a single format, so there is nothing to switch " +
-                            "to without reconnecting.\n\nTip: set the format to Auto and " +
-                            "re-enable the player once. After that you can change format on a " +
-                            "live stream without disconnecting again.",
-                )
             }
         }
 

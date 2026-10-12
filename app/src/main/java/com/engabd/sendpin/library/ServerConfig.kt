@@ -358,8 +358,7 @@ data class ServerConfig(
         /** Which codec the Sendspin `client/hello` advertises to it. */
         const val OPT_SENDSPIN_CODEC = "sendspinCodec"
 
-        /** Whether to ask that server for hi-res, and for FLAC. */
-        const val OPT_PREFER_HI_RES = "preferHiRes"
+        /** Whether to ask that server for FLAC ahead of PCM. */
         const val OPT_PREFER_FLAC = "preferFlac"
 
         /** Hold the Sendspin socket open so announcements arrive without a delay. */

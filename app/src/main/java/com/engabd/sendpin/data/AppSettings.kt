@@ -167,7 +167,6 @@ class AppSettings(private val context: Context) {
         private val THEME = stringPreferencesKey("theme")                       // oled | dark | light | system
         private val ACCENT_SOURCE = stringPreferencesKey("accent_source")       // album | dynamic | fixed
         private val FIXED_ACCENT = stringPreferencesKey("fixed_accent")         // ARGB hex, for accent_source=fixed
-        private val PREFER_HI_RES = booleanPreferencesKey("prefer_hi_res")      // advertise 88.2/96 kHz too
         private val PREFER_FLAC = booleanPreferencesKey("prefer_flac")          // FLAC ahead of uncompressed PCM
         private val PREFER_ORIGINAL = booleanPreferencesKey("prefer_original")  // bypass MA when it would convert
         private val REGISTERED_NAME = stringPreferencesKey("registered_player_name")
@@ -1213,9 +1212,6 @@ class AppSettings(private val context: Context) {
     val accentSource: Flow<String> = pref { it[ACCENT_SOURCE] ?: "album" }
     /** Stored as an ARGB hex string; empty means "use the built-in amber". */
     val fixedAccent: Flow<String> = pref { it[FIXED_ACCENT] ?: "" }
-    val preferHiRes: Flow<Boolean> = pref {
-        maOption(it, ServerConfig.OPT_PREFER_HI_RES)?.toBooleanStrictOrNull() ?: it[PREFER_HI_RES] ?: true
-    }
     val preferFlac: Flow<Boolean> = pref {
         maOption(it, ServerConfig.OPT_PREFER_FLAC)?.toBooleanStrictOrNull() ?: it[PREFER_FLAC] ?: true
     }
@@ -1911,13 +1907,6 @@ class AppSettings(private val context: Context) {
     val hasConfiguredLibrary: Boolean get() = bootPrefs.getBoolean(HAS_LIBRARY, false)
 
     /** Takes effect on the next connect — the format list is sent in the hello. */
-    suspend fun setPreferHiRes(value: Boolean) {
-        context.dataStore.edit {
-            it[PREFER_HI_RES] = value
-            putMaOption(it, ServerConfig.OPT_PREFER_HI_RES, value.toString())
-        }
-    }
-
     suspend fun setPreferFlac(value: Boolean) {
         context.dataStore.edit {
             it[PREFER_FLAC] = value

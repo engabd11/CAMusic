@@ -624,9 +624,8 @@ internal fun SwatchDot(color: Color, selected: Boolean, onClick: () -> Unit) {
 // ── Shared value sets ─────────────────────────────────────────────────────
 
 /**
- * What this phone tells Music Assistant it can decode. "Auto" offers all three;
- * naming one narrows the advertised list to it alone, which is what actually forces
- * the server's hand — see `FormatNegotiator.supportedFormats`.
+ * Which codec this phone lists first to Music Assistant. All three are advertised
+ * whatever is chosen; "Auto" lists FLAC, PCM, Opus — see `FormatNegotiator.supportedFormats`.
  */
 internal val CodecValues = listOf("auto", "flac", "pcm", "opus")
 internal val CodecLabels = listOf("Auto", "FLAC", "PCM", "Opus")

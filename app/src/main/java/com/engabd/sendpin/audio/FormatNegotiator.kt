@@ -13,10 +13,13 @@ data class NegotiatedFormat(
 /**
  * Builds the format list we advertise to the server in `player@v1_support.supported_formats`.
  *
- * The server may only stream a format that appears in this list, so anything missing
- * here is something Music Assistant is *forced* to convert. That is the whole reason
- * 44.1 kHz is in the list: a Navidrome library is mostly CD rips, and a client that
- * only offers 48 kHz makes the server resample every one of them.
+ * Everything this phone can genuinely play, and nothing narrowed: every codec the
+ * engine decodes, at every rate the device can open. Which of them is played is the
+ * listener's choice on the server, not ours: Music Assistant's "Preferred audio
+ * format" offers each advertised format by name, and under Automatic its "Sample
+ * rate selection" (Smart, Bit-perfect, 48 kHz, 96 kHz, Highest supported by player)
+ * picks among the rates of the codec listed first. A list that leaves a rate out
+ * takes that option away from the listener.
  */
 object FormatNegotiator {
 
@@ -55,101 +58,56 @@ object FormatNegotiator {
     /** The depth we advertise given the user's bit-perfect preference. */
     fun bitDepthFor(bitPerfect: Boolean) = if (bitPerfect) HIRES_BIT_DEPTH else DEFAULT_BIT_DEPTH
 
-    /** CD and DVD rate families — covers essentially every library file. */
-    private val RATES_STANDARD = listOf(48_000, 44_100)
-
     /**
-     * Adds the hi-res members of each family — 2× and 4× of 48k and 44.1k.
-     *
-     * 176.4/192 are filtered out by [maxSampleRate] unless the caller has actually
-     * probed the device for them: advertising a rate the phone can't open means the
-     * server picks it and nothing plays, and on a phone whose mixer runs at 48 kHz
-     * a 192 kHz stream is ~4.6 Mbit/s that gets resampled straight back down.
+     * Every rate the engine follows, 48 kHz first. The first entry of the first codec
+     * is the client's default format, which Music Assistant streams under Automatic
+     * when it has no session rate to follow; 48 kHz is the phone mixer's own rate.
+     * [maxSampleRate] trims the top to what the device can open.
      */
-    private val RATES_HIRES = listOf(48_000, 44_100, 96_000, 88_200, 192_000, 176_400)
-
-    /**
-     * The default ceiling on advertised rates.
-     *
-     * 96 kHz keeps the historical list exactly as it was; anything higher has to be
-     * asked for explicitly, with a device probe behind it.
-     */
-    const val DEFAULT_MAX_RATE = 96_000
+    private val RATES = listOf(48_000, 44_100, 96_000, 88_200, 192_000, 176_400)
 
     /** Every codec [SendspinNativeEngine] can decode, in the order "auto" offers them. */
     val CODECS = listOf("flac", "pcm", "opus")
 
     /**
-     * [preferHiRes] — also offer 88.2/96 kHz, so hi-res masters stream at their native
-     * rate instead of being downsampled to 48 kHz by the server.
-     * [preferFlac] — order lossless FLAC ahead of uncompressed PCM. Both are
-     * bit-identical; FLAC costs roughly half the bandwidth and a little decode CPU.
-     * Only consulted when [codec] is null.
-     * [codec] — advertise this codec *alone*. The server may only stream a format the
-     * client listed, so narrowing the list is the one way to make a choice stick
-     * rather than express a preference the server is free to ignore. This is how the
-     * official Music Assistant app implements its codec setting.
+     * [firstCodec] — the codec listed first, or null for "auto" (FLAC, then PCM, then
+     * Opus). Every codec is listed either way: the first one only decides what Music
+     * Assistant's Automatic format and its Sample rate selection work from.
+     * [preferFlac] — under "auto", order lossless FLAC ahead of uncompressed PCM. Both
+     * are bit-identical; FLAC costs roughly half the bandwidth and a little decode CPU.
+     * [maxSampleRate] — the highest rate the device can open (see
+     * [AudioOutputs.maxSupportedSampleRate]). Advertising a rate is a commitment: the
+     * server may pick it, so a rate the phone cannot open would play nothing.
      *
-     * [bitPerfect] — advertise 24-bit rather than 16. Only the lossless codecs get
-     * it: Opus is lossy and decodes to 16-bit whatever depth we claim, so asking
-     * for 24 there would be a number with nothing behind it.
-     *
-     * 48 kHz stays first for compatibility: it is Music Assistant's own default and the
-     * ordering that grouped/multi-room sync was validated against. The added rates give
-     * the server an exact match to pick when the source is not 48 kHz.
+     * Opus is 48 kHz only. Every format is 16-bit, because [SendspinNativeEngine]
+     * renders int16 end to end ([SendspinNativeEngine.OUTPUT_BIT_DEPTH]): a deeper
+     * format would spend bandwidth on bits truncated on arrival.
      */
     fun supportedFormats(
-        preferHiRes: Boolean = true,
+        maxSampleRate: Int,
+        firstCodec: String? = null,
         preferFlac: Boolean = true,
-        codec: String? = null,
-        bitPerfect: Boolean = false,
-        maxSampleRate: Int = DEFAULT_MAX_RATE,
     ): List<AudioFormatSpec> {
-        val rates = (if (preferHiRes) RATES_HIRES else RATES_STANDARD).filter { it <= maxSampleRate }
-        val depth = bitDepthFor(bitPerfect)
-        val only = codec?.lowercase()?.takeIf { it in CODECS }
-        if (only != null) {
-            val d = if (only == "opus") DEFAULT_BIT_DEPTH else depth
-            return ratesFor(only, rates).map { AudioFormatSpec(only, 2, it, d) }
-        }
-
-        val losslessOrder = if (preferFlac) listOf("flac", "pcm") else listOf("pcm", "flac")
-        return buildList {
-            for (c in losslessOrder) for (rate in rates) {
-                add(AudioFormatSpec(c, 2, rate, depth))
-            }
-            // Lossy, and last: only reached if the server can serve none of the above.
-            // Opus is 48 kHz only, and listing it first breaks grouped sync.
-            add(AudioFormatSpec("opus", 2, 48_000, DEFAULT_BIT_DEPTH))
+        val auto = (if (preferFlac) listOf("flac", "pcm") else listOf("pcm", "flac")) + "opus"
+        val first = firstCodec?.lowercase()?.takeIf { it in CODECS }
+        val codecs = first?.let { listOf(it) + (auto - it) } ?: auto
+        val rates = RATES.filter { it <= maxSampleRate }
+        return codecs.flatMap { codec ->
+            (if (codec == "opus") listOf(48_000) else rates).map { AudioFormatSpec(codec, 2, it, DEFAULT_BIT_DEPTH) }
         }
     }
-
-    /** Opus is 48 kHz only; the lossless codecs take whatever the rate list offers. */
-    private fun ratesFor(codec: String, rates: List<Int>): List<Int> =
-        if (codec == "opus") listOf(48_000) else rates
-
-    /** Defaults, for callers with no user settings to hand. */
-    val supportedFormats: List<AudioFormatSpec> get() = supportedFormats()
 
     /**
      * Could Music Assistant stream a source at [sampleRate]/[bitDepth] without
      * touching it?
      *
-     * True only when the rate is one we advertise (so no resampling) and the depth
-     * is one we can render (so no requantising). Anything else means the server
-     * has to convert somewhere between the file and this phone — which is exactly
+     * True only when the rate is one we advertise (so no resampling is forced) and the
+     * depth is one the engine renders (so no requantising). Anything else means the
+     * server has to convert somewhere between the file and this phone, which is exactly
      * when "play at original quality" should go direct to the source instead.
      */
-    fun canStreamUntouched(
-        sampleRate: Int,
-        bitDepth: Int,
-        preferHiRes: Boolean = true,
-        bitPerfect: Boolean = false,
-        maxSampleRate: Int = DEFAULT_MAX_RATE,
-    ): Boolean {
-        val rates = (if (preferHiRes) RATES_HIRES else RATES_STANDARD).filter { it <= maxSampleRate }
-        return sampleRate in rates && bitDepth <= bitDepthFor(bitPerfect)
-    }
+    fun canStreamUntouched(sampleRate: Int, bitDepth: Int, maxSampleRate: Int): Boolean =
+        sampleRate in RATES && sampleRate <= maxSampleRate && bitDepth <= DEFAULT_BIT_DEPTH
 
     /**
      * The server always streams a format we advertised, so accept the `stream/start`
