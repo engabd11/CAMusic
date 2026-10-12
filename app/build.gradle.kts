@@ -203,6 +203,12 @@ android {
             excludes += "log4j2.xml"
         }
     }
+
+    // Already xz: deflating it again inside the APK saves nothing and makes every read
+    // of the asset inflate first. Stored, it streams straight into the xz decoder.
+    androidResources {
+        noCompress += "xz"
+    }
 }
 
 // The offline-analysis harness (`ScanHarnessTest`) reads a directory of decoded
@@ -347,6 +353,9 @@ dependencies {
     implementation(libs.material.components)
 
     implementation(libs.okhttp)
+    // The speed-limit database ships xz-compressed (20 MB rather than gzip's 38 MB) and
+    // is unpacked once on the phone - see SpeedLimitDatabase. Pure Java, public domain.
+    implementation(libs.xz)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.coil.compose)

@@ -11,7 +11,7 @@ Things that behave in a particular way by design. [Back to the README](../README
 - **Per-speaker offsets are positive on the Music Assistant side**, whose config field is
   unsigned. For a phone that needs to move the other way, use the app's own signed latency trim.
 - **Releases are signed with a dedicated release key** (from v0.14.0, with a rotation lineage from the earlier key), so updates install cleanly over each other. A build from another source needs an uninstall first. See [signing.md](signing.md).
-- **The speed-limit database adds about 39 MB to the phone APK**, the cost of offline speed-limit awareness for Victoria, Australia, stated here up front. The TV build leaves out both the database and the ambience recordings, and is about 15 MB.
+- **The speed-limit database adds about 20 MB to the phone APK**, the cost of offline speed-limit awareness for Victoria, Australia, stated here up front. It ships xz-compressed and is unpacked once (to about 78 MB in the app's storage) the first time Driving mode needs it. The TV build leaves out both the database and the ambience recordings, and is about 15 MB.
 - **Your credentials stay yours.** Every server secret, including streaming-service tokens, is
   encrypted under the Keystore; the debug file you might attach to an issue has credentials
   redacted from its log; Android's cloud backup leaves out the library database, downloads and
