@@ -37,6 +37,12 @@ data class TempoEnergyPoint(val bpm: Float, val energy: Float, val keyMode: Stri
 /** One key's play count within a window — Listening DNA's dominant-keys bar. */
 data class KeyPlayCount(val keyTonic: Int, val keyMode: String, val plays: Int)
 
+/** One album's play count within a window — the year in review's top albums. */
+data class AlbumPlayCount(val album: String, val artist: String, val plays: Int)
+
+/** One calendar month's totals (1 = January), for the year in review. */
+data class MonthTotals(val month: Int, val plays: Int, val listenedMs: Long)
+
 @Dao
 interface PlayHistoryDao {
 
@@ -46,54 +52,54 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT artist, COUNT(*) as plays FROM play_history
-        WHERE timestamp >= :since AND artist != ''
+        WHERE timestamp >= :since AND timestamp < :until AND artist != ''
         GROUP BY artist ORDER BY plays DESC LIMIT :limit
         """,
     )
-    suspend fun topArtists(since: Long, limit: Int = 10): List<ArtistPlayCount>
+    suspend fun topArtists(since: Long, until: Long = Long.MAX_VALUE, limit: Int = 10): List<ArtistPlayCount>
 
-    @Query("SELECT COALESCE(SUM(durationPlayedMs), 0) FROM play_history WHERE timestamp >= :since")
-    suspend fun totalListeningMs(since: Long): Long
+    @Query("SELECT COALESCE(SUM(durationPlayedMs), 0) FROM play_history WHERE timestamp >= :since AND timestamp < :until")
+    suspend fun totalListeningMs(since: Long, until: Long = Long.MAX_VALUE): Long
 
     @Query(
         """
         SELECT trackId, title, artist, COUNT(*) as plays FROM play_history
-        WHERE timestamp >= :since
+        WHERE timestamp >= :since AND timestamp < :until
         GROUP BY trackId ORDER BY plays DESC LIMIT 1
         """,
     )
-    suspend fun mostPlayedTrack(since: Long): TrackPlayCount?
+    suspend fun mostPlayedTrack(since: Long, until: Long = Long.MAX_VALUE): TrackPlayCount?
 
     @Query(
         """
         SELECT codec, sampleRate, bitDepth, COUNT(*) as plays FROM play_history
-        WHERE timestamp >= :since
+        WHERE timestamp >= :since AND timestamp < :until
         GROUP BY codec, sampleRate, bitDepth ORDER BY plays DESC
         """,
     )
-    suspend fun formatBreakdown(since: Long): List<FormatPlayCount>
+    suspend fun formatBreakdown(since: Long, until: Long = Long.MAX_VALUE): List<FormatPlayCount>
 
     @Query(
         """
         SELECT provider, COUNT(*) as plays FROM play_history
-        WHERE timestamp >= :since
+        WHERE timestamp >= :since AND timestamp < :until
         GROUP BY provider ORDER BY plays DESC
         """,
     )
-    suspend fun providerBreakdown(since: Long): List<ProviderPlayCount>
+    suspend fun providerBreakdown(since: Long, until: Long = Long.MAX_VALUE): List<ProviderPlayCount>
 
     @Query(
         """
         SELECT keyTonic, keyMode, COUNT(*) as plays FROM play_history
-        WHERE timestamp >= :since AND keyTonic IS NOT NULL AND keyMode IS NOT NULL
+        WHERE timestamp >= :since AND timestamp < :until AND keyTonic IS NOT NULL AND keyMode IS NOT NULL
         GROUP BY keyTonic, keyMode ORDER BY plays DESC
         """,
     )
-    suspend fun keyDistribution(since: Long): List<KeyPlayCount>
+    suspend fun keyDistribution(since: Long, until: Long = Long.MAX_VALUE): List<KeyPlayCount>
 
     /** Every non-null bpm in the window — bucketed into bins in Kotlin, not SQL. */
-    @Query("SELECT bpm FROM play_history WHERE timestamp >= :since AND bpm IS NOT NULL")
-    suspend fun bpmSamples(since: Long): List<Float>
+    @Query("SELECT bpm FROM play_history WHERE timestamp >= :since AND timestamp < :until AND bpm IS NOT NULL")
+    suspend fun bpmSamples(since: Long, until: Long = Long.MAX_VALUE): List<Float>
 
     /**
      * Where the bytes came from, preferring [PlayHistoryEntity.streamProvider].
@@ -106,11 +112,11 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT COALESCE(NULLIF(streamProvider, ''), provider) as provider, COUNT(*) as plays
-        FROM play_history WHERE timestamp >= :since
+        FROM play_history WHERE timestamp >= :since AND timestamp < :until
         GROUP BY COALESCE(NULLIF(streamProvider, ''), provider) ORDER BY plays DESC
         """,
     )
-    suspend fun sourceBreakdown(since: Long): List<ProviderPlayCount>
+    suspend fun sourceBreakdown(since: Long, until: Long = Long.MAX_VALUE): List<ProviderPlayCount>
 
     /**
      * Plays per (day-of-week, hour), for the listening clock.
@@ -124,11 +130,11 @@ interface PlayHistoryDao {
         SELECT CAST(strftime('%w', timestamp / 1000, 'unixepoch', 'localtime') AS INTEGER) as dow,
                CAST(strftime('%H', timestamp / 1000, 'unixepoch', 'localtime') AS INTEGER) as hour,
                COUNT(*) as plays
-        FROM play_history WHERE timestamp >= :since
+        FROM play_history WHERE timestamp >= :since AND timestamp < :until
         GROUP BY dow, hour
         """,
     )
-    suspend fun listeningClock(since: Long): List<HourCell>
+    suspend fun listeningClock(since: Long, until: Long = Long.MAX_VALUE): List<HourCell>
 
     /**
      * One row per calendar day: plays, time, and how many distinct artists.
@@ -142,19 +148,19 @@ interface PlayHistoryDao {
                COUNT(*) as plays,
                COALESCE(SUM(durationPlayedMs), 0) as listenedMs,
                COUNT(DISTINCT artist) as artists
-        FROM play_history WHERE timestamp >= :since
+        FROM play_history WHERE timestamp >= :since AND timestamp < :until
         GROUP BY day ORDER BY day ASC
         """,
     )
-    suspend fun dailyTotals(since: Long): List<DayTotals>
+    suspend fun dailyTotals(since: Long, until: Long = Long.MAX_VALUE): List<DayTotals>
 
     /** Distinct artists in the window — the denominator for a diversity figure. */
-    @Query("SELECT COUNT(DISTINCT artist) FROM play_history WHERE timestamp >= :since AND artist != ''")
-    suspend fun distinctArtists(since: Long): Int
+    @Query("SELECT COUNT(DISTINCT artist) FROM play_history WHERE timestamp >= :since AND timestamp < :until AND artist != ''")
+    suspend fun distinctArtists(since: Long, until: Long = Long.MAX_VALUE): Int
 
     /** Total plays in the window. */
-    @Query("SELECT COUNT(*) FROM play_history WHERE timestamp >= :since")
-    suspend fun playCount(since: Long): Int
+    @Query("SELECT COUNT(*) FROM play_history WHERE timestamp >= :since AND timestamp < :until")
+    suspend fun playCount(since: Long, until: Long = Long.MAX_VALUE): Int
 
     /**
      * Artists heard in the window that were never heard before it — the "new to you"
@@ -163,21 +169,21 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT COUNT(DISTINCT artist) FROM play_history
-        WHERE timestamp >= :since AND artist != '' AND artist NOT IN (
+        WHERE timestamp >= :since AND timestamp < :until AND artist != '' AND artist NOT IN (
             SELECT DISTINCT artist FROM play_history WHERE timestamp < :since
         )
         """,
     )
-    suspend fun newArtists(since: Long): Int
+    suspend fun newArtists(since: Long, until: Long = Long.MAX_VALUE): Int
 
     /** Every (bpm, energy) pair — the tempo/energy scatter. Nulls excluded. */
     @Query(
         """
         SELECT bpm, energy, keyMode FROM play_history
-        WHERE timestamp >= :since AND bpm IS NOT NULL AND energy IS NOT NULL
+        WHERE timestamp >= :since AND timestamp < :until AND bpm IS NOT NULL AND energy IS NOT NULL
         """,
     )
-    suspend fun tempoEnergy(since: Long): List<TempoEnergyPoint>
+    suspend fun tempoEnergy(since: Long, until: Long = Long.MAX_VALUE): List<TempoEnergyPoint>
 
     /**
      * How much of each track was heard, for the least-finished list.
@@ -188,21 +194,73 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT title, artist, durationPlayedMs as playedMs, durationMs FROM play_history
-        WHERE timestamp >= :since AND durationMs > 0 AND durationPlayedMs > 0
+        WHERE timestamp >= :since AND timestamp < :until AND durationMs > 0 AND durationPlayedMs > 0
         """,
     )
-    suspend fun completions(since: Long): List<Completion>
+    suspend fun completions(since: Long, until: Long = Long.MAX_VALUE): List<Completion>
 
     /** Listening time by source, not just play count — a long album is not one play. */
     @Query(
         """
         SELECT COALESCE(NULLIF(streamProvider, ''), provider) as provider,
                COALESCE(SUM(durationPlayedMs), 0) as plays
-        FROM play_history WHERE timestamp >= :since
+        FROM play_history WHERE timestamp >= :since AND timestamp < :until
         GROUP BY COALESCE(NULLIF(streamProvider, ''), provider) ORDER BY plays DESC
         """,
     )
-    suspend fun timeBySource(since: Long): List<ProviderPlayCount>
+    suspend fun timeBySource(since: Long, until: Long = Long.MAX_VALUE): List<ProviderPlayCount>
+
+    // ── The year in review ──────────────────────────────────────────────────
+    //
+    // Every windowed query above takes an exclusive `until`, so a past calendar
+    // year is just a window with two ends. These are the ones only a year asks.
+
+    /**
+     * The most played songs, matched by title and artist rather than track id: the
+     * same song played from two libraries has two ids, and a year is long enough
+     * for that to split a favourite in half.
+     */
+    @Query(
+        """
+        SELECT MIN(trackId) AS trackId, title, artist, COUNT(*) AS plays FROM play_history
+        WHERE timestamp >= :since AND timestamp < :until AND title != ''
+        GROUP BY title COLLATE NOCASE, artist COLLATE NOCASE
+        ORDER BY plays DESC LIMIT :limit
+        """,
+    )
+    suspend fun topTracks(since: Long, until: Long = Long.MAX_VALUE, limit: Int = 5): List<TrackPlayCount>
+
+    /** The most played albums, by name: any library's copy counts. */
+    @Query(
+        """
+        SELECT album, MAX(artist) AS artist, COUNT(*) AS plays FROM play_history
+        WHERE timestamp >= :since AND timestamp < :until AND album != ''
+        GROUP BY album COLLATE NOCASE
+        ORDER BY plays DESC LIMIT :limit
+        """,
+    )
+    suspend fun topAlbums(since: Long, until: Long = Long.MAX_VALUE, limit: Int = 5): List<AlbumPlayCount>
+
+    /** Plays and time per calendar month, in the local zone. Months with none are absent. */
+    @Query(
+        """
+        SELECT CAST(strftime('%m', timestamp / 1000, 'unixepoch', 'localtime') AS INTEGER) AS month,
+               COUNT(*) AS plays,
+               COALESCE(SUM(durationPlayedMs), 0) AS listenedMs
+        FROM play_history WHERE timestamp >= :since AND timestamp < :until
+        GROUP BY month ORDER BY month ASC
+        """,
+    )
+    suspend fun monthlyTotals(since: Long, until: Long = Long.MAX_VALUE): List<MonthTotals>
+
+    /** Every calendar year (local zone) with at least one play, newest first. */
+    @Query(
+        """
+        SELECT DISTINCT CAST(strftime('%Y', timestamp / 1000, 'unixepoch', 'localtime') AS INTEGER) AS year
+        FROM play_history ORDER BY year DESC
+        """,
+    )
+    suspend fun yearsWithPlays(): List<Int>
 
     /** The oldest row's timestamp, so "all time" can say how far back it goes. */
     @Query("SELECT MIN(timestamp) FROM play_history")

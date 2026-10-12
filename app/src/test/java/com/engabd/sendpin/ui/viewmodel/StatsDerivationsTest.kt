@@ -29,6 +29,36 @@ class StatsDerivationsTest {
         assertEquals(now - 7L * 24 * 60 * 60 * 1000, StatsWindow.WEEK.since(now))
     }
 
+    // --- the year in review ---------------------------------------------
+
+    @Test
+    fun `a year runs from local midnight on 1 January to the next, end exclusive`() {
+        val melbourne = java.time.ZoneId.of("Australia/Melbourne")
+        val (since, until) = yearBounds(2025, melbourne)
+        // AEDT is UTC+11 on 1 January: local midnight is 13:00 UTC the day before.
+        assertEquals(java.time.Instant.parse("2024-12-31T13:00:00Z").toEpochMilli(), since)
+        assertEquals(java.time.Instant.parse("2025-12-31T13:00:00Z").toEpochMilli(), until)
+    }
+
+    @Test
+    fun `back-to-back years meet without a gap or an overlap`() {
+        val zone = java.time.ZoneId.of("UTC")
+        assertEquals(yearBounds(2025, zone).second, yearBounds(2026, zone).first)
+    }
+
+    @Test
+    fun `every month is present, and a silent one is a zero row`() {
+        val rows = listOf(
+            com.engabd.sendpin.local.db.MonthTotals(3, 10, 600_000L),
+            com.engabd.sendpin.local.db.MonthTotals(11, 2, 120_000L),
+        )
+        val months = fillMonths(rows)
+        assertEquals((1..12).toList(), months.map { it.month })
+        assertEquals(600_000L, months[2].listenedMs)
+        assertEquals(0, months[0].plays)
+        assertEquals(0L, months[11].listenedMs)
+    }
+
     // --- formatting -------------------------------------------------------
 
     @Test
