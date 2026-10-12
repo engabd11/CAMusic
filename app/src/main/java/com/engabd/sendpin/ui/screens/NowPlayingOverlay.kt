@@ -36,6 +36,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -397,10 +399,13 @@ fun NowPlayingOverlay(
                         CoverSlot.VISUALIZER -> AudioVisualizer(
                             modifier = Modifier
                                 .fillMaxSize()
-                                // Tap anywhere on the visualizer to bring the cover back.
+                                // Tap anywhere on the visualizer to bring the cover back. Named for
+                                // TalkBack, which otherwise met a nameless full-screen button.
+                                .semantics { contentDescription = "Visualiser" }
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
+                                    onClickLabel = "Show the album art",
                                 ) { coverSlot = CoverSlot.ART },
                         )
                         CoverSlot.ART ->
@@ -426,9 +431,14 @@ fun NowPlayingOverlay(
                                         // Tap → the live visualizer takes the cover's place.
                                         // Long-press → quick actions (go to album/artist, share,
                                         // edit Light Sync colours).
+                                        // Named, with both gestures spelled out: to TalkBack this was a
+                                        // nameless square that did something on a double tap.
+                                        .semantics { contentDescription = "Album art" }
                                         .combinedClickable(
                                             interactionSource = remember { MutableInteractionSource() },
                                             indication = null,
+                                            onClickLabel = "Show the visualiser",
+                                            onLongClickLabel = "Track actions",
                                             onClick = { coverSlot = CoverSlot.VISUALIZER },
                                             onLongClick = if (!st.idle) {
                                                 { sheets.actions = true }
@@ -442,7 +452,7 @@ fun NowPlayingOverlay(
                     }
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(9.dp))
 
                 // Track/player chips, in one line above the title — the same place the
                 // tab layout puts them, so switching layouts does not move the controls.
@@ -454,7 +464,10 @@ fun NowPlayingOverlay(
                         Modifier
                             .horizontalScroll(rememberScrollState())
                             .widthIn(min = rowMinWidth)
-                            .padding(horizontal = 10.dp),
+                            // 7.dp above and below make every chip a 48.dp target, to TalkBack
+                            // as well as to a finger (see the tab layout's row). Taken out of
+                            // the 16.dp gaps either side, so nothing moves.
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
                         horizontalArrangement =
                             Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically,
@@ -468,8 +481,8 @@ fun NowPlayingOverlay(
                             // latter is null for the whole of a local-library session,
                             // which greyed this out on Navidrome and Jellyfin even though
                             // both implement starring. See NowPlayingViewModel.
-                            tint = if (favouritable == null) TextFaint else null,
-                            onClick = if (favouritable == null) null else ({ viewModel.toggleFavorite() }),
+                            enabled = favouritable != null,
+                            onClick = { viewModel.toggleFavorite() },
                         )
                         // Sleep timer
                         SleepTimerChip(viewModel)
@@ -519,7 +532,7 @@ fun NowPlayingOverlay(
 
                 // Matches the gap above, so the chips sit centred in the space between
                 // the cover and the title rather than crowding the title.
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(9.dp))
 
                 // Title + artist + album.
                 if (st.idle) {

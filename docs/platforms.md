@@ -40,6 +40,10 @@ Where CAMusic runs and what each surface adds. [Back to the README](../README.md
 - **Everyday touches.** An optional mini player above the tabs while you browse (Settings →
   Appearance → Now Playing & seek bar), swipe a song off the queue with an **Undo**, and
   TalkBack that can read and move the sliders, toggles and seek bars and reorder the queue.
+  Every button on Now Playing is a full 48 dp target, the album art and visualiser say what a
+  tap and a long press do, a control that can't be used right now (the heart with nothing to
+  favourite, the end of a reorder list) is announced as unavailable rather than going silent,
+  and text fields are read out by their label.
 
 ## Installing on Android TV
 

@@ -37,6 +37,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -271,10 +273,13 @@ fun NowPlayingScreen(
                         CoverSlot.VISUALIZER -> AudioVisualizer(
                             modifier = Modifier
                                 .fillMaxSize()
-                                // Tap anywhere on the visualizer to bring the cover back.
+                                // Tap anywhere on the visualizer to bring the cover back. Named for
+                                // TalkBack, which otherwise met a nameless full-screen button.
+                                .semantics { contentDescription = "Visualiser" }
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
+                                    onClickLabel = "Show the album art",
                                 ) { coverSlot = CoverSlot.ART },
                         )
                         CoverSlot.ART -> Box(Modifier.fillMaxSize()) {
@@ -289,9 +294,14 @@ fun NowPlayingScreen(
                                     .graphicsLayer { alpha = artDim.value }
                                     // Tap → the live visualizer takes the cover's place.
                                     // Long-press → quick actions (go to album/artist, share).
+                                    // Named, with both gestures spelled out: to TalkBack this was a
+                                    // nameless square that did something on a double tap.
+                                    .semantics { contentDescription = "Album art" }
                                     .combinedClickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
+                                        onClickLabel = "Show the visualiser",
+                                        onLongClickLabel = "Track actions",
                                         onClick = { coverSlot = CoverSlot.VISUALIZER },
                                         onLongClick = if (!st.idle) {
                                             { sheets.actions = true }
@@ -312,8 +322,6 @@ fun NowPlayingScreen(
                     }
                 }
 
-                Spacer(Modifier.height(4.dp))
-
                 // Secondary actions — track-scoped chips only; the quality badge
                 // has moved to the transport row (between play and the seek bar).
                 //
@@ -330,7 +338,11 @@ fun NowPlayingScreen(
                         Modifier
                             .horizontalScroll(rememberScrollState())
                             .widthIn(min = rowMinWidth)
-                            .padding(horizontal = 12.dp),
+                            // 7.dp above and below make every chip a 48.dp target, to TalkBack as
+                            // well as to a finger: Compose widens a small button's touch area by
+                            // itself, but reports it only as far as its parent reaches, which
+                            // was this 34.dp row - so each chip was announced as 40.dp tall.
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
                         horizontalArrangement =
                             Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically,
@@ -381,15 +393,16 @@ fun NowPlayingScreen(
                             // latter is null for the whole of a local-library session,
                             // which greyed this out on Navidrome and Jellyfin even though
                             // both implement starring. See NowPlayingViewModel.
-                            tint = if (favouritable == null) TextFaint else null,
-                            onClick = if (favouritable == null) null else ({ viewModel.toggleFavorite() }),
+                            enabled = favouritable != null,
+                            onClick = { viewModel.toggleFavorite() },
                         )
                     }
                 }
 
-                Spacer(Modifier.height(6.dp))
-
                 if (st.idle) {
+                    // Room for the chips' 48.dp targets above and this pill's own: with
+                    // the two flush, the pill's claimed the chips' lower 8.dp.
+                    Spacer(Modifier.height(7.dp))
                     IdleNotice(st.playerName, st.blank, onBrowse)
                     Spacer(Modifier.height(12.dp))
                 }
