@@ -1,8 +1,6 @@
 package com.engabd.sendpin.discovery
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -18,22 +16,21 @@ import java.net.InetAddress
 import java.net.SocketTimeoutException
 
 /**
- * Discovers **Jellyfin and Emby servers** on the LAN via their shared UDP
+ * Discovers **Jellyfin and Emby servers** on the LAN via their UDP
  * auto-discovery beacon.
  *
- * This is not mDNS/NsdManager — Jellyfin (and Emby, which forked from the
- * same MediaBrowser lineage and kept the wire format) answer a plain UDP
- * broadcast on port 7359 with a JSON reply naming the server's own address:
- * `{"Address":"http://192.168.0.9:8096","Id":"...","Name":"My Server"}`.
- * One scan finds either fork; a reply carries no field reliably telling the
- * two apart, so the caller (`ui/design/DiscoveredServerPicker.kt`) shows
- * every result under whichever of the two the user is actually setting up —
- * a wrong-fork tap is harmless, since the normal connect attempt that
- * follows knows the difference and fails cleanly if it's the wrong one.
+ * This is not mDNS/NsdManager. Jellyfin and Emby (which forked from the same
+ * MediaBrowser lineage and kept the wire format) answer a plain UDP broadcast
+ * on port 7359 with a JSON reply naming the server's own address:
+ * `{"Address":"http://192.168.0.156:8096","Id":"…","Name":"Hogwarts","EndpointAddress":null}`
+ * (the shape a real Jellyfin 10.x sent on 2026-10-12).
  *
- * **Unverified against a real Jellyfin or Emby server.** Written from the
- * documented beacon protocol; the reply's exact JSON shape has not been
- * confirmed against live hardware. See `docs/plan/server-mdns-discovery.md`.
+ * The reply carries nothing that says which fork sent it, but the question
+ * does: Jellyfin answers only "who is JellyfinServer?" and Emby only "who is
+ * EmbyServer?" (checked the same day: a Jellyfin server ignored the Emby
+ * question). So each question goes out on its own socket, and a reply's fork
+ * is the socket it came back on. That keeps a Jellyfin server out of the Emby
+ * list, where tapping it only led to a failed connect.
  */
 class MediaServerDiscovery(private val context: Context) {
     companion object {
@@ -41,102 +38,78 @@ class MediaServerDiscovery(private val context: Context) {
         private const val DISCOVERY_PORT = 7359
 
         /**
-         * One beacon per fork. The two servers share the port and the reply shape
-         * but each answers only its own question: Jellyfin's `UdpServer` matches
-         * "who is JellyfinServer?" and Emby's "who is EmbyServer?", and neither
-         * recognises the other's. Both go out on the one socket; the replies are
-         * folded together by address below.
+         * The reply's server, or null for anything that is not one. Internal so
+         * a unit test can hold the parser to the shape real servers send.
          */
-        private val MESSAGES = listOf("who is JellyfinServer?", "who is EmbyServer?")
+        internal fun parseReply(body: String, fork: Fork): Found? = try {
+            val o = Json.parseToJsonElement(body) as? JsonObject
+            val url = o?.get("Address")?.jsonPrimitive?.contentOrNull?.trim()?.trimEnd('/')
+            if (url.isNullOrBlank() || !(url.startsWith("http://") || url.startsWith("https://"))) null
+            else Found(fork, o["Name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: url, url)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Which server answered. Each fork only answers its own question. */
+    enum class Fork(internal val question: String) {
+        JELLYFIN("who is JellyfinServer?"),
+        EMBY("who is EmbyServer?"),
     }
 
     /** One server that answered the beacon. */
-    data class Found(val name: String, val url: String)
+    data class Found(val fork: Fork, val name: String, val url: String)
 
     /**
-     * One scan: broadcast the beacon, then collect replies until [timeoutMs]
-     * runs out. Not a Flow — a broadcast reply either arrives inside the
-     * window or it doesn't, unlike mDNS's ongoing found/lost lifecycle.
+     * One scan: broadcast each fork's question, then collect replies until
+     * [timeoutMs] runs out. Not a Flow: a broadcast reply either arrives inside
+     * the window or it doesn't, unlike mDNS's ongoing found/lost lifecycle.
      */
     suspend fun scan(timeoutMs: Long = 1500L): List<Found> = withContext(Dispatchers.IO) {
-        // Keyed by url so a server that answers more than once inside the
-        // window (some beacons reply per network interface) is one row, not several.
-        val results = LinkedHashMap<String, Found>()
-        var socket: DatagramSocket? = null
+        // Keyed by fork and url so a server that answers more than once inside the
+        // window (some reply once per network interface) is one row, not several.
+        val results = LinkedHashMap<Pair<Fork, String>, Found>()
+        val sockets = LinkedHashMap<Fork, DatagramSocket>()
         try {
-            socket = DatagramSocket().apply {
-                broadcast = true
-                soTimeout = 200  // per-receive poll, not the overall budget
-            }
-            bindToWifiIfAvailable(socket)
-
-            for (text in MESSAGES) {
-                val message = text.toByteArray(Charsets.UTF_8)
+            for (fork in Fork.entries) {
+                val socket = DatagramSocket().apply {
+                    broadcast = true
+                    // Per-receive poll, not the overall budget. Short, because the
+                    // loop below takes turns between the two sockets.
+                    soTimeout = 100
+                }
+                sockets[fork] = socket
+                bindToWifiIfAvailable(context, socket, TAG)
+                val message = fork.question.toByteArray(Charsets.UTF_8)
                 socket.send(DatagramPacket(message, message.size, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
             }
 
             val buf = ByteArray(2048)
             val deadline = System.currentTimeMillis() + timeoutMs
             while (System.currentTimeMillis() < deadline) {
-                // Checked once per poll (every ≤200ms, from soTimeout above) rather
-                // than left to the blocking receive() below to notice on its own —
-                // a plain socket read has no suspension point for kotlinx.coroutines
-                // to cancel cooperatively at, so without this a cancelled caller
-                // (backing out of the add-server screen mid-scan, or switching
-                // Jellyfin/Emby before the window elapses) would keep this coroutine
-                // and its IO thread running for the rest of timeoutMs regardless.
+                // A blocking socket read has no suspension point, so cancellation
+                // (backing out of the add-server screen mid-scan) is checked here,
+                // once per poll, or the scan would run out its window regardless.
                 ensureActive()
-                try {
-                    val packet = DatagramPacket(buf, buf.size)
-                    socket.receive(packet)
-                    parseReply(String(packet.data, 0, packet.length, Charsets.UTF_8))?.let {
-                        results[it.url] = it
+                for ((fork, socket) in sockets) {
+                    try {
+                        val packet = DatagramPacket(buf, buf.size)
+                        socket.receive(packet)
+                        parseReply(String(packet.data, 0, packet.length, Charsets.UTF_8), fork)?.let {
+                            results[fork to it.url] = it
+                        }
+                    } catch (_: SocketTimeoutException) {
+                        // Nothing on this socket yet; try the other, then go round.
                     }
-                } catch (_: SocketTimeoutException) {
-                    // Keep polling until the overall deadline above.
                 }
             }
         } catch (e: CancellationException) {
-            throw e  // never swallow — this is what lets ensureActive() above actually cancel the scan.
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Discovery scan failed: ${e.message}")
         } finally {
-            socket?.close()
+            sockets.values.forEach { it.close() }
         }
         results.values.toList()
-    }
-
-    /**
-     * Route the broadcast through the Wi-Fi network specifically, when the
-     * phone has one connected.
-     *
-     * A plain [DatagramSocket] otherwise follows whatever the OS considers
-     * the *default* network — which can be mobile data or a VPN even while
-     * Wi-Fi is connected — and a beacon broadcast down the wrong interface
-     * never reaches the LAN the server is actually on. Best-effort: silently
-     * leaves the socket unbound (today's behaviour) if there is no Wi-Fi
-     * network to find or binding fails for any reason — never worse than
-     * not calling this at all.
-     */
-    private fun bindToWifiIfAvailable(socket: DatagramSocket) {
-        try {
-            val cm = context.applicationContext
-                .getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
-            val wifiNetwork = cm.allNetworks.firstOrNull { network ->
-                cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-            } ?: return
-            wifiNetwork.bindSocket(socket)
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not bind the discovery socket to Wi-Fi, broadcasting on the default network instead: ${e.message}")
-        }
-    }
-
-    private fun parseReply(body: String): Found? = try {
-        val o = Json.parseToJsonElement(body) as? JsonObject
-        val url = o?.get("Address")?.jsonPrimitive?.contentOrNull
-        if (url.isNullOrBlank()) null
-        else Found(o["Name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: url, url)
-    } catch (e: Exception) {
-        null
     }
 }

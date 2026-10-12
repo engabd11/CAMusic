@@ -2,6 +2,7 @@ package com.engabd.sendpin.tv.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -20,8 +21,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.style.TextOverflow
+import com.engabd.sendpin.ui.design.rememberServerDiscovery
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -73,6 +77,54 @@ fun TvLibraryKindTiles(onPick: (ServerKind) -> Unit) {
             }
         }
     }
+}
+
+/**
+ * Servers of [kind] found on the network, as buttons that fill the address
+ * field. Worth more here than on the phone: an address typed with the remote
+ * costs a D-pad press per character. The scan is the phone's own
+ * ([rememberServerDiscovery]); a server that is not found is still typed in.
+ */
+@Composable
+private fun TvDiscoveredServers(kind: ServerKind, onPicked: (String) -> Unit) {
+    val discovery = rememberServerDiscovery(kind)
+    if (!discovery.supported) return
+    when {
+        discovery.scanning ->
+            Text("Scanning your network…", color = TextMuted, style = MaterialTheme.typography.bodyMedium)
+        discovery.found.isEmpty() -> Row(
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Nothing found on the network. Enter the address below.",
+                color = TextMuted, style = MaterialTheme.typography.bodyMedium,
+            )
+            TvButton(onClick = discovery.rescan) { Text("Scan again") }
+        }
+        else -> {
+            Text("Found on your network", color = TextMuted, style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                // A row of buttons, not a list: a home network has one or two of a
+                // kind, and three keeps the row inside the 480 dp form.
+                discovery.found.take(3).forEach { server ->
+                    TvButton(onClick = { onPicked(server.url) }) {
+                        Text(server.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                TvButton(onClick = discovery.rescan) { Text("Scan again") }
+            }
+        }
+    }
+    discovery.elsewhere.forEach { other ->
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Also found ${other.name}, a ${other.kind.label} server.",
+            color = TextMuted, style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    Spacer(Modifier.height(16.dp))
 }
 
 /**
@@ -180,6 +232,7 @@ fun TvServerSetupScreen(
                 }
             }
         } else {
+            TvDiscoveredServers(kind) { url = it }
             OutlinedTextField(
                 value = url,
                 onValueChange = { url = it },

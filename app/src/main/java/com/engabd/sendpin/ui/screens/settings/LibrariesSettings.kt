@@ -29,7 +29,6 @@ import com.engabd.sendpin.local.LocalFolders
 import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.DiscoveredServerPicker
-import com.engabd.sendpin.ui.design.DiscoveredServerRow
 import com.engabd.sendpin.ui.design.GlassCard
 import com.engabd.sendpin.ui.design.ProviderSkin
 import com.engabd.sendpin.ui.design.ProviderTheme
@@ -40,10 +39,7 @@ import com.engabd.sendpin.ui.design.ServerKindGlyph
 import com.engabd.sendpin.ui.design.ServerKindTile
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
-import com.engabd.sendpin.discovery.PlayerIdentity
-import com.engabd.sendpin.plex.PlexAuth
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import android.content.ContentResolver
@@ -1146,93 +1142,5 @@ private fun LocalFolderCard(
             }
         }
         Note("The scan runs when you save. Music is found by its tags, so a flat folder still browses by artist and album.")
-    }
-}
-
-/**
- * The Plex PIN sign-in, done in place of a password field.
- *
- * `AuthStyle.LINKED_ACCOUNT` has no fields of its own to render — there is no
- * password this app is allowed to see — so this is what fills that space instead: a
- * button that mints a PIN, opens plex.tv in the browser with it pre-filled, and polls
- * [PlexAuth] until the user finishes signing in there or gives up. See [PlexAuth]'s
- * own docs for why this is a whole flow rather than a token exchange like Jellyfin's.
- *
- * The moment sign-in succeeds, [PlexAuth.listResources] asks plex.tv which
- * Plex Media Servers are on the account — no LAN scan, since the token this
- * flow just obtained is all that call needs — and offers them as
- * [DiscoveredServerRow]s below, the same look the LAN-scanned kinds use in
- * [com.engabd.sendpin.ui.design.DiscoveredServerPicker]. [onUrl] fills the
- * address field above this card the same way a LAN pick does; [onToken]
- * still carries the sign-in itself.
- */
-@Composable
-private fun PlexSignInRow(
-    hasToken: Boolean,
-    onToken: (String) -> Unit,
-    onUrl: (String) -> Unit,
-    accent: Color,
-    scope: CoroutineScope,
-) {
-    val context = LocalContext.current
-    var working by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf<String?>(null) }
-    var resources by remember { mutableStateOf<List<PlexAuth.PlexResource>>(emptyList()) }
-
-    OledButton(
-        when {
-            working -> "Waiting for plex.tv…"
-            hasToken -> "Signed in — sign in again"
-            else -> "Sign in with Plex"
-        },
-        enabled = !working,
-        accent = accent,
-    ) {
-        working = true
-        status = null
-        resources = emptyList()
-        scope.launch {
-            val clientId = PlayerIdentity.getPlayerId(context)
-            try {
-                val pin = PlexAuth.requestPin(clientId)
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse(PlexAuth.authUrl(pin, clientId)))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-                var token: String? = null
-                var attempts = 0
-                // Plex's own apps poll every couple of seconds; ten minutes covers a
-                // slow browser round trip without polling for ever if the tab is
-                // abandoned.
-                while (token == null && attempts < 300) {
-                    delay(2000)
-                    token = PlexAuth.pollPin(pin, clientId)
-                    attempts++
-                }
-                val signedIn = token
-                if (signedIn != null) {
-                    onToken(signedIn)
-                    resources = PlexAuth.listResources(signedIn, clientId)
-                    status = if (resources.isEmpty()) {
-                        "Signed in. Enter your server's address below."
-                    } else {
-                        "Signed in. Pick a server below, or enter its address."
-                    }
-                } else {
-                    status = "Timed out waiting for plex.tv. Try again."
-                }
-            } catch (e: Exception) {
-                status = e.message ?: "Couldn't reach plex.tv"
-            } finally {
-                working = false
-            }
-        }
-    }
-    Note(
-        status ?: if (hasToken) "Signed in. Sign in again if playback ever stops working."
-        else "Opens plex.tv in your browser to sign in, then comes back here on its own.",
-    )
-    resources.forEach { resource ->
-        DiscoveredServerRow(resource.name, resource.url, "PL", accent) { onUrl(resource.url) }
     }
 }
