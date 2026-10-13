@@ -42,6 +42,9 @@ import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.subsonic.SubsonicError
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -2944,6 +2947,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 runCatchingCancellable { maRepo.stop(target) }
                 runCatchingCancellable { maRepo.clearQueue(maRepo.activeQueueId(target)) }
                 restoreMaCrossfade()
+                // The set turned "Don't stop the music" on; back to the listener's setting.
+                applyDontStopTheMusic()
             }
         } else {
             localPlayer.clear()
@@ -3035,14 +3040,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val target = playTarget()
-            val fade = enableMaCrossfade(target)
-            if (!djStillRunning(session)) {
-                restoreMaCrossfade()
-                return@launch
-            }
             try {
                 localPlayer.stop()
-                maRepo.playOn(target, listOf(uri), "replace", radioMode = true)
+                // The picked song itself, at once. `radio_mode` would have had MA build a
+                // whole generated playlist from it first (MA 2.10 turns it into a
+                // radio_playlist:// source), which is the ~20 seconds of silence between
+                // the pick and the music, and does not even promise the pick plays first.
+                maRepo.playOn(target, listOf(uri), "replace", radioMode = false)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -3050,8 +3054,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     _djRadio.value = false
                     djMood = null
                 }
-                restoreMaCrossfade()
                 _toast.tryEmit(e.message ?: "Couldn't start DJ Radio")
+                return@launch
+            }
+            if (!djStillRunning(session)) return@launch
+            // Everything else happens with the music already playing.
+            val queueId = runCatchingCancellable { maRepo.activeQueueId(target) }.getOrDefault(target)
+            // MA's "Don't stop the music" is what keeps the set going: as the queue runs
+            // low it adds tracks like the ones just played. Put back to the listener's
+            // own preference when the set stops (see [stopDjRadio]).
+            runCatchingCancellable { maRepo.setDontStopTheMusic(queueId, true) }
+            val fade = enableMaCrossfade(target, queueId)
+            if (!djStillRunning(session)) {
+                restoreMaCrossfade()
                 return@launch
             }
             val brief = djMood?.let { " · ${it.title}" }.orEmpty()
@@ -3076,7 +3091,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * (player settings need an admin login on MA) still plays the set, it just plays it
      * with whatever crossfade the player already had, and the toast says so.
      */
-    private suspend fun enableMaCrossfade(playerId: String): String = maFadeLock.withLock {
+    private suspend fun enableMaCrossfade(playerId: String, queueId: String): String = maFadeLock.withLock {
         // A restore still owed from an earlier set goes back first, so the "previous"
         // read below is the listener's own setting and not ours.
         putBackMaCrossfade()
@@ -3084,20 +3099,39 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // now would lose that player's own setting for good, so this set goes without.
         if (settings.maDjCrossfadeRestore.first() != null) return@withLock "crossfade unchanged"
         val entries = runCatchingCancellable { maRepo.playerConfigEntries(playerId) }.getOrNull()
-            ?: return@withLock "crossfade unchanged"
-        val change = MaCrossfade.turnOn(entries)
-            ?: return@withLock if (entries.any { it.plainKey in MaCrossfade.KEYS }) "crossfade already on" else "no crossfade on this speaker"
-        val record = MaCrossfade.Restore(playerId, change.key, change.previous.toString())
+        val change = entries?.let { MaCrossfade.turnOn(it) }
+        if (change != null) {
+            val record = MaCrossfade.Restore(playerId, change.key, change.previous.toString())
+            settings.setMaDjCrossfadeRestore(Json.encodeToString(MaCrossfade.Restore.serializer(), record))
+            try {
+                maRepo.savePlayerConfigValue(playerId, change.key, change.on)
+                return@withLock "${change.description} on"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Refused (player settings need an admin login): nothing changed, so
+                // nothing is owed, and the queue's own switch below is tried instead.
+                settings.setMaDjCrossfadeRestore(null)
+            }
+        } else if (entries != null && entries.any { it.plainKey in MaCrossfade.KEYS }) {
+            return@withLock "crossfade already on"
+        }
+        // The queue's crossfade switch: what the official app's crossfade badge sends,
+        // open to any login, and readable, so it can be put back too.
+        val was = runCatchingCancellable {
+            maRepo.getQueue(queueId)?.jsonObject?.get("crossfade_enabled")?.jsonPrimitive?.booleanOrNull
+        }.getOrNull()
+        if (was == true) return@withLock "crossfade already on"
+        val record = MaCrossfade.Restore(playerId, queueId = queueId, queueCrossfadeWas = was ?: false)
         settings.setMaDjCrossfadeRestore(Json.encodeToString(MaCrossfade.Restore.serializer(), record))
         try {
-            maRepo.savePlayerConfigValue(playerId, change.key, change.on)
-            "${change.description} on"
+            maRepo.setCrossfade(queueId, true)
+            "crossfade on"
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // Nothing changed, so nothing is owed.
             settings.setMaDjCrossfadeRestore(null)
-            "crossfade unchanged (changing it needs an admin login)"
+            "crossfade unchanged"
         }
     }
 
@@ -3124,13 +3158,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             settings.setMaDjCrossfadeRestore(null)
             return
         }
-        val previous = runCatching { Json.parseToJsonElement(record.previousJson) }.getOrNull()
-        if (previous == null) {
-            settings.setMaDjCrossfadeRestore(null)
-            return
+        var done = true
+        val key = record.key
+        val previous = record.previousJson?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }
+        if (key != null && previous != null) {
+            done = runCatchingCancellable { maRepo.savePlayerConfigValue(record.playerId, key, previous) }.isSuccess
         }
-        val done = runCatchingCancellable { maRepo.savePlayerConfigValue(record.playerId, record.key, previous) }
-        if (done.isSuccess) settings.setMaDjCrossfadeRestore(null)
+        val queueId = record.queueId
+        val queueWas = record.queueCrossfadeWas
+        if (queueId != null && queueWas != null) {
+            done = runCatchingCancellable { maRepo.setCrossfade(queueId, queueWas) }.isSuccess && done
+        }
+        // Kept while any part failed, so the next call puts back what is still owed.
+        if (done) settings.setMaDjCrossfadeRestore(null)
     }
 
     /**

@@ -68,8 +68,16 @@ object MaCrossfade {
     @Serializable
     data class Restore(
         val playerId: String,
-        val key: String,
-        /** The previous value, as JSON text, so a boolean stays a boolean. */
-        val previousJson: String,
+        /** The player config entry changed, when it was the player's setting. */
+        val key: String? = null,
+        /** Its previous value, as JSON text, so a boolean stays a boolean. */
+        val previousJson: String? = null,
+        /**
+         * The queue whose own crossfade switch (`player_queues/crossfade`) was turned on
+         * instead, when the player's setting could not be changed (it needs an admin
+         * login on Music Assistant; the queue switch does not).
+         */
+        val queueId: String? = null,
+        val queueCrossfadeWas: Boolean? = null,
     )
 }
