@@ -444,6 +444,7 @@ class AppSettings(private val context: Context) {
         private val DJ_RADIO_CROSSFADE = stringPreferencesKey("dj_radio_crossfade_s")  // overlapping crossfade, DJ Radio only
         private val DJ_RADIO_SIMILARITY = stringPreferencesKey("dj_radio_similarity")  // 0 loose .. 1 tight
         private val DJ_RADIO_SMART_FADE = booleanPreferencesKey("dj_radio_smart_fade")  // plan the join off the scan
+        private val MA_DJ_CROSSFADE_RESTORE = stringPreferencesKey("ma_dj_crossfade_restore")  // MA crossfade to put back
         private val SENSOR_GESTURES = booleanPreferencesKey("sensor_gestures")
         private val LISTENING_DNA = booleanPreferencesKey("listening_dna")
         private val STEM_SEPARATION = booleanPreferencesKey("stem_separation")
@@ -920,6 +921,9 @@ class AppSettings(private val context: Context) {
         val obj = buildJsonObject {
             prefs.asMap().forEach { (key, value) ->
                 if (key.name == SERVERS.name) return@forEach   // handled below, decrypted properly
+                // A crossfade this phone owes one Music Assistant player; on another
+                // install it would be a change to a player that was never touched.
+                if (key.name == MA_DJ_CROSSFADE_RESTORE.name) return@forEach
                 when (val v = if (key.name in ENCRYPTED_KEY_NAMES) Crypto.decrypt(value as? String ?: "") else value) {
                     is String -> put(key.name, JsonPrimitive(v))
                     is Boolean -> put(key.name, JsonPrimitive(v))
@@ -1199,6 +1203,18 @@ class AppSettings(private val context: Context) {
 
     suspend fun setDjRadioSmartFade(value: Boolean) = context.dataStore.edit {
         it[DJ_RADIO_SMART_FADE] = value
+    }
+
+    /**
+     * A Music Assistant player's crossfade that DJ Radio switched on and has not yet put
+     * back, as [com.engabd.sendpin.ma.MaCrossfade.Restore] JSON. Null when there is
+     * nothing to put back. Kept here, not in memory, so a set the process did not live
+     * to finish still has its crossfade restored on the next start.
+     */
+    val maDjCrossfadeRestore: Flow<String?> = pref { it[MA_DJ_CROSSFADE_RESTORE] }
+
+    suspend fun setMaDjCrossfadeRestore(value: String?) = context.dataStore.edit {
+        if (value == null) it.remove(MA_DJ_CROSSFADE_RESTORE) else it[MA_DJ_CROSSFADE_RESTORE] = value
     }
 
     /** Shake to skip, flip face-down to pause, double-tap to play/pause. Off by default. */

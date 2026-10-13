@@ -84,6 +84,13 @@ Playback is built to be worth good headphones and a good DAC.
   where the file does, starts the overlap on a downbeat, sizes it in whole bars, and skips any
   dead air at the front of the next track. Fade mode, crossfade length and how close the next
   track has to be are all yours to set; Harmonic DJ mode adds key matching on top.
+  **On Music Assistant** the server builds and plays the queue, so DJ Radio is the server's:
+  the same button and seed picker start Music Assistant's own radio from the song you pick,
+  on the speaker you are playing to, and switch that speaker's crossfade on for the set
+  (Smart Fades on servers that have them). Your speaker's own crossfade setting is put back
+  when the set ends, or the next time the app starts if it was closed mid-set. A crossfade
+  you already had on is left as it is. Changing a speaker's settings needs an admin login on
+  Music Assistant; without one the set still plays, with the crossfade the speaker already has.
 - **Keep the music going** on every library the phone plays itself, and the shuffle button
   decides what "going" means: shuffled, the next track is a random song from the library;
   unshuffled, it is the next track on the record, then the next record, and so on. Plus
