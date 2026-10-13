@@ -938,6 +938,12 @@ fun IconChip(
     modifier: Modifier = Modifier,
     active: Boolean = false,
     tint: Color? = null,
+    /**
+     * False for a chip that is an action but cannot be taken right now (the heart with
+     * nothing favouritable playing). It stays a button to TalkBack, announced as
+     * disabled, rather than turning into an unlabelled picture of a heart.
+     */
+    enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
 ) {
     val accent = rememberAccent()
@@ -955,12 +961,15 @@ fun IconChip(
                 blurRadius = 16.dp,
                 border = if (active) accent.a(0.4f) else Hairline,
             )
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(
+                if (onClick != null) Modifier.clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+                else Modifier,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             icon, contentDescription,
-            tint = tint ?: if (active) accent else TextSecondary,
+            tint = tint ?: if (!enabled) TextFaint else if (active) accent else TextSecondary,
             modifier = Modifier.size(16.dp),
         )
     }

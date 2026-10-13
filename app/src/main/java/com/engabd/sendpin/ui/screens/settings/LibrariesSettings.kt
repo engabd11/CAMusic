@@ -16,6 +16,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -406,12 +407,17 @@ private fun MoveButton(
     onClick: () -> Unit,
 ) {
     Box(
-        Modifier.size(44.dp).clickable(enabled = enabled, onClick = onClick),
+        // 48 wide to match the row's 48 height: the minimum touch target, and the two
+        // arrows sit side by side where 44 left a sliver between them unclaimed.
+        Modifier.size(48.dp).clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             icon,
-            label.takeIf { enabled },
+            // Named even when it cannot move: the label used to be dropped, which left
+            // TalkBack on a nameless "disabled" control at the top and bottom of the
+            // list. Named, it reads "Move Downloads up, disabled", which says why.
+            label,
             tint = if (enabled) TextSecondary else TextFaint.a(0.35f),
             modifier = Modifier.size(20.dp),
         )

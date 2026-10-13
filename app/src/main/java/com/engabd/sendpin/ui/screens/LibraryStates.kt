@@ -428,28 +428,35 @@ private fun GlassField(
     placeholder: String = "",
     secret: Boolean = false,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(label, color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(13.dp))
-                .background(inkOn(0.035f))
-                .border(1.dp, Hairline, RoundedCornerShape(13.dp))
-                .padding(horizontal = 16.dp, vertical = 15.dp),
-        ) {
-            if (value.isEmpty() && placeholder.isNotBlank()) {
-                Text(placeholder, color = TextFaint, fontFamily = AppFont, fontSize = 14.sp, maxLines = 1)
+    // The label, the box and the placeholder are all the field's own decoration, the
+    // way Material's text fields are built. Drawn beside the field they were invisible
+    // to TalkBack, which announced an unnamed edit box; inside it the field reads as
+    // "Server URL, edit box", and tapping the label focuses the field.
+    BasicTextField(
+        value = value,
+        onValueChange = onChange,
+        singleLine = true,
+        textStyle = TextStyle(color = TextPrimary, fontFamily = AppFont, fontSize = 14.sp),
+        cursorBrush = SolidColor(LocalAccent.current),
+        visualTransformation = if (secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+        modifier = Modifier.fillMaxWidth(),
+        decorationBox = { inner ->
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(label, color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(inkOn(0.035f))
+                        .border(1.dp, Hairline, RoundedCornerShape(13.dp))
+                        .padding(horizontal = 16.dp, vertical = 15.dp),
+                ) {
+                    if (value.isEmpty() && placeholder.isNotBlank()) {
+                        Text(placeholder, color = TextFaint, fontFamily = AppFont, fontSize = 14.sp, maxLines = 1)
+                    }
+                    inner()
+                }
             }
-            BasicTextField(
-                value = value,
-                onValueChange = onChange,
-                singleLine = true,
-                textStyle = TextStyle(color = TextPrimary, fontFamily = AppFont, fontSize = 14.sp),
-                cursorBrush = SolidColor(LocalAccent.current),
-                visualTransformation = if (secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-    }
+        },
+    )
 }

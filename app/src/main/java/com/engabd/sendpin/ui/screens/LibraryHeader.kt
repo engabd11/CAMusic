@@ -242,12 +242,6 @@ private fun SearchField(
             }
         }
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            if (query.isEmpty()) {
-                Text(
-                    "Search artists, albums, tracks…", color = TextFaint,
-                    fontFamily = AppFont, fontSize = 14.sp, maxLines = 1,
-                )
-            }
             BasicTextField(
                 value = query,
                 onValueChange = { onQuery(it); if (it.isBlank()) onClear() },
@@ -256,6 +250,19 @@ private fun SearchField(
                 cursorBrush = SolidColor(LocalAccent.current),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSearch(query); focus.clearFocus() }),
+                // The placeholder lives inside the field, not beside it: drawn as a
+                // sibling it was invisible to TalkBack, which announced an unnamed
+                // edit box. Inside the decoration it is the field's own text while
+                // the field is empty.
+                decorationBox = { inner ->
+                    if (query.isEmpty()) {
+                        Text(
+                            "Search artists, albums, tracks…", color = TextFaint,
+                            fontFamily = AppFont, fontSize = 14.sp, maxLines = 1,
+                        )
+                    }
+                    inner()
+                },
                 // Reported upward, not acted on here: the screen's back handler is what
                 // needs it, so that putting the keyboard away stops short of leaving
                 // the search and taking the typed query with it. Also cleared on
