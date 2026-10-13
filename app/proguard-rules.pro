@@ -62,3 +62,15 @@
     public static int v(...);
     public static int d(...);
 }
+
+# WorkManager builds each job's InputMerger by reflection, through its no-argument
+# constructor. Glance 1.1.1 brings WorkManager 2.7.1, whose bundled rules keep the
+# InputMerger classes but not that constructor, and R8's full mode (the default) strips
+# it. Every WorkManager job then failed before it started ("Could not create Input
+# Merger androidx.work.OverwritingInputMerger") - and Glance draws the home-screen widget
+# from a WorkManager job, so in every release build the widget sat on its loading
+# spinner for ever. Debug builds are not minified, which is why it only showed in the
+# released app.
+-keepclassmembers class * extends androidx.work.InputMerger {
+    public <init>();
+}
