@@ -51,6 +51,7 @@ import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.screens.settings.OledButton
 import com.engabd.sendpin.ui.screens.settings.OledField
+import com.engabd.sendpin.ui.screens.settings.PlexSignInRow
 import com.engabd.sendpin.ui.screens.settings.TidalSignInRow
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.theme.accentTextFieldColors
@@ -534,16 +535,27 @@ private fun ConfigStep(
                     colors = accentTextFieldColors(accent),
                 )
             }
-            com.engabd.sendpin.library.AuthStyle.LINKED_ACCOUNT -> if (kind == ServerKind.TIDAL) {
+            com.engabd.sendpin.library.AuthStyle.LINKED_ACCOUNT -> when (kind) {
                 // The same row Settings → Libraries uses: mint a code, open Tidal,
                 // poll, and write the token set into the config. It saves into
                 // `cloudConfig`, which Connect then carries forward.
-                TidalSignInRow(
+                ServerKind.TIDAL -> TidalSignInRow(
                     config = cloudConfig,
                     accent = accent,
                     scope = scope,
                     onSave = { cloudConfig = it },
                 )
+                // Settings' Plex row too. Without it a first-run Plex setup had an
+                // address field and nothing else, so Connect could only fail: Plex
+                // answers nothing without the plex.tv token this row signs in for.
+                ServerKind.PLEX -> PlexSignInRow(
+                    hasToken = token.isNotBlank(),
+                    onToken = { token = it },
+                    onUrl = { url = it },
+                    accent = accent,
+                    scope = scope,
+                )
+                else -> Unit
             }
             else -> Unit
         }
@@ -608,6 +620,8 @@ private fun ConfigStep(
         // the button is live on an empty form, and the first thing a first-run
         // user gets from their new library is a refusal.
         val cloudReady = when {
+            // Plex is a server, not a cloud account, but signs in like one.
+            kind == ServerKind.PLEX -> token.isNotBlank()
             !kind.cloudAccount -> true
             kind == ServerKind.TIDAL -> cloudConfig.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN) != null
             else -> user.isNotBlank() && pass.isNotBlank()

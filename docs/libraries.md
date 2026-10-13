@@ -29,7 +29,17 @@ in that server's own colours**: Jellyfin's purple-to-cyan, Emby's green, Plex's 
 Assistant's blue, and the streaming services in their full brand palettes.
 
 Plex signs in through a plex.tv PIN: tap **Sign in with Plex**, finish it in the browser, and
-your Plex password stays at plex.tv where it belongs.
+your Plex password stays at plex.tv where it belongs. It works the same in first-run setup and
+in Settings, and once you are signed in the servers on your Plex account are listed to pick from,
+remote ones included.
+
+**Servers on your network are found for you.** Adding Music Assistant, Jellyfin, Emby, Plex or
+MPD scans the network and lists what answers, on the phone and on the TV; tap one and its
+address is filled in. Music Assistant and MPD are found by mDNS (`_mass._tcp`, `_mpd._tcp`),
+Jellyfin and Emby by their own discovery beacon (each fork is told apart by the question it
+answers, so a Jellyfin server is never offered as Emby), and Plex by GDM. **Scan again** repeats
+it, and the address field is always there for a server on another subnet, behind a VPN, or a
+kind with no discovery of its own (Navidrome, Subsonic servers and foobar2000).
 
 **Subsonic-compatible** is Navidrome's API by another name, so anything speaking it works the same way: Gonic, Airsonic, Ampache, Funkwhale and epoupon's LMS. Each server answers with what
 it has: lyrics, ReplayGain and exact formats ride the OpenSubsonic extensions, so an older

@@ -305,3 +305,33 @@ possible — see above), not yet verified against real servers.
   missing one already was; a regression test
   (`a connection with a blank address is not offered as a malformed row`)
   pins it in `PlexAuthTest.kt`.
+
+## Status (2026-10-12): finished and checked against a live server
+
+- **Jellyfin/Emby verified live.** A real Jellyfin 10.x server ("Hogwarts", 192.168.0.156)
+  answered the beacon with `{"Address":"http://192.168.0.156:8096","Id":"…","Name":"Hogwarts",
+  "EndpointAddress":null}`, the shape the parser expected; it is now pinned in
+  `DiscoveryReplyTest`. The same server **ignored "who is EmbyServer?"**, which settles the
+  ambiguity above the other way: each fork answers only its own question, so
+  `MediaServerDiscovery` sends each from its own socket and labels a reply by the socket it came
+  back on. The Emby screen no longer offers a Jellyfin server (it says it found one, and to pick
+  Jellyfin instead), and the reverse. The real `scan()` was run from the development PC against
+  that server and returned it as Jellyfin.
+- **Plex on the LAN (GDM)** — new `PlexGdmDiscovery`: `M-SEARCH * HTTP/1.1` to 239.0.0.250:32414
+  (and broadcast), `HTTP/1.0 200 OK` replies with `Name`/`Port`/`Content-Type: plex/media-server`.
+  So a Plex server shows up before sign-in. No Plex server was reachable, so the parser is held
+  to the documented shape by unit tests. The plex.tv resource list after sign-in is unchanged.
+- **Plex sign-in in onboarding.** The gap noted above was worse than a missing row: first-run
+  Plex had an address field and no way to sign in, so Connect could only fail. `PlexSignInRow`
+  moved to its own file (`settings/PlexSignIn.kt`) and onboarding uses it; Connect waits for the
+  token. Its "enter the address below" status pointed the wrong way (the field is above).
+- **MPD** — new generic `NsdBrowser` browsing `_mpd._tcp` (MPD publishes it itself when built
+  with Avahi/Bonjour, as do Mopidy-MPD and moOde). It resolves one service at a time with a
+  fresh listener each (before Android 14 a busy listener refuses a second resolve) and keeps
+  IPv4 addresses only, since the MPD address is parsed as `host:port`.
+- **One scanner for every screen.** `ui/design/ServerDiscoveryState.kt`'s
+  `rememberServerDiscovery(kind)` does the scanning; the phone picker and the **TV setup screen**
+  (new: found servers as D-pad buttons above the URL field) only render it. mDNS browses report
+  "nothing found" after 4 s instead of spinning for ever, and keep listening. **Scan again** on
+  every screen.
+- Navidrome, Subsonic servers and foobar2000 still have no discovery protocol and stay manual.

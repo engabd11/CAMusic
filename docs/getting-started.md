@@ -6,7 +6,8 @@ Install, first run and what you need. [Back to the README](../README.md).
 2. Open it and follow the onboarding: pick a server or a streaming account, sign in, and
    optionally pair a Hue bridge by pressing the button on the bridge when asked. A Music
    Assistant server that needs a login says so on the spot rather than pretending to connect.
-3. Start listening. A server address is the whole of it.
+3. Start listening. A server address is the whole of it, and for Music Assistant, Jellyfin,
+   Emby, Plex and MPD the setup screen finds the server on your network for you.
 
 **Requirements:** Android 12 or newer. Any Subsonic, Jellyfin, Emby, Plex, MPD, foobar2000
 (with Beefweb) or Music Assistant server for the library, or a Spotify Premium, Qobuz or Tidal
