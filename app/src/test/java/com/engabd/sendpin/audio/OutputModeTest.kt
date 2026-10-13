@@ -96,31 +96,27 @@ class OutputModeTest {
     }
 
     @Test
-    fun `plain mode offers two rungs and advanced offers them all`() {
-        assertEquals(
-            listOf(OutputMode.STANDARD, OutputMode.HIGH_RESOLUTION),
-            OutputMode.offered(advanced = false, current = OutputMode.STANDARD),
-        )
+    fun `standard, high resolution and USB bit-perfect are offered`() {
         assertEquals(
             listOf(OutputMode.STANDARD, OutputMode.HIGH_RESOLUTION, OutputMode.USB_BITPERFECT),
-            OutputMode.offered(advanced = true, current = OutputMode.STANDARD),
+            OutputMode.offered(current = OutputMode.STANDARD),
         )
     }
 
     @Test
     fun `pure and direct are not offered, but stay visible to someone standing on them`() {
-        val offered = OutputMode.offered(advanced = true, current = OutputMode.STANDARD)
+        val offered = OutputMode.offered(current = OutputMode.STANDARD)
         assertFalse(OutputMode.PURE in offered)
         assertFalse(OutputMode.DIRECT in offered)
-        val onPure = OutputMode.offered(advanced = true, current = OutputMode.PURE)
+        val onPure = OutputMode.offered(current = OutputMode.PURE)
         assertEquals(listOf(OutputMode.STANDARD, OutputMode.HIGH_RESOLUTION, OutputMode.PURE, OutputMode.USB_BITPERFECT), onPure)
     }
 
     @Test
-    fun `a deep rung stays visible after advanced is turned off`() {
+    fun `a retired rung stays visible to someone standing on it`() {
         // Otherwise the user is standing on a setting the UI cannot show them, and
-        // has no way back down to Standard without turning advanced on again.
-        val offered = OutputMode.offered(advanced = false, current = OutputMode.DIRECT)
+        // has no way back down to Standard.
+        val offered = OutputMode.offered(current = OutputMode.DIRECT)
         assertTrue(OutputMode.DIRECT in offered)
         assertTrue(OutputMode.STANDARD in offered)
     }

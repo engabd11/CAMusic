@@ -113,16 +113,21 @@ enum class OutputMode(
         }
 
         /**
-         * The rungs on offer, shallowest first. [advanced] adds [USB_BITPERFECT].
+         * The rungs on offer, shallowest first, in the Basic settings view and the
+         * Advanced one alike.
+         *
+         * USB bit-perfect used to need Advanced. It is one of the app's headline
+         * features and the plug-in auto-switch could put Basic users on it anyway, so
+         * hiding the choice only hid where they were (2026-10-13).
          *
          * [PURE] and [DIRECT] are no longer offered (2026-09-29): USB bit-perfect does
          * properly what both were reaching for, and three rungs read as a choice where
          * five read as a puzzle. They still work for anyone already on one.
          */
-        fun offered(advanced: Boolean, current: OutputMode): List<OutputMode> {
-            val base = if (advanced) listOf(STANDARD, HIGH_RESOLUTION, USB_BITPERFECT) else listOf(STANDARD, HIGH_RESOLUTION)
-            // Never hide the rung the user is standing on: someone on Pure, or on USB
-            // with advanced since turned off, must still see where they are and step back.
+        fun offered(current: OutputMode): List<OutputMode> {
+            val base = listOf(STANDARD, HIGH_RESOLUTION, USB_BITPERFECT)
+            // Never hide the rung the user is standing on: someone on Pure or Direct must
+            // still see where they are and be able to step back.
             return if (current in base) base else (base + current).sortedBy { it.ordinal }
         }
     }
