@@ -21,6 +21,14 @@ The key and the tempo on it are the same ones that drive the light show. Behind 
 charts: a listening clock, a tempo and energy scatter, dominant keys and a BPM sweet spot, artist
 variety, streaks, lossless share, and where your music actually came from.
 
+**Year in review.** Next to the 7, 30 and 90 day and all-time windows, every calendar year
+with plays in it gets its own pill. Picking one puts a review at the top: the year month by
+month, its busiest month and biggest day, and its top five songs and albums (counted by name,
+so a song played from two libraries is still one song). Every chart below it and the recap
+poster then cover that year, and the poster carries the song of the year. The current year
+reads "so far" until it ends. Years follow your phone's calendar, so a play just before
+midnight on New Year's Eve counts for the year you heard it in.
+
 **Scrobbling** to **ListenBrainz** (or a self-hosted ListenBrainz-compatible server) and
 **Last.fm**, from every library the phone plays and from downloads. Listens are queued on the
 phone and sent when the network allows, so a flight's worth of offline plays still counts, and plays keep being counted (along with server play reports and your stats) after the app is swiped away and throughout an Android Auto drive.

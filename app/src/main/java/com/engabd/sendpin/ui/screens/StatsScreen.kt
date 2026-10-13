@@ -94,7 +94,12 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 StatsWindow.entries.forEach { w ->
-                    Pill(w.label, w == state.window) { viewModel.setWindow(w) }
+                    Pill(w.label, w == state.window && state.year == null) { viewModel.setWindow(w) }
+                }
+                // One pill per calendar year with plays in it, newest first: the year
+                // in review. Read on every load, so a new year appears on its own.
+                state.years.forEach { y ->
+                    Pill("$y", state.year == y) { viewModel.setYear(y) }
                 }
             }
 
@@ -119,7 +124,8 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
             if (state.totalListeningMs == 0L && state.topArtists.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        "Nothing logged in this window. Play something for a while and check back.",
+                        if (state.year != null) "Nothing logged in ${state.year}."
+                        else "Nothing logged in this window. Play something for a while and check back.",
                         color = TextMuted, fontFamily = AppFont,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
@@ -140,6 +146,11 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 // The recap, first: it is the one thing on this screen someone would
                 // want to show another person, and burying a share action under nine
                 // cards of charts is how it never gets found.
+                state.review?.let { review ->
+                    if (state.plays > 0) {
+                        item(key = "year_review", contentType = "card") { YearReviewCard(review, accent) }
+                    }
+                }
                 if (state.plays > 0) {
                     item(key = "recap", contentType = "card") { RecapCard(state) }
                 }
@@ -288,6 +299,7 @@ private fun plural(n: Int, noun: String) = "$n $noun" + if (n == 1) "" else "s"
 @Composable
 private fun windowSubtitle(state: StatsViewModel.State): String {
     val earliest = state.earliest
+    state.review?.let { return if (it.finished) "${it.year}, the whole year" else "${it.year} so far" }
     return if (state.window == StatsWindow.ALL && earliest != null) {
         "Since " + java.time.Instant.ofEpochMilli(earliest)
             .atZone(java.time.ZoneId.systemDefault()).toLocalDate()

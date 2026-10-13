@@ -76,12 +76,12 @@ fun RecapPoster(
     ) {
         Column {
             Text(
-                state.window.label.uppercase(),
+                state.periodLabel.uppercase(),
                 color = palette.swatch(1), fontFamily = MonoFont,
                 fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 1.4.sp,
             )
             Text(
-                "In sound",
+                if (state.review != null) "Year in review" else "In sound",
                 color = TextPrimary, fontFamily = AppFont,
                 fontWeight = FontWeight.ExtraBold, fontSize = 32.sp, letterSpacing = (-1).sp,
             )
@@ -120,6 +120,27 @@ fun RecapPoster(
             }
         }
 
+        // A year's poster carries its song as well as its artists: over twelve months
+        // the one track that kept coming back is the thing people remember.
+        state.review?.topTracks?.firstOrNull()?.let { song ->
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Label("Song of the year")
+                Text(
+                    song.title,
+                    color = TextPrimary, fontFamily = AppFont,
+                    fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                if (song.artist.isNotBlank()) {
+                    Text(
+                        "${song.artist} · ${song.plays} plays",
+                        color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
         // The half only this app can draw: key and tempo, measured here.
         val key = state.dominantKeys.firstOrNull()
         val bpm = state.bpmHistogram.maxByOrNull { it.second }
@@ -136,7 +157,9 @@ fun RecapPoster(
                     Figure("${state.longestStreakDays}", "day streak")
                 }
                 state.losslessShare?.let {
-                    Figure("${(it * 100).toInt()}%", "lossless")
+                    // The overview's formatter: truncating here put 68% on the poster
+                    // under an overview that said 69%.
+                    Figure(com.engabd.sendpin.ui.viewmodel.formatShare(it), "lossless")
                 }
             }
         }

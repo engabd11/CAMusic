@@ -3,12 +3,14 @@ package com.engabd.sendpin.ui.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.engabd.sendpin.local.db.AlbumPlayCount
 import com.engabd.sendpin.local.db.ArtistPlayCount
 import com.engabd.sendpin.local.db.DayTotals
 import com.engabd.sendpin.local.db.FormatPlayCount
 import com.engabd.sendpin.local.db.HourCell
 import com.engabd.sendpin.local.db.KeyPlayCount
 import com.engabd.sendpin.local.db.LocalMediaDatabase
+import com.engabd.sendpin.local.db.MonthTotals
 import com.engabd.sendpin.local.db.ProviderPlayCount
 import com.engabd.sendpin.local.db.TempoEnergyPoint
 import com.engabd.sendpin.local.db.TrackPlayCount
@@ -16,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 import kotlin.math.ln
 import kotlin.math.roundToInt
@@ -31,11 +35,49 @@ enum class StatsWindow(val label: String, val days: Int) {
     fun since(now: Long): Long = if (days == 0) 0L else now - days * 24L * 60 * 60 * 1000
 }
 
+/**
+ * A calendar year in the local zone, as the window `[1 January, next 1 January)`.
+ * The same local zone the queries' `strftime(..., 'localtime')` uses, so a play
+ * at 11pm on New Year's Eve counts for the year its listener was in.
+ */
+internal fun yearBounds(year: Int, zone: ZoneId = ZoneId.systemDefault()): Pair<Long, Long> =
+    LocalDate.of(year, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli() to
+        LocalDate.of(year + 1, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()
+
+/** All twelve months, January first, with a zero row for any month that had no plays. */
+internal fun fillMonths(rows: List<MonthTotals>): List<MonthTotals> {
+    val byMonth = rows.associateBy { it.month }
+    return (1..12).map { byMonth[it] ?: MonthTotals(it, 0, 0L) }
+}
+
+/** Short month labels for the year in review, index 0 = January. */
+val MONTH_LABELS = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
 class StatsViewModel(app: Application) : AndroidViewModel(app) {
+
+    /** What only a calendar year is asked: its shape by month, and its favourites. */
+    data class YearReview(
+        val year: Int,
+        /** Twelve rows, January first; a month with no plays is a zero row. */
+        val months: List<MonthTotals>,
+        val topTracks: List<TrackPlayCount>,
+        val topAlbums: List<AlbumPlayCount>,
+        /** The month with the most listening time, 1 = January. Null with no time logged. */
+        val busiestMonth: Int?,
+        /** The single day with the most listening time. */
+        val biggestDay: DayTotals?,
+        /** False while the year is still running: the figures are "so far". */
+        val finished: Boolean,
+    )
 
     data class State(
         val loading: Boolean = true,
         val window: StatsWindow = StatsWindow.WEEK,
+        /** A calendar year being reviewed instead of [window]. */
+        val year: Int? = null,
+        /** Every year with a play in it, newest first, for the year pills. */
+        val years: List<Int> = emptyList(),
+        val review: YearReview? = null,
         val topArtists: List<ArtistPlayCount> = emptyList(),
         val totalListeningMs: Long = 0,
         val plays: Int = 0,
@@ -66,7 +108,10 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         val earliest: Long? = null,
         /** The history could not be read; the screen offers a retry. */
         val error: String? = null,
-    )
+    ) {
+        /** What the page is showing: "7 days", "All time" or "2025". */
+        val periodLabel: String get() = year?.toString() ?: window.label
+    }
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
@@ -76,8 +121,15 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
     init { refresh() }
 
     fun setWindow(w: StatsWindow) {
-        if (w == _state.value.window) return
-        _state.value = _state.value.copy(window = w)
+        if (w == _state.value.window && _state.value.year == null) return
+        _state.value = _state.value.copy(window = w, year = null)
+        refresh()
+    }
+
+    /** Review one calendar year instead of a rolling window. */
+    fun setYear(year: Int) {
+        if (year == _state.value.year) return
+        _state.value = _state.value.copy(year = year)
         refresh()
     }
 
@@ -100,37 +152,58 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun load() {
         run {
             val window = _state.value.window
+            val year = _state.value.year
             _state.value = _state.value.copy(loading = true, error = null)
-            val since = window.since(System.currentTimeMillis())
+            val now = System.currentTimeMillis()
+            // A rolling window runs to now and beyond (a play logged while this loads
+            // still counts); a year is bounded at both ends.
+            val (since, until) = if (year != null) yearBounds(year) else window.since(now) to Long.MAX_VALUE
 
-            val artists = dao.topArtists(since, limit = 12)
-            val daily = dao.dailyTotals(since)
-            val completions = dao.completions(since)
-            val formats = dao.formatBreakdown(since)
-            val distinct = dao.distinctArtists(since)
-            val plays = dao.playCount(since)
+            val artists = dao.topArtists(since, until, limit = 12)
+            val daily = dao.dailyTotals(since, until)
+            val completions = dao.completions(since, until)
+            val formats = dao.formatBreakdown(since, until)
+            val distinct = dao.distinctArtists(since, until)
+            val plays = dao.playCount(since, until)
+
+            val review = if (year == null) null else {
+                val months = fillMonths(dao.monthlyTotals(since, until))
+                YearReview(
+                    year = year,
+                    months = months,
+                    topTracks = dao.topTracks(since, until, limit = 5),
+                    topAlbums = dao.topAlbums(since, until, limit = 5),
+                    busiestMonth = months.filter { it.listenedMs > 0 }.maxByOrNull { it.listenedMs }?.month,
+                    biggestDay = daily.filter { it.listenedMs > 0 }.maxByOrNull { it.listenedMs },
+                    finished = until <= now,
+                )
+            }
 
             _state.value = State(
                 loading = false,
                 window = window,
+                year = year,
+                years = dao.yearsWithPlays(),
+                review = review,
                 topArtists = artists,
-                totalListeningMs = dao.totalListeningMs(since),
+                totalListeningMs = dao.totalListeningMs(since, until),
                 plays = plays,
-                mostPlayed = dao.mostPlayedTrack(since),
+                mostPlayed = dao.mostPlayedTrack(since, until),
                 formats = formats,
-                sources = dao.sourceBreakdown(since),
-                timeBySource = dao.timeBySource(since),
-                dominantKeys = dao.keyDistribution(since).map { it.label() to it.plays },
-                bpmHistogram = bpmHistogram(dao.bpmSamples(since)),
-                clock = dao.listeningClock(since),
+                sources = dao.sourceBreakdown(since, until),
+                timeBySource = dao.timeBySource(since, until),
+                dominantKeys = dao.keyDistribution(since, until).map { it.label() to it.plays },
+                bpmHistogram = bpmHistogram(dao.bpmSamples(since, until)),
+                clock = dao.listeningClock(since, until),
                 daily = daily,
-                tempoEnergy = dao.tempoEnergy(since),
+                tempoEnergy = dao.tempoEnergy(since, until),
                 distinctArtists = distinct,
-                newArtists = if (since == 0L) distinct else dao.newArtists(since),
+                newArtists = if (since == 0L) distinct else dao.newArtists(since, until),
                 diversityBits = artistEntropy(artists),
                 maxDiversityBits = if (distinct > 1) ln(distinct.toFloat()) / LN2 else 0f,
                 longestStreakDays = longestStreak(daily.map { it.day }),
-                currentStreakDays = currentStreak(daily.map { it.day }),
+                // A finished year has no streak still going, whatever its last days were.
+                currentStreakDays = if (until > now) currentStreak(daily.map { it.day }) else 0,
                 medianCompletion = medianCompletion(completions),
                 losslessShare = losslessShare(formats),
                 earliest = dao.earliest(),
