@@ -4,7 +4,8 @@ Build the offline speed-limit database CAMusic ships as an app asset.
 
 Input is Transport Victoria's open "Speed Zones" GeoJSON export (~454 MB, a
 FeatureCollection of MultiLineString features). Output is the SQLite file that
-service/SpeedLimitDatabase.kt queries, plus a gzip of it for the APK.
+service/SpeedLimitDatabase.kt queries, plus the xz of it the APK carries
+(app/src/mobile/assets/speed_zones.sqlite3.xz).
 
     python tools/build_speed_db.py <input.geojson> <output.sqlite3> [--version july_2026]
 
@@ -28,8 +29,8 @@ reader's 30 m match threshold could detect:
     centrelines in this export are densely sampled and mostly straight.
 """
 
-import gzip
 import json
+import lzma
 import math
 import os
 import sqlite3
@@ -290,21 +291,26 @@ def main():
     db.close()
 
     raw_mb = os.path.getsize(dst) / 1e6
+    # xz, not gzip: 20 MB against gzip's 38 MB for the July 2026 data. Preset 7
+    # keeps the dictionary at 16 MiB, which is what the phone's decoder allocates
+    # in one array; preset 8 or 9 would save another 2-3 MB for a 32-64 MiB one.
+    # The app unpacks it once, off the main thread (SpeedLimitDatabase.expandAsset).
     with open(dst, "rb") as fin:
-        with gzip.open(dst + ".gz", "wb", compresslevel=9) as fout:
+        with lzma.open(dst + ".xz", "wb", format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC64,
+                       preset=7 | lzma.PRESET_EXTREME) as fout:
             while True:
                 block = fin.read(1 << 20)
                 if not block:
                     break
                 fout.write(block)
-    gz_mb = os.path.getsize(dst + ".gz") / 1e6
+    xz_mb = os.path.getsize(dst + ".xz") / 1e6
 
     kept = 100.0 * points_out / max(points_in, 1)
     print("")
     print("zones      {:,}   (skipped {:,})".format(zone_id, skipped))
     print("points     {:,} -> {:,}  ({:.0f}% kept)".format(points_in, points_out, kept))
     print("sqlite     {:,.1f} MB".format(raw_mb))
-    print("gzip       {:,.1f} MB   <- the APK cost".format(gz_mb))
+    print("xz         {:,.1f} MB   <- the APK cost".format(xz_mb))
     print("elapsed    {:.0f}s".format(time.time() - t0))
 
 

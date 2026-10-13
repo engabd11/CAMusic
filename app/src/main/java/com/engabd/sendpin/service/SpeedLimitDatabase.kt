@@ -20,6 +20,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.GZIPInputStream
+import org.tukaani.xz.XZInputStream
 
 /**
  * Manages the offline speed-limit SQLite database on the device.
@@ -32,22 +33,16 @@ import java.util.zip.GZIPInputStream
  *    as little-endian int32 microdegree (lon, lat) pairs
  *  - `meta` — version, source, generation date
  *
- * The database **ships with the app**. `app/src/mobile/assets/speed_zones.sqlite3.gz` (mobile only: TV never
- * starts the speed monitor, so it no longer carries the 36 MB)
- * is what is committed (in git-lfs), but the asset this code opens is called
- * `speed_zones.sqlite3`, without the suffix, and arrives already expanded:
- * **AGP's asset merger gunzips any `.gz` under `assets/` at build time.** The gzip
- * is purely a way to keep 78 MB out of the git history — AAPT then deflates it back
- * down to ~39 MB inside the APK on its own, and neither end needs a
- * `GZIPInputStream`. The proof that the merge step is real is in `.github/workflows`:
- * a checkout without `lfs: true` fails at `mergeAssets` with "Not in GZIP format",
- * because the merger tried to gunzip a 130-byte pointer file.
+ * The database **ships with the app**, as `app/src/mobile/assets/speed_zones.sqlite3.xz`
+ * (mobile only: TV never starts the speed monitor), in git-lfs. xz rather than the gzip
+ * it used to be: 20 MB in the APK instead of 38 MB for the same 78 MB database. AGP's
+ * asset merger gunzipped a `.gz` at build time and AAPT deflated it back, so the old
+ * asset reached the phone plain; an `.xz` is left as it is (and stored, not deflated
+ * again - `noCompress` in app/build.gradle.kts), and [unpack] decodes it on the phone.
  *
- * So the missing suffix is correct and must not be "fixed". [expandAsset] does now
- * accept either name and gunzips or does not according to the bytes rather than the
- * suffix — see [ASSET_NAMES] and [GZIP_MAGIC] — but that is belt-and-braces against
- * a build-tool behaviour this code cannot see and does not control, not a fix for
- * anything that was failing.
+ * [expandAsset] still finds the asset under any of [ASSET_NAMES] and decides how to
+ * read it from its first bytes rather than its name, so a build carrying the older
+ * plain or gzip asset keeps working.
  *
  * It is copied into the app's files directory once, the first time driving mode
  * actually needs it - not at install time, and never on the main thread. SQLite
@@ -186,7 +181,7 @@ class SpeedLimitDatabase(context: Context) {
                 return
             }
             opened.use { raw ->
-                decompressIfGzipped(raw).use { input ->
+                unpack(raw).use { input ->
                     FileOutputStream(tmp).use { output -> input.copyTo(output) }
                 }
             }
@@ -206,6 +201,12 @@ class SpeedLimitDatabase(context: Context) {
             // mean the same thing to the caller, which is that auto-detect has no
             // data and the manual limit stands. The message is for the driver.
             _failure.value = "Speed-limit data could not be unpacked (${e.javaClass.simpleName})."
+            runCatching { tmp.delete() }
+        } catch (e: OutOfMemoryError) {
+            // The xz decoder allocates its 16 MiB dictionary in one array. A phone that
+            // cannot spare it gets the manual limit and a reason, not a crash, and the
+            // next start tries again.
+            _failure.value = "Not enough free memory to unpack speed-limit data. It will try again next time."
             runCatching { tmp.delete() }
         }
     }
@@ -420,29 +421,38 @@ class SpeedLimitDatabase(context: Context) {
         }
 
         /**
-         * Where the bundled database might be, most-likely first.
-         *
-         * The plain name is what a normal build produces, because AGP's asset merger
-         * has already gunzipped the committed `.gz` — see the class doc. The `.gz`
-         * name is a fallback for a build that did not, and costs one failed
-         * `assets.open` when it is not needed.
+         * Where the bundled database might be, most-likely first: the `.xz` this build
+         * ships, then the plain name an older build's gzip asset arrived under (AGP's
+         * merger gunzipped it), then the `.gz` itself. Each miss costs one failed
+         * `assets.open`.
          */
-        val ASSET_NAMES = listOf("speed_zones.sqlite3", "speed_zones.sqlite3.gz")
+        val ASSET_NAMES = listOf("speed_zones.sqlite3.xz", "speed_zones.sqlite3", "speed_zones.sqlite3.gz")
 
         /**
-         * The stream, gunzipped if it is gzip.
-         *
-         * Sniffed rather than assumed. `AssetManager.open` already undoes the APK's own
-         * deflate, so what arrives here is whatever was committed — and that is the
-         * thing worth checking, because the committed file's name and the committed
-         * file's format have disagreed once already.
+         * The xz decoder's memory ceiling, in KiB. The asset is built with a 16 MiB
+         * dictionary (tools/build_speed_db.py, preset 7); this refuses anything that
+         * would ask for more than 64 MiB rather than trying to allocate it.
          */
-        internal fun decompressIfGzipped(raw: InputStream): InputStream {
+        private const val XZ_MEMORY_LIMIT_KIB = 64 * 1024
+
+        /**
+         * The stream, decoded if it is xz or gzip, as it is if it is neither.
+         *
+         * Sniffed rather than assumed from the name: `AssetManager.open` already undoes
+         * any deflate the APK applied, so what arrives is whatever was committed, and
+         * the committed file's name and format have disagreed once already.
+         */
+        internal fun unpack(raw: InputStream): InputStream {
             val buffered = BufferedInputStream(raw)
-            buffered.mark(GZIP_MAGIC.size)
-            val head = readExactly(buffered, GZIP_MAGIC.size)
+            buffered.mark(XZ_MAGIC.size)
+            val head = readExactly(buffered, XZ_MAGIC.size)
             buffered.reset()
-            return if (head != null && head.contentEquals(GZIP_MAGIC)) GZIPInputStream(buffered) else buffered
+            return when {
+                head != null && head.contentEquals(XZ_MAGIC) ->
+                    BufferedInputStream(XZInputStream(buffered, XZ_MEMORY_LIMIT_KIB), 1 shl 16)
+                head != null && head.copyOf(GZIP_MAGIC.size).contentEquals(GZIP_MAGIC) -> GZIPInputStream(buffered)
+                else -> buffered
+            }
         }
 
         /**
@@ -476,8 +486,11 @@ class SpeedLimitDatabase(context: Context) {
             return buffer
         }
 
-        /** gzip's two-byte header. See [decompressIfGzipped]. */
+        /** gzip's two-byte header. See [unpack]. */
         private val GZIP_MAGIC = byteArrayOf(0x1f, 0x8b.toByte())
+
+        /** xz's six-byte header, FD '7zXZ' 00. See [unpack]. */
+        private val XZ_MAGIC = byteArrayOf(0xFD.toByte(), 0x37, 0x7A, 0x58, 0x5A, 0x00)
 
         /** The first six bytes of `SQLite format 3\u0000`. See [looksLikeSqlite]. */
         private val SQLITE_MAGIC = "SQLite".toByteArray(Charsets.US_ASCII)

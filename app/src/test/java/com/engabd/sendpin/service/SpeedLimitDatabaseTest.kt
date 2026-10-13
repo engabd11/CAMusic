@@ -13,6 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlin.test.assertFailsWith
 
 /**
  * The wire format between `tools/build_speed_db.py` and the speed-limit reader.
@@ -136,11 +137,40 @@ class SpeedLimitDatabaseTest {
         return out.toByteArray()
     }
 
+    private fun xz(bytes: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        org.tukaani.xz.XZOutputStream(out, org.tukaani.xz.LZMA2Options(7)).use { it.write(bytes) }
+        return out.toByteArray()
+    }
+
+    @Test
+    fun `an xz stream is expanded`() {
+        // What this build ships. Long and repetitive enough to make the encoder emit
+        // real LZMA2 chunks rather than a stored block.
+        val payload = ("SQLite format 3\u0000" + "zone,segment,".repeat(20_000)).toByteArray()
+
+        val out = SpeedLimitDatabase.unpack(ByteArrayInputStream(xz(payload))).use { it.readBytes() }
+
+        assertArrayEquals(payload, out)
+    }
+
+    @Test
+    fun `a truncated xz stream fails rather than producing a short database`() {
+        val packed = xz(("SQLite format 3\u0000" + "x".repeat(50_000)).toByteArray())
+        val cut = packed.copyOf(packed.size / 2)
+
+        // expandAsset turns this exception into the driver-facing failure message and
+        // never renames the half-written temp file into place.
+        assertFailsWith<java.io.IOException> {
+            SpeedLimitDatabase.unpack(ByteArrayInputStream(cut)).use { it.readBytes() }
+        }
+    }
+
     @Test
     fun `a gzipped stream is expanded`() {
         val payload = "SQLite format 3\u0000and then some".toByteArray()
 
-        val out = SpeedLimitDatabase.decompressIfGzipped(ByteArrayInputStream(gzip(payload)))
+        val out = SpeedLimitDatabase.unpack(ByteArrayInputStream(gzip(payload)))
             .use { it.readBytes() }
 
         assertArrayEquals(payload, out)
@@ -152,7 +182,7 @@ class SpeedLimitDatabaseTest {
         // gunzipped the committed file, so what arrives is the database itself.
         val payload = "SQLite format 3\u0000plain".toByteArray()
 
-        val out = SpeedLimitDatabase.decompressIfGzipped(ByteArrayInputStream(payload))
+        val out = SpeedLimitDatabase.unpack(ByteArrayInputStream(payload))
             .use { it.readBytes() }
 
         assertArrayEquals(payload, out)
@@ -160,7 +190,7 @@ class SpeedLimitDatabaseTest {
 
     @Test
     fun `a stream too short to hold a magic number is passed through, not dropped`() {
-        val out = SpeedLimitDatabase.decompressIfGzipped(ByteArrayInputStream(byteArrayOf(0x1f)))
+        val out = SpeedLimitDatabase.unpack(ByteArrayInputStream(byteArrayOf(0x1f)))
             .use { it.readBytes() }
 
         assertArrayEquals(byteArrayOf(0x1f), out)

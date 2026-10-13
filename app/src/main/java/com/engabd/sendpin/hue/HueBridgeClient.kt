@@ -141,11 +141,18 @@ class HueBridgeClient(
      * that one trusts only Signify's private bridge roots and checks the CN
      * against a bridge id, neither of which applies to a public web service
      * with an ordinary certificate.
+     *
+     * Lazy: this client is built with the light-sync graph at app start, and an
+     * OkHttpClient's first construction sets up the platform's TLS on the main thread
+     * (StrictMode's slowest report at launch), all for a bridge search that most
+     * launches never run.
      */
-    private val cloudHttp = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
-        .build()
+    private val cloudHttp by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .build()
+    }
 
     private var nsdManager: NsdManager? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
