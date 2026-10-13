@@ -7,7 +7,8 @@ git clone https://github.com/engabd11/CAMusic.git
 cd CAMusic
 ./gradlew assembleMobileDebug          # phone and tablet
 ./gradlew assembleTvDebug              # Android TV
-./gradlew testMobileDebugUnitTest      # the unit tests
+./gradlew testMobileDebugUnitTest      # the app's unit tests
+./gradlew testDebugUnitTest            # :core's and every provider module's unit tests
 ```
 
 CI runs both flavours' unit tests, `lintMobileDebug` and `lintTvDebug`, and builds the debug

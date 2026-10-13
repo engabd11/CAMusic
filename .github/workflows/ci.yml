@@ -41,6 +41,14 @@ jobs:
           ./gradlew :app:testMobileDebugUnitTest
           ./gradlew :app:testTvDebugUnitTest
 
+      # :core and the :providers:* modules have no flavours, so their tests answer to
+      # the plain name. Run from the root it reaches every library module; :app has
+      # no task by that name and is covered by the two steps above.
+      - name: Run library module unit tests
+        run: ./gradlew testDebugUnitTest
+
+      # The app's lint has checkDependencies = true, so these also check :core and the
+      # :providers:* modules.
       - name: Run lint
         run: ./gradlew :app:lintMobileDebug :app:lintTvDebug
 
