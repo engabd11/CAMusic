@@ -101,6 +101,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <!--
+      Updating from Settings > About (update/AppUpdater.kt): hands a release APK
+      downloaded from GitHub to Android's PackageInstaller. Inert until the user
+      allows "Install unknown apps" for CAMusic, which the About page asks for at the
+      moment it is needed; Android shows its own confirmation for every install.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
       Android Auto. Not required for Auto to bind to CarMediaLibraryService (Auto
       queries this app, not the other way round) - only for this app's own code to
       be able to ask PackageManager whether Gearhead is installed, under Android
@@ -388,6 +396,15 @@
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </receiver>
+
+        <!--
+          The in-app update's install session reports here: Android's confirmation
+          dialog, then the outcome. Only ever addressed by an explicit PendingIntent
+          from AppUpdater, so not exported.
+        -->
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false" />
 
         <!-- Headset / Bluetooth / steering-wheel media buttons now route through
              each service's media3 MediaSession directly (see ShadePlayer /

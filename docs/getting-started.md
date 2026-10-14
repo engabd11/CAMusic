@@ -9,6 +9,12 @@ Install, first run and what you need. [Back to the README](../README.md).
 3. Start listening. A server address is the whole of it, and for Music Assistant, Jellyfin,
    Emby, Plex and MPD the setup screen finds the server on your network for you.
 
+**Updating:** Settings, System, Storage & About, About, then **Check for updates**. It asks
+GitHub for the latest release only when you tap it, downloads the APK for your device (phone
+or TV), checks it against the release's checksum and signing key, and hands it to Android,
+which asks you to confirm. The first time, Android also asks you to allow CAMusic to install
+apps. Your settings and library stay. Installing the APK from Releases by hand still works.
+
 **Requirements:** Android 12 or newer. Any Subsonic, Jellyfin, Emby, Plex, MPD, foobar2000
 (with Beefweb) or Music Assistant server for the library, or a Spotify Premium, Qobuz or Tidal
 account, a Hue bridge with an entertainment area for Light Sync, a Music Assistant server for
