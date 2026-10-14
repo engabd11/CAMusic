@@ -106,6 +106,9 @@ const val INTENSITY_AUTO = "auto"
 /** Minimum gap between repeats of a per-frame warning. See `logThrottled`. */
 private const val LOG_THROTTLE_MS = 5000L
 
+/** How long the delay queue may return nothing, while the music show renders, before [DirectLightSync] says so. */
+private const val HELD_LOG_AFTER_NANOS = 2_000_000_000L
+
 /**
  * Consecutive failed sends before the session is rebuilt. Half a second at
  * 60 Hz — long enough that a single dropped datagram is ignored, short enough
@@ -580,7 +583,7 @@ class DirectLightSync(
     /** Set the brightness ceiling on the engine and on the layer chain together. */
     private fun applyBrightness(fraction: Float) {
         val clamped = fraction.coerceIn(0f, 1f)
-        engine?.brightness = clamped
+        onRenderThread { engine?.brightness = clamped }
         layerBrightness = clamped
         // An ambience show bypasses the engine entirely, so it needs telling
         // separately or the ceiling would apply to music and not to effects.
@@ -1085,6 +1088,7 @@ class DirectLightSync(
         stopAmbience()
         _outage.value = false
         if (!running.getAndSet(false)) return@withContext
+        Log.i(TAG, "Direct Light Sync stopped")
         cleanup()
     }
 
@@ -1143,8 +1147,10 @@ class DirectLightSync(
         }
         // Both limiters start clean, or a per-channel value held from the music show
         // would leak into the first frames of the effect.
-        rateLimiter.reset()
-        safety?.reset()
+        onRenderThread {
+            rateLimiter.reset()
+            safety?.reset()
+        }
         ambience = session
         _ambienceRunning.value = effect.wire
         true
@@ -1158,11 +1164,13 @@ class DirectLightSync(
         ambience = null
         _ambienceRunning.value = null
         runCatchingCancellable { session.stop() }
-        rateLimiter.reset()
-        safety?.reset()
-        // A queue still holding frames from before the effect would replay them into
-        // the music show that resumes after it.
-        delayQueue.clear()
+        onRenderThread {
+            rateLimiter.reset()
+            safety?.reset()
+            // A queue still holding frames from before the effect would replay them
+            // into the music show that resumes after it.
+            delayQueue.clear()
+        }
         idleStartS = -1f
         idleT = 0f
         if (ambienceOwnsSession) {
@@ -1195,6 +1203,10 @@ class DirectLightSync(
 
         renderJob?.cancel(); renderJob = null
         keepaliveJob?.cancel(); keepaliveJob = null
+        // Anything still queued for that loop describes the session that is ending;
+        // [start] seeds the next one from settings, so replaying it there could only
+        // put something stale back (an earlier track's palette, say).
+        renderInbox.clear()
 
         // Nothing is choosing a rung with the loop gone, and a level left on screen
         // over a dark room is the kind of stale reading `framesFresh` exists to
@@ -1437,7 +1449,10 @@ class DirectLightSync(
         // that was playing, and a new track is not that audio. Each layer
         // decides what of its own state is per-track and what outlives it —
         // Phantom Stage's room layout, for instance, deliberately survives.
-        layerChain.reset()
+        //
+        // On the render thread: this callback runs on the analysis thread, and the
+        // layers' state is plain maps that [renderLoop] is reading at the time.
+        onRenderThread { layerChain.reset() }
     }
 
     // ── Render loop ─────────────────────────────────────────────────────────
@@ -1459,10 +1474,46 @@ class DirectLightSync(
      * (a GC pause, a thread starved by the decoder) resumes rather than jumping
      * the animation forward by however long it was gone.
      */
+    /**
+     * Changes to the show's state from other threads, run by [renderLoop] at the top
+     * of its next tick.
+     *
+     * The engine, the limiters, the picker and the layer chain are plain objects
+     * (maps, arrays, running sums) that only the render loop is meant to touch. But
+     * settings collectors, the track-change collector and the analysis thread all
+     * used to reach in directly, in the middle of a frame. Two of those races match
+     * "the lights stay connected but stop following the music": an intensity change
+     * resetting the rate limiter inside `process()`, and a track change resetting the
+     * layers inside `apply()`. Funnelling every such change through here makes the
+     * render thread the only one that ever writes them.
+     *
+     * Run inline while no render loop is up: nothing is reading then, and [start]
+     * seeds the next session from settings anyway.
+     */
+    private val renderInbox = java.util.concurrent.ConcurrentLinkedQueue<() -> Unit>()
+
+    private fun onRenderThread(action: () -> Unit) {
+        if (renderJob?.isActive == true) renderInbox.add(action) else action()
+    }
+
+    private fun drainRenderInbox() {
+        while (true) {
+            val action = renderInbox.poll() ?: return
+            try {
+                action()
+            } catch (e: Exception) {
+                logThrottled("Show update failed: ${e.message}")
+            }
+        }
+    }
+
     private suspend fun renderLoop() {
         var last = System.nanoTime()
         var next = last
         idlePacer = IdlePacer(FRAME_PERIOD_NANOS)
+        tracedFresh = null
+        heldSince = 0L
+        heldLogged = false
         render@ while (running.get()) {
             val period = idlePacer.frameNanos
             next += period
@@ -1472,6 +1523,7 @@ class DirectLightSync(
             // on a backlog of deadlines nobody is waiting for.
             if (System.nanoTime() - next > period * 4) next = System.nanoTime()
             if (!running.get()) break
+            drainRenderInbox()
 
             val now = System.nanoTime()
             val dt = ((now - last) / 1e9f).coerceIn(0f, idlePacer.maxStepS(MAX_STEP_S))
@@ -1540,6 +1592,7 @@ class DirectLightSync(
             val frame = if (fresh) latestFrame ?: SILENCE else SILENCE
             val isIdle = !playerPlaying || !fresh
             if (_framesFresh.value != fresh) _framesFresh.value = fresh
+            traceFrames(fresh, now)
             // An ambience show returned above, so this only ever sees the music
             // show and its idle drift. See IdlePacer for what "deep" gives up.
             if (idlePacer.onFrame(isIdle, now)) {
@@ -1573,7 +1626,9 @@ class DirectLightSync(
                 delayQueue.updateDelay(leadMs, dt)
             }
             delayQueue.offer(colours, now)
-            val held = delayQueue.poll(now) ?: continue
+            val held = delayQueue.poll(now)
+            traceHeld(held == null && !isIdle, now)
+            if (held == null) continue
 
             // The creative light-show layers — see `docs/creative-light-shows.md`.
             // Skipped while idle: `frame` is SILENCE and `activeScan`/
@@ -1762,7 +1817,7 @@ class DirectLightSync(
                 lastAlbumColours = colours
                 lastAlbumWeights = weights
                 if (!url.isNullOrBlank()) lastGoodArtUrl = url
-                engine?.setAlbumColors(colours.colors, weights)
+                onRenderThread { engine?.setAlbumColors(colours.colors, weights) }
                 return@withContext
             }
         }
@@ -1819,7 +1874,7 @@ class DirectLightSync(
             // for dwell-time-faithful hold-and-crossfade sampling.
             val paletteWeights = if (scheme == ColorScheme.ALBUM_ART) null else extracted.weights
             lastAlbumWeights = paletteWeights
-            engine?.setAlbumColors(extracted.colors, paletteWeights)
+            onRenderThread { engine?.setAlbumColors(extracted.colors, paletteWeights) }
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
@@ -1878,7 +1933,7 @@ class DirectLightSync(
         lastAlbumColours = null
         lastAlbumWeights = null
         lastGoodArtUrl = null
-        engine?.setAlbumColors(emptyList())
+        onRenderThread { engine?.setAlbumColors(emptyList()) }
     }
 
     /**
@@ -2042,6 +2097,51 @@ class DirectLightSync(
      * network or a persistent render fault would otherwise emit 60 identical
      * lines a second and bury whatever else is in logcat.
      */
+    // ── Diagnostics ────────────────────────────────────────────────────────
+    //
+    // "The lights stay on but stop following the song after a track change" left
+    // nothing in the log to say which stage had stopped, because every stage on the
+    // way is silent while it works. These lines are transition-only — each says one
+    // stage changed state — so a healthy session logs nothing extra, and a log taken
+    // when the show freezes names the stage: the audio frames (tap), the playing
+    // flag, the feed choice, or the delay queue.
+
+    /** Last frame freshness logged by [traceFrames]; null until the first frame. */
+    private var tracedFresh: Boolean? = null
+
+    /** When the delay queue last started returning nothing; 0 while it releases frames. */
+    private var heldSince = 0L
+    private var heldLogged = false
+
+    private fun traceFrames(fresh: Boolean, now: Long) {
+        val was = tracedFresh
+        if (was == fresh) return
+        tracedFresh = fresh
+        if (was == null) return
+        val src = activeSource.value
+        if (fresh) {
+            Log.i(TAG, "Show: audio frames resumed (feed=${src.feed}, playing=$playerPlaying)")
+        } else {
+            val agoMs = (now - latestFrameAt) / 1_000_000L
+            Log.i(TAG, "Show: audio frames stopped (feed=${src.feed}, playing=$playerPlaying, last ${agoMs} ms ago, lead=${src.lead.leadMs})")
+        }
+    }
+
+    /** [stalled]: the music show produced a frame this tick and nothing came out of the queue. */
+    private fun traceHeld(stalled: Boolean, now: Long) {
+        if (!stalled) {
+            if (heldLogged) Log.i(TAG, "Show: delay queue releasing frames again (delay ${delayQueue.delayMs.toInt()} ms)")
+            heldSince = 0L
+            heldLogged = false
+            return
+        }
+        if (heldSince == 0L) heldSince = now
+        if (!heldLogged && now - heldSince > HELD_LOG_AFTER_NANOS) {
+            heldLogged = true
+            Log.w(TAG, "Show: nothing out of the delay queue for 2 s (delay ${delayQueue.delayMs.toInt()} ms, lead ${effectiveLeadMs()} ms)")
+        }
+    }
+
     private fun logThrottled(message: String) {
         val now = System.nanoTime()
         if (now - lastLogAt < LOG_THROTTLE_MS * 1_000_000L) return
@@ -2254,18 +2354,27 @@ class DirectLightSync(
     private fun observeSettings() {
         scope.launch {
             settings.lightSyncIntensity.collect { wire ->
-                autoIntensity = wire == INTENSITY_AUTO
-                if (autoIntensity) {
-                    // Let the picker choose from the next frame rather than
-                    // holding whatever rung was showing when Auto was selected.
-                    picker.reset()
-                    _autoLevel.value = null
-                } else {
-                    val mode = SyncMode.fromWire(wire)
-                    engine?.mode = mode
-                    selectLimiter(mode)
-                    // Nothing is being chosen any more, and a stale rung under a
-                    // fixed level would read as Auto still running.
+                // On the render thread, all of it. This collector used to swap the
+                // limiter and the engine's mode from its own thread while
+                // [renderLoop] was half way through using them, which is how moving
+                // the level from Auto to Intense mid-song could leave the room held:
+                // a `rateLimiter.reset()` landing inside `process()` can keep channels
+                // whose last reversal is stamped in the future, and every change of
+                // direction is then refused until the clock catches up.
+                onRenderThread {
+                    autoIntensity = wire == INTENSITY_AUTO
+                    if (autoIntensity) {
+                        // Let the picker choose from the next frame rather than
+                        // holding whatever rung was showing when Auto was selected.
+                        picker.reset()
+                    } else {
+                        val mode = SyncMode.fromWire(wire)
+                        engine?.mode = mode
+                        selectLimiter(mode)
+                    }
+                    // Under a fixed level nothing is being chosen any more, and a stale
+                    // rung would read as Auto still running; under Auto the picker
+                    // publishes its own on the next frame.
                     _autoLevel.value = null
                 }
             }
@@ -2285,13 +2394,13 @@ class DirectLightSync(
                 autoLevels = wires.mapNotNull { w -> SyncMode.entries.firstOrNull { it.wire == w } }
                     .ifEmpty { DEFAULT_AUTO_LEVELS }
                 // A checklist change should feel immediate, not wait out a dwell.
-                picker.allowImmediateRepick()
+                onRenderThread { picker.allowImmediateRepick() }
             }
         }
         scope.launch {
             settings.lightSyncColor.collect { wire ->
                 val scheme = ColorScheme.fromWire(wire)
-                engine?.setScheme(scheme)
+                onRenderThread { engine?.setScheme(scheme) }
                 // Switching between album_art (v1/even) and album_art_v2
                 // (v2/weighted) changes the extraction algorithm. Re-extract
                 // the cached cover with the right one so the room reads the
@@ -2371,7 +2480,16 @@ class DirectLightSync(
         // change that arrives before that is exactly what wiredTap == null /
         // running == false already handles safely.
         scope.launch {
-            activeSource.collect { source -> if (running.get()) rewireTap(source) }
+            var lastFeed: LightSyncFeed? = null
+            activeSource.collect { source ->
+                if (!running.get()) return@collect
+                if (source.feed != lastFeed) {
+                    if (lastFeed != null) Log.i(TAG, "Show: feed $lastFeed -> ${source.feed}")
+                    lastFeed = source.feed
+                }
+                if (wiredTap != null && wiredTap !== source.tap) Log.i(TAG, "Show: rewiring to a new analysis tap")
+                rewireTap(source)
+            }
         }
         // A scan that lands while its own track is still inside the adoption
         // window is adopted right away, which is what makes the very first play
@@ -2392,7 +2510,7 @@ class DirectLightSync(
         scope.launch {
             settings.lightSyncTunables.collect { tunables ->
                 activeTunables = tunables
-                engine?.setTunables(tunables)
+                onRenderThread { engine?.setTunables(tunables) }
             }
         }
         scope.launch {
@@ -2417,6 +2535,9 @@ class DirectLightSync(
         }
         scope.launch {
             isPlaying.collect { playing ->
+                if (playing != playerPlaying && running.get()) {
+                    Log.i(TAG, "Show: player ${if (playing) "playing" else "not playing"}")
+                }
                 playerPlaying = playing
                 // Music starting ends an ambience show. Handled here rather than in the
                 // Effects screen because most ways music starts never go near it: the
@@ -2435,7 +2556,8 @@ class DirectLightSync(
      * onto the engine. Either one saying no is a no.
      */
     private fun applySpatialGestures() {
-        engine?.spatialGestures = spatialEnabled && !reducedMotion
+        val on = spatialEnabled && !reducedMotion
+        onRenderThread { engine?.spatialGestures = on }
     }
 
     /**
@@ -2451,7 +2573,7 @@ class DirectLightSync(
      */
     fun previewTunables(values: Map<String, Float>) {
         activeTunables = values
-        engine?.setTunables(values)
+        onRenderThread { engine?.setTunables(values) }
     }
 
     /** As [previewTunables], for the brightness ceiling. [pct] is 0..100. */
@@ -2461,7 +2583,7 @@ class DirectLightSync(
 
     /** Album-art colours, pushed by the player when the track changes. */
     fun setAlbumColors(colors: List<Rgb>) {
-        engine?.setAlbumColors(colors)
+        onRenderThread { engine?.setAlbumColors(colors) }
     }
 
     /**
@@ -2661,15 +2783,19 @@ class DirectLightSync(
      * all — the beats would be confidently, precisely wrong.
      */
     private suspend fun onTrackChanged(track: LocalTrack?) {
+        if (running.get()) Log.i(TAG, "Show: track changed (${if (track == null) "none" else "local track"})")
         currentTrack = track
-        allLayers.forEach { it.onTrackChanged() }
+        // The layers and the picker belong to the render loop; see [onRenderThread].
+        onRenderThread {
+            allLayers.forEach { it.onTrackChanged() }
+            picker.allowImmediateRepick()
+        }
         activeScan = null
         activeProfile = null
         scannedSignal = null
         mapCommitted = null
         mapPrevPos = null
         mapSection = null
-        picker.allowImmediateRepick()
 
         val repo = scans ?: return
         val next = track ?: return

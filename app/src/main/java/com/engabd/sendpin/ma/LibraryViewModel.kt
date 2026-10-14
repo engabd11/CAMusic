@@ -892,6 +892,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private var hasDownloadedPlaylists = false
 
+    /**
+     * A queue another client left on the server, when there is one worth offering.
+     *
+     * `getPlayQueue` and `savePlayQueue` have been implemented in [SubsonicClient]
+     * with no callers at all — the client half of "start on the phone, finish at the
+     * desk" was done and the feature did not exist.
+     *
+     * Declared above `init` for the same reason as [_searchAll]: [startQueueSync],
+     * called from `init`, collects `localPlayer.playing`, a StateFlow that answers at
+     * once on `Main.immediate`. With music already playing — the screen rebuilt after
+     * Back, while the process played on — that ran during construction, before this
+     * line had, and wrote to a null field: a crash on reopening the app mid-song.
+     */
+    private val _savedQueue = MutableStateFlow<SavedQueue?>(null)
+    val savedQueue: StateFlow<SavedQueue?> = _savedQueue
+
     init {
         viewModelScope.launch {
             _maUrl.value = settings.maBaseUrl.first(); _maUser.value = settings.maUsername.first(); _maPass.value = settings.maPassword.first()
@@ -2466,15 +2482,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- cross-device resume ----------------------------------------------
 
-    /**
-     * A queue another client left on the server, when there is one worth offering.
-     *
-     * `getPlayQueue` and `savePlayQueue` have been implemented in [SubsonicClient]
-     * with no callers at all — the client half of "start on the phone, finish at the
-     * desk" was done and the feature did not exist.
-     */
-    private val _savedQueue = MutableStateFlow<SavedQueue?>(null)
-    val savedQueue: StateFlow<SavedQueue?> = _savedQueue
 
     /** Stop offering this one. Not persisted: a new session may want it again. */
     fun dismissSavedQueue() { _savedQueue.value = null }
