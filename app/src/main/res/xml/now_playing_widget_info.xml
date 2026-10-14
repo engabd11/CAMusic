@@ -13,6 +13,9 @@
   controls: it degrades gracefully in both directions, and refusing to resize would
   strand it at whatever size the launcher chose. `minResize*` lets it go down to one
   row high, where NowPlayingWidget switches to its single-row layout.
+
+  `previewLayout` and `initialLayout` share one static copy of the widget; see
+  widget_now_playing_preview.xml for why.
 -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:minWidth="180dp"
@@ -25,4 +28,5 @@
     android:widgetCategory="home_screen"
     android:description="@string/widget_description"
     android:updatePeriodMillis="0"
-    android:initialLayout="@layout/glance_default_loading_layout" />
+    android:previewLayout="@layout/widget_now_playing_preview"
+    android:initialLayout="@layout/widget_now_playing_preview" />

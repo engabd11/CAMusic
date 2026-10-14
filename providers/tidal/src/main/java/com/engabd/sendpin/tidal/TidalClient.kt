@@ -80,6 +80,34 @@ class TidalClient(
         const val AUTH = "https://auth.tidal.com/v1/oauth2"
         const val SCOPE = "r_usr w_usr w_sub"
 
+        /** Items per request on a list endpoint; 100 is what Tidal's v1 API accepts. */
+        const val PAGE = 100
+
+        /**
+         * Every item of a paged v1 list, a page at a time.
+         *
+         * Each list endpoint answers `{limit, offset, totalNumberOfItems, items}` and,
+         * asked without a `limit`, only its first (small) page — so every list here
+         * used to stop there with nothing on screen to say so. This pages by
+         * `totalNumberOfItems` rather than by a short page, because Tidal may cap a
+         * `limit` below [PAGE] and a short page then would not mean the end. An empty
+         * page ends it either way, and [cap] guards against an offset that is ignored.
+         */
+        suspend fun pagedItems(
+            cap: Int = 50_000,
+            fetch: suspend (offset: Int, limit: Int) -> JsonObject,
+        ): List<JsonObject> {
+            val all = ArrayList<JsonObject>()
+            while (all.size < cap) {
+                val body = fetch(all.size, PAGE)
+                val page = (body["items"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+                all.addAll(page)
+                val total = body["totalNumberOfItems"]?.jsonPrimitive?.intOrNull
+                if (page.isEmpty() || (total != null && all.size >= total) || (total == null && page.size < PAGE)) break
+            }
+            return if (all.size > cap) all.subList(0, cap).toList() else all
+        }
+
         /** Shared "magic" key Tidal uses for BTS manifest URLs — public knowledge. */
         private val MANIFEST_KEY = "UIlTTEMmpLfP63qyX5n6KR6F0IwF8GZIfOEOfCtbTL4=".decodeBase64()
 
@@ -275,35 +303,32 @@ class TidalClient(
         }
     }
 
+    /** Every item of the list at [path], all pages of it — see [pagedItems]. */
+    private suspend fun getAll(path: String): List<JsonObject> =
+        pagedItems { offset, limit -> get("$path?limit=$limit&offset=$offset") }
+
     /** Favourited tracks (the user's library). */
-    suspend fun favoriteTracks(): List<JsonObject> =
-        get("users/$userId/favorites/tracks")["items"].jsonArrayItems()
+    suspend fun favoriteTracks(): List<JsonObject> = getAll("users/$userId/favorites/tracks")
 
     /** Favourited albums. */
-    suspend fun favoriteAlbums(): List<JsonObject> =
-        get("users/$userId/favorites/albums")["items"].jsonArrayItems()
+    suspend fun favoriteAlbums(): List<JsonObject> = getAll("users/$userId/favorites/albums")
 
     /** Favourited artists. */
-    suspend fun favoriteArtists(): List<JsonObject> =
-        get("users/$userId/favorites/artists")["items"].jsonArrayItems()
+    suspend fun favoriteArtists(): List<JsonObject> = getAll("users/$userId/favorites/artists")
 
     /** The user's playlists. */
-    suspend fun playlists(): List<JsonObject> =
-        get("users/$userId/playlists")["items"].jsonArrayItems()
+    suspend fun playlists(): List<JsonObject> = getAll("users/$userId/playlists")
 
     /** One playlist's tracks. */
-    suspend fun playlistTracks(id: String): List<JsonObject> =
-        get("playlists/$id/tracks")["items"].jsonArrayItems()
+    suspend fun playlistTracks(id: String): List<JsonObject> = getAll("playlists/$id/tracks")
 
     /** One album's metadata and tracks. */
     suspend fun album(id: String): JsonObject = get("albums/$id")
 
-    suspend fun albumTracks(id: String): List<JsonObject> =
-        get("albums/$id/tracks")["items"].jsonArrayItems()
+    suspend fun albumTracks(id: String): List<JsonObject> = getAll("albums/$id/tracks")
 
     /** One artist's albums. */
-    suspend fun artistAlbums(id: String): List<JsonObject> =
-        get("artists/$id/albums")["items"].jsonArrayItems()
+    suspend fun artistAlbums(id: String): List<JsonObject> = getAll("artists/$id/albums")
 
     /** One track. */
     suspend fun track(id: String): JsonObject = get("tracks/$id")

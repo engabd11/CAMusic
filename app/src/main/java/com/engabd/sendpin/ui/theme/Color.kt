@@ -50,7 +50,9 @@ val OledColors = SendspinColors(
     ink3 = Color(0xFF0A0B0D),
     textPrimary = Color(0xFFFFFFFF),
     textSecondary = Color(0xB3FFFFFF),
-    textMuted = Color(0x73FFFFFF),
+    // 0x7A, not 0x73: at 0x73 this body-copy colour was 4.43:1 on black, under
+    // WCAG AA's 4.5. 0x7A clears it on every surface of this theme and of Dark.
+    textMuted = Color(0x7AFFFFFF),
     textFaint = Color(0x52FFFFFF),
     hairline = Color(0x17FFFFFF),
     hairlineSoft = Color(0x12FFFFFF),
@@ -88,7 +90,8 @@ val LightColors = SendspinColors(
     ink3 = Color(0xFFEBE8E3),
     textPrimary = Color(0xFF0B0B0C),
     textSecondary = Color(0xB3000000),
-    textMuted = Color(0x8A000000),
+    // 0x94 for the same AA line: 0x8A fell to 4.49:1 on ink2 and lower on ink3.
+    textMuted = Color(0x94000000),
     textFaint = Color(0x5C000000),
     hairline = Color(0x1F000000),
     hairlineSoft = Color(0x14000000),

@@ -24,4 +24,6 @@
     <!-- The home-screen widget, as the launcher's own picker describes it. -->
     <string name="widget_label">CAMusic</string>
     <string name="widget_description">The current track, with play, next and previous.</string>
+    <!-- The empty state in the static preview; matches NowPlayingWidget's. -->
+    <string name="widget_preview_title">Nothing playing</string>
 </resources>

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The widget before Glance has drawn it: what the launcher's picker shows
+  (`previewLayout`) and what a freshly placed widget shows for the moment until
+  its first composition (`initialLayout`). Both used to be Glance's stock
+  "Loading…" layout, so the picker offered a blank tile and first placement
+  flashed a placeholder.
+
+  A plain RemoteViews copy of NowPlayingWidget's stacked layout in its empty
+  state — "Nothing playing" over previous / play / next — in the default OLED
+  colours. Keep it in step with that composable when its look changes.
+
+  `android:tint`, not the `app:tint` lint asks for (UseAppTint): the launcher
+  inflates this as RemoteViews, with no AppCompat in the way, so `app:tint` would
+  simply be ignored and the icons drawn in the drawables' own colour.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_preview_frame"
+    android:gravity="center_vertical"
+    android:orientation="vertical"
+    android:padding="14dp"
+    tools:ignore="UseAppTint">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:text="@string/widget_preview_title"
+        android:textColor="#7AFFFFFF"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/widget_preview_button"
+            android:contentDescription="@null"
+            android:padding="10dp"
+            android:src="@drawable/ic_driving_prev"
+            android:tint="#FFFFFFFF" />
+
+        <ImageView
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/widget_preview_button"
+            android:contentDescription="@null"
+            android:padding="10dp"
+            android:src="@drawable/ic_driving_play_pause"
+            android:tint="@color/accent" />
+
+        <ImageView
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/widget_preview_button"
+            android:contentDescription="@null"
+            android:padding="10dp"
+            android:src="@drawable/ic_driving_next"
+            android:tint="#FFFFFFFF" />
+    </LinearLayout>
+</LinearLayout>
