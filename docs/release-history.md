@@ -206,7 +206,9 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.16.1** (summaries moved here from the README):
+**v0.11.1 to v0.16.2** (summaries moved here from the README):
+
+**v0.16.2**: **Light Sync keeps following the music when you change the level or the song, and reopening the app mid-song no longer crashes.** Switching the level (Auto to Intense, say) or moving to the next song could leave the lights connected to the bridge but no longer following the beat until the app was closed: those changes reached into the show from other threads mid-frame, and now wait for the next frame. Backing out of CAMusic and opening it again while music played closed the app (since 0.14.0). Light Sync also logs, only on a change, which part of the show stopped, so a Diagnostics debug file can say where if the lights ever stop following again.
 
 **v0.16.1**: **CAMusic can update itself, and a few review findings are fixed.** **Settings → System, Storage & About → About → Check for updates** asks GitHub only when you tap it, shows the new release's lead line and size, downloads the APK for your flavour (mobile or TV), checks it against GitHub's checksum, the package, the version and your install's signing key, then hands it to Android's installer; your settings and library stay. A side-by-side test copy is told up front that it can't update itself. **Light Sync** notices the bridge being taken over by another Hue app even after a reconnect (before, one reconnect ended the check for the session and the app kept saying "active" over a dark room). **Tidal** lists (favourites, playlists, album and artist pages) are no longer cut off at the first page. Muted text clears WCAG AA contrast on every theme, and the home-screen widget has a proper preview in the picker.
 
