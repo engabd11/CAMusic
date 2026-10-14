@@ -313,6 +313,7 @@ internal fun AboutCard(accent: Color) {
             StatusRow("Version", BuildConfig.VERSION_NAME)
             StatusRow("Build", BuildConfig.VERSION_CODE.toString())
         }
+        UpdateSection(accent)
         Row(
             Modifier.clip(RoundedCornerShape(100)).background(Glass)
                 .border(1.dp, Hairline, RoundedCornerShape(100))
