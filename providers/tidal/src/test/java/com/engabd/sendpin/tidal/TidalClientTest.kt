@@ -1,6 +1,8 @@
 package com.engabd.sendpin.tidal
 
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
@@ -225,5 +227,50 @@ class TidalClientTest {
         assertEquals("Hifi", a.plan)
         assertEquals("HiFi", a.maxQuality)
         assertNull(client.parseAccount(null, null))
+    }
+
+    // ── List paging ───────────────────────────────────────────────────────
+
+    /** A fake v1 list endpoint over [total] items that hands out at most [serverCap] a page. */
+    private fun fakeList(
+        total: Int,
+        serverCap: Int = TidalClient.PAGE,
+        withTotal: Boolean = true,
+    ): suspend (Int, Int) -> JsonObject = { offset, limit ->
+            val n = minOf(limit, serverCap, maxOf(0, total - offset))
+            val items = (offset until offset + n).joinToString(",") { """{"id":$it}""" }
+            val totalField = if (withTotal) ""","totalNumberOfItems":$total""" else ""
+            obj("""{"limit":$limit,"offset":$offset$totalField,"items":[$items]}""")
+        }
+
+    @Test
+    fun `a list longer than one page comes back whole`() = runTest {
+        val all = TidalClient.pagedItems(fetch = fakeList(total = 250))
+        assertEquals(250, all.size)
+        assertEquals((0 until 250).map { it.toString() }, all.map { it["id"].toString() })
+    }
+
+    @Test
+    fun `a server cap below the page size is not mistaken for the end`() = runTest {
+        // Tidal answering 50 to a limit of 100 is still a full page while the total says more.
+        assertEquals(230, TidalClient.pagedItems(fetch = fakeList(total = 230, serverCap = 50)).size)
+    }
+
+    @Test
+    fun `without a total a short page ends it`() = runTest {
+        assertEquals(130, TidalClient.pagedItems(fetch = fakeList(total = 130, withTotal = false)).size)
+    }
+
+    @Test
+    fun `an exact multiple of the page and an empty list both stop cleanly`() = runTest {
+        assertEquals(200, TidalClient.pagedItems(fetch = fakeList(total = 200)).size)
+        assertEquals(0, TidalClient.pagedItems(fetch = fakeList(total = 0)).size)
+    }
+
+    @Test
+    fun `an endpoint that ignores the offset stops at the cap`() = runTest {
+        val firstPage = fakeList(total = 1_000_000)
+        val sameForever: suspend (Int, Int) -> JsonObject = { _, _ -> firstPage(0, TidalClient.PAGE) }
+        assertEquals(300, TidalClient.pagedItems(cap = 300, fetch = sameForever).size)
     }
 }

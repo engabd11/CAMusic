@@ -1684,6 +1684,9 @@ class DirectLightSync(
                 lastFrame = packet
                 lastSendAt = now
             } catch (e: DtlsPeerClosed) {
+                // Unreachable today — [DtlsPskClient.send] never reads the socket, so it
+                // cannot see a close alert; [keepaliveLoop]'s poll is what notices one.
+                // Kept so a send that learns to detect it lands on the right handling.
                 // Bridge-initiated teardown: the Hue app took the area, or the user
                 // pressed stop there. Deliberately never retried — reconnecting here is
                 // what makes that stop button look broken, because the app immediately
@@ -2194,8 +2197,13 @@ class DirectLightSync(
             kotlinx.coroutines.delay(KEEPALIVE_INTERVAL_MS)
             if (!running.get()) break
 
-            // Check for bridge-side alerts (stream revocation).
-            val client = dtls ?: break
+            // Check for bridge-side alerts (stream revocation). This poll is the only
+            // place a revocation is ever seen: `send` is a bare UDP write that cannot
+            // fail on a closed session. So a null channel — [reconnect] holds it null
+            // across each backoff — must skip this tick, never end the loop: `break`
+            // here meant any reconnect that spanned a tick left the session claiming
+            // "active" over a dark room once another app took the area.
+            val client = dtls ?: continue
             try {
                 val alert = withContext(Dispatchers.IO) { client.pollAlert() }
                 if (alert != null) {
