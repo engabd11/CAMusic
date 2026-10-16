@@ -148,6 +148,7 @@ fun LibraryScreen(
     val connecting by viewModel.connecting.collectAsStateWithLifecycle()
     val hasServer by viewModel.hasServer.collectAsStateWithLifecycle()
     val connError by viewModel.connError.collectAsStateWithLifecycle()
+    val unreachable by viewModel.unreachable.collectAsStateWithLifecycle()
     val backend by viewModel.backend.collectAsStateWithLifecycle()
     val node by viewModel.node.collectAsStateWithLifecycle()
     val depth by viewModel.depth.collectAsStateWithLifecycle()
@@ -275,6 +276,13 @@ fun LibraryScreen(
                     viewModel, gridCols, onAlbumClick, onArtistClick, onPlaylistClick,
                     onLongPress = { actionsFor = it },
                     onManageDownloads = onManageDownloads,
+                )
+                unreachable -> UnreachableState(
+                    message = connError,
+                    hasDownloads = downloadCount > 0,
+                    onRetry = { viewModel.connect(interactive = false) },
+                    onDownloads = viewModel::useDownloads,
+                    onEdit = viewModel::editConnection,
                 )
                 booted && !connecting && (!hasServer || connError != null) -> ConnectForm(viewModel, backend, activeServerConfig)
                 else -> ConnectingState()
@@ -693,7 +701,7 @@ private fun Browse(
             // Running on downloads alone is a working state, not a failure — say so
             // once, at the top, and let the rest of the screen behave normally.
             if (offline) {
-                item(span = { full(gridCols) }) { OfflineNotice(activeConfig?.displayName) { viewModel.connect() } }
+                item(span = { full(gridCols) }) { OfflineNotice(activeConfig?.displayName) { viewModel.connect(interactive = false) } }
             }
             // Something another device left mid-track. An offer, not an interruption:
             // it sits above the shelves and goes away when dismissed or superseded.

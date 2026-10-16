@@ -33,6 +33,7 @@ import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
+import com.engabd.sendpin.library.ServerReach
 import com.engabd.sendpin.library.SourceAuthException
 import com.engabd.sendpin.library.SourceError
 import com.engabd.sendpin.library.StreamNetwork
@@ -390,6 +391,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * a *mode* rather than an error screen.
      */
     private val _offline = MutableStateFlow(false); val offline: StateFlow<Boolean> = _offline
+    /**
+     * A saved server did not answer either of [ServerReach]'s tries, on a connect
+     * nobody was waiting at a form for — opening the app, switching library, Retry.
+     *
+     * The library shows that as what it is, with Retry and the way into the
+     * downloads, rather than "Connecting…" for most of a minute. [connError] holds
+     * the words.
+     */
+    private val _unreachable = MutableStateFlow(false); val unreachable: StateFlow<Boolean> = _unreachable
 
     private val _maUrl = MutableStateFlow(""); val maUrl: StateFlow<String> = _maUrl
     private val _maUser = MutableStateFlow(""); val maUser: StateFlow<String> = _maUser
@@ -829,7 +839,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             Backend.MA -> maApi.state.value == com.engabd.sendpin.ma.MaApiClient.State.CONNECTED
             else -> source != null && !_offline.value
         }
-        if (answering) refresh() else connect()
+        if (answering) refresh() else connect(interactive = false)
     }
 
     fun refresh() {
@@ -999,9 +1009,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             maApi.state.collect { st ->
                 if (_backend.value != Backend.MA) return@collect
+                // Running on the downloads by choice: the socket coming and going
+                // underneath must not pull the page out from under the listener.
+                // Retry on the offline notice is the way back.
+                if (_offline.value) return@collect
                 _ready.value = st == MaApiClient.State.CONNECTED
-                if (st == MaApiClient.State.CONNECTED) showRoot()
-                if (st == MaApiClient.State.ERROR) _connError.value = "Connection failed"
+                if (st == MaApiClient.State.CONNECTED) {
+                    // The socket's own backoff got there after the library had said
+                    // the server was out of reach: it is not, any more.
+                    _unreachable.value = false
+                    showRoot()
+                }
+                if (st == MaApiClient.State.ERROR && !_unreachable.value) _connError.value = "Connection failed"
             }
         }
         startLocalRadio()
@@ -1141,7 +1160,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // `applyBackend` short-circuits on an already-open Music Assistant socket,
             // which is right when the address hasn't changed and wrong here: two MA
             // servers would swap labels without the connection ever moving.
-            if (want == Backend.MA) connect()
+            if (want == Backend.MA) connect(interactive = false)
         }
     }
 
@@ -1218,6 +1237,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _backend.value = b
         _ready.value = false
         _offline.value = false
+        _unreachable.value = false
         _connError.value = null
         _error.value = null
         _favorites.value = emptySet()
@@ -1246,7 +1266,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 _ready.value = true
                 showRoot()
             } else if (_maUrl.value.isNotBlank()) {
-                connect()
+                connect(interactive = false)
             }
         } else {
             source = null
@@ -1263,12 +1283,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // `init`), and nothing else did. The two settings collectors that react to
             // a library switch can arrive in either order, and the one that gets here
             // first was reading fields the other had not filled in yet.
-            if (_navUrl.value.isNotBlank()) connect()
+            if (_navUrl.value.isNotBlank()) connect(interactive = false)
             else viewModelScope.launch {
                 val stored = settings.activeServer.first()?.takeIf { it.kind.playsLocally }
                 if (stored != null && _navUrl.value.isBlank() && _backend.value == Backend.SUBSONIC) {
                     seedLocalFieldsFrom(stored)
-                    connect()
+                    connect(interactive = false)
                 }
             }
         }
@@ -1326,9 +1346,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         localPlayer.adoptRemoteQueue(items.map { localTrack(it) }, at)
     }
 
-    fun connect() {
+    /**
+     * Connect to the active library.
+     *
+     * [interactive] is someone at a setup form, pressing Connect: a failure is
+     * reported on that form, where the address can be fixed. Otherwise — opening
+     * the app, switching library, Retry — a server that does not answer either of
+     * [ServerReach]'s two quick tries puts the library in [unreachable], with Retry
+     * and the downloads on offer, instead of trying on for most of a minute.
+     */
+    fun connect(interactive: Boolean = true) {
         _connError.value = null
         _offline.value = false
+        _unreachable.value = false
         // Only the backend being connected has its credentials written. Writing both
         // meant a save from one screen could stamp the other backend's settings with
         // whatever this ViewModel happened to be holding.
@@ -1338,6 +1368,25 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _connecting.value = true
             maApi.connect(url, token = null, username = _maUser.value.ifBlank { null }, password = _maPass.value.ifBlank { null })
             viewModelScope.launch {
+                // Asked alongside the socket rather than before it, so a server that
+                // is there pays nothing for the question. One that is not is called
+                // after two short tries; the socket's own backoff carries on behind,
+                // and the state collector picks the library up if it ever answers.
+                val gone = kotlinx.coroutines.coroutineScope {
+                    val reach = async { ServerReach.reachable(url) }
+                    val up = async { maApi.state.first { it == MaApiClient.State.CONNECTED } }
+                    kotlinx.coroutines.selects.select<Boolean> {
+                        reach.onAwait { ok -> !ok && maApi.state.value != MaApiClient.State.CONNECTED }
+                        up.onAwait { false }
+                    }.also { reach.cancel(); up.cancel() }
+                }
+                if (gone && _backend.value == Backend.MA) {
+                    _connecting.value = false
+                    _ready.value = false
+                    _connError.value = "Couldn't reach ${activeConfig?.displayName ?: "Music Assistant"}"
+                    if (!interactive) _unreachable.value = true
+                    return@launch
+                }
                 // Bounded. `MaApiClient` reconnects on its own, so a host that accepts
                 // the socket and then never answers the handshake can sit in CONNECTING
                 // indefinitely — and "Connecting…" is a *disabled* button on every
@@ -1364,6 +1413,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 _connecting.value = false
+                // Already connected when asked: `maApi.connect` no-ops on a live
+                // socket and the state never moves, so the collector has nothing to
+                // react to. Coming back from the downloads is that case.
+                if (settled == MaApiClient.State.CONNECTED && !_ready.value && _backend.value == Backend.MA) {
+                    _ready.value = true
+                    showRoot()
+                }
                 if (settled == null && _connError.value == null) {
                     _connError.value = "Couldn't reach $url - no answer within ${CONNECT_TIMEOUT_MS / 1000}s"
                 }
@@ -1420,6 +1476,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     // `withTimeoutOrNull` — returned directly, a successful connect and
                     // a timed-out one would be the same value.
                     var probeErr: SourceError? = null
+                    // Two short tries at the address before the sign-in, whose several
+                    // requests each wait out their own connect timeout. Only for a
+                    // server with an address: the phone's own music and the streaming
+                    // accounts have nothing to ask.
+                    val hasHost = config.kind.needsAddress && !config.kind.cloudAccount
+                    if (hasHost && !ServerReach.reachable(next.serverUrl.ifBlank { url })) {
+                        throw ServerUnreachable()
+                    }
                     val finished = kotlinx.coroutines.withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
                         activeConfig = MusicSources.prepare(next, config)
                         probeErr = next.probe()
@@ -1432,6 +1496,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 } catch (e: SourceAuthException) {
                     SourceError(e.message ?: "Sign-in was refused", isAuth = true)
+                } catch (e: ServerUnreachable) {
+                    SourceError(UNREACHABLE, isAuth = false)
                 } catch (e: Exception) {
                     // Not an auth failure. Calling everything one meant a Jellyfin
                     // server that was merely unreachable kept the connect form up with
@@ -1470,6 +1536,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     // knowable.
                     loadSavedQueue()
                     adoptServerQueue(next)
+                } else if (!interactive && !err.isAuth) {
+                    // Nobody is at a form. Say so, and offer Retry and the downloads,
+                    // rather than dropping silently into them or onto a setup form.
+                    _ready.value = false
+                    val name = activeConfig?.displayName ?: "the server"
+                    _connError.value =
+                        if (err.message == UNREACHABLE) "Couldn't reach $name"
+                        else "Couldn't reach $name - ${err.message}"
+                    _unreachable.value = true
                 } else {
                     _ready.value = false
                     goOfflineIfPossible(err)
@@ -1556,9 +1631,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun goOfflineIfPossible(error: SourceError) {
         val auth = error.isAuth
         val name = activeConfig?.displayName ?: "the server"
-        _connError.value =
-            if (auth) error.message
-            else "Couldn't reach $name - ${error.message}"
+        _connError.value = when {
+            auth -> error.message
+            error.message == UNREACHABLE -> "Couldn't reach $name"
+            else -> "Couldn't reach $name - ${error.message}"
+        }
         if (auth || downloads.value.isEmpty()) {
             _offline.value = false
             _ready.value = false
@@ -1571,6 +1648,31 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         searchCache.clear()
         lastSearched = null
         showRoot()
+    }
+
+    /** [ServerReach] said no: nothing past the address question is worth asking. */
+    private class ServerUnreachable : Exception()
+
+    /**
+     * From the "can't reach" card: run the library on what is on the phone, and open
+     * the downloads. The same offline mode a failed connect used to drop into on its
+     * own, now the listener's choice.
+     */
+    fun useDownloads() {
+        if (downloads.value.isEmpty()) return
+        _unreachable.value = false
+        _offline.value = true
+        _ready.value = true
+        searchCache.clear()
+        lastSearched = null
+        showRoot()
+        openCategory("downloads", DOWNLOADS_TITLE)
+    }
+
+    /** From the "can't reach" card: back to the connect form, to change the address. */
+    fun editConnection() {
+        _unreachable.value = false
+        if (_connError.value == null) _connError.value = "Couldn't reach ${libraryName()}"
     }
 
     // --- browse / play ----------------------------------------------------
@@ -4449,6 +4551,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         const val MA_ERROR_AUTH_REQUIRED = 20
 
         const val CONNECT_TIMEOUT_MS = 45_000L
+
+        /** [SourceError.message] for a server [ServerReach] got no answer from. */
+        const val UNREACHABLE = "no answer"
 
         /**
          * Discover rows the app already has a dedicated shelf for.
