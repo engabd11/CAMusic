@@ -380,6 +380,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * first thing.
      */
     private val _djRadio = MutableStateFlow(false)
+    /**
+     * Serialises every change to a Music Assistant crossfade made for DJ Radio.
+     *
+     * Up here, above `init`, for the same reason as [_djRadio]. Reopening the app with
+     * the Music Assistant socket still up — a song paused on MA, the process kept —
+     * runs the `maApi.state` collector during construction, which sets [_ready]; the
+     * [_ready] collector then calls [restoreMaCrossfade] at once, on `Main.immediate`,
+     * and that takes this lock. Declared down beside its functions it was still null
+     * then, and the app crashed on opening.
+     */
+    private val maFadeLock = Mutex()
     private val _ready = MutableStateFlow(false); val ready: StateFlow<Boolean> = _ready
     /** Settings have been read, so a blank server URL now means "really not set up". */
     private val _booted = MutableStateFlow(false); val booted: StateFlow<Boolean> = _booted
@@ -3256,9 +3267,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (_djRadio.value) return@withLock
         putBackMaCrossfade()
     }
-
-    /** Serialises every change to a Music Assistant crossfade made for DJ Radio. */
-    private val maFadeLock = Mutex()
 
     private suspend fun putBackMaCrossfade() {
         val raw = settings.maDjCrossfadeRestore.first() ?: return
