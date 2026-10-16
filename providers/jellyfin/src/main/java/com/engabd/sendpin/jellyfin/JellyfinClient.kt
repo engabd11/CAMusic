@@ -172,6 +172,19 @@ class JellyfinClient(
         if (token.isNotBlank()) append(", Token=\"$token\"")
     }
 
+    /**
+     * The token for a URL opened without our `Authorization` header (ExoPlayer, Coil,
+     * the download manager).
+     *
+     * Both spellings, on purpose. `ApiKey` is the current one and the only one a
+     * server honours once its legacy authorization is off (the default since 10.11);
+     * `api_key` is what servers before `ApiKey` existed read. Sending only `api_key`
+     * looked fine for streams and covers, because Jellyfin serves those anonymously,
+     * and failed on `/Download`, which checks: every download was a 401.
+     */
+    private fun tokenParams(): Map<String, String> =
+        if (token.isBlank()) emptyMap() else mapOf("ApiKey" to token, "api_key" to token)
+
     private fun url(path: String, params: Map<String, String> = emptyMap()): String {
         val sb = StringBuilder(base()).append(path)
         if (params.isNotEmpty()) {
@@ -210,7 +223,7 @@ class JellyfinClient(
         // Without it, Jellyfin may return 401 on the stream endpoint or redirect to
         // a transcoding URL that loses the token on the redirect.
         val common = buildMap {
-            put("api_key", token)
+            putAll(tokenParams())
             put("deviceId", deviceId)
             if (userId.isNotBlank()) put("userId", userId)
         }
@@ -232,7 +245,7 @@ class JellyfinClient(
 
     /** `/Download` is defined to return the original file, so it takes no format hint. */
     fun downloadUrl(id: String): String =
-        url("/Items/$id/Download", mapOf("api_key" to token))
+        url("/Items/$id/Download", tokenParams())
 
     /**
      * Cover art. Carries the token because Coil opens this URL directly, without the
@@ -246,7 +259,7 @@ class JellyfinClient(
                 "/Items/$it/Images/Primary",
                 buildMap {
                     put("maxWidth", size.toString())
-                    if (token.isNotBlank()) put("api_key", token)
+                    putAll(tokenParams())
                 },
             )
         }
