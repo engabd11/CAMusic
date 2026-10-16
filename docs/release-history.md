@@ -206,7 +206,9 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.16.2** (summaries moved here from the README):
+**v0.11.1 to v0.16.3** (summaries moved here from the README):
+
+**v0.16.3**: **Jellyfin downloads work again, a server you can't reach says so in seconds, and reopening the app after pausing on Music Assistant no longer crashes.** Downloads from Jellyfin 10.11 and newer failed with a 401: those servers only accept the newer form of the access token in a link, and downloads (unlike streams and covers) check it. When the phone can't reach your server at launch, the library now tries twice, a few seconds each, then shows **Retry**, **Go to Downloads** and **Edit connection**, instead of trying for most of a minute. Playing on Music Assistant, pausing, closing the app and opening it again crashed. Switching from Music Assistant to another library with an MA song paused on the phone now switches the mini-player too, instead of waiting for you to play something from the new library.
 
 **v0.16.2**: **Light Sync keeps following the music when you change the level or the song, and reopening the app mid-song no longer crashes.** Switching the level (Auto to Intense, say) or moving to the next song could leave the lights connected to the bridge but no longer following the beat until the app was closed: those changes reached into the show from other threads mid-frame, and now wait for the next frame. Backing out of CAMusic and opening it again while music played closed the app (since 0.14.0). Light Sync also logs, only on a change, which part of the show stopped, so a Diagnostics debug file can say where if the lights ever stop following again.
 
