@@ -480,14 +480,29 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * "Nothing playing" over music that was playing — and its buttons drove the empty
      * local player, so it could not even pause what was heard.
      */
+    //
+    // A held stream that is not playing yields to a library switch — see
+    // [NowPlayingView.yieldStep]. Read from `settings.backend` rather than
+    // [backendPref], whose placeholder "ma" would make every launch on Navidrome
+    // look like a switch.
     private val sendspinHere: StateFlow<Boolean> =
-        (app as SendpinApp).playbackOwner.state
-            .map {
-                it.soundOwner == com.engabd.sendpin.service.PlaybackOwner.Who.SENDSPIN ||
-                    it.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.SENDSPIN
+        combine((app as SendpinApp).playbackOwner.state, settings.backend) { s, backend ->
+            val held = s.soundOwner == com.engabd.sendpin.service.PlaybackOwner.Who.SENDSPIN ||
+                s.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.SENDSPIN
+            SendspinStep(held, s.sendspinPlaying, backend, yielded = false)
+        }
+            .runningFold(SendspinStep(held = false, playing = false, backend = null, yielded = false)) { prev, cur ->
+                cur.copy(
+                    yielded = NowPlayingView.yieldStep(
+                        prev.yielded, prev.playing, prev.backend, cur.playing, cur.backend ?: "ma",
+                    ),
+                )
             }
+            .map { it.held && !it.yielded }
             .distinctUntilChanged()
             .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    private data class SendspinStep(val held: Boolean, val playing: Boolean, val backend: String?, val yielded: Boolean)
 
     private val isLocal get() = NowPlayingView.of(localSnap.value.active, backendPref.value, sendspinHere.value) == NowPlayingView.LOCAL
 

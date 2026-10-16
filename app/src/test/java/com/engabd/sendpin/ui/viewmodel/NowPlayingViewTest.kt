@@ -28,4 +28,26 @@ class NowPlayingViewTest {
         // Now Playing said "Nothing playing" with buttons that drove the empty local player.
         assertEquals(NowPlayingView.MA, NowPlayingView.of(localActive = false, backend = "subsonic", sendspinHere = true))
     }
+
+    @Test
+    fun `switching to another library hides a paused music assistant stream`() {
+        // Played on MA, paused, switched to Navidrome: the mini-player stayed on MA.
+        assertEquals(true, NowPlayingView.yieldStep(yielded = false, prevPlaying = false, prevBackend = "ma", playing = false, backend = "subsonic"))
+    }
+
+    @Test
+    fun `a stream that starts playing afterwards takes the screen back`() {
+        assertEquals(false, NowPlayingView.yieldStep(yielded = true, prevPlaying = false, prevBackend = "subsonic", playing = true, backend = "subsonic"))
+    }
+
+    @Test
+    fun `opening the app on another library is not a switch`() {
+        assertEquals(false, NowPlayingView.yieldStep(yielded = false, prevPlaying = false, prevBackend = null, playing = false, backend = "subsonic"))
+    }
+
+    @Test
+    fun `nothing else changes the answer`() {
+        assertEquals(true, NowPlayingView.yieldStep(yielded = true, prevPlaying = true, prevBackend = "subsonic", playing = false, backend = "subsonic"))
+        assertEquals(false, NowPlayingView.yieldStep(yielded = false, prevPlaying = false, prevBackend = "subsonic", playing = false, backend = "subsonic"))
+    }
 }

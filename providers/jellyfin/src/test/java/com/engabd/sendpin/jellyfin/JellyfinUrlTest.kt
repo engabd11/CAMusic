@@ -104,10 +104,24 @@ class JellyfinUrlTest {
 
     // ─── Download and cover ──────────────────────────────────────────────────
 
+    /**
+     * A server with legacy authorization off (the default since 10.11) ignores
+     * `api_key` and reads only `ApiKey`. Streams and covers hid that, being served
+     * anonymously; `/Download` is not, and every download was a 401.
+     */
+    @Test
+    fun `every URL opened without our headers carries ApiKey, the spelling current servers read`() {
+        val c = client("192.168.0.10:8096")
+        assertTrue("ApiKey=tok123" in c.downloadUrl("song1"))
+        assertTrue("ApiKey=tok123" in c.streamUrl("song1"))
+        assertTrue("ApiKey=tok123" in c.streamUrl("song1", "mp3-320"))
+        assertTrue("ApiKey=tok123" in c.coverUrl("alb1")!!)
+    }
+
     @Test
     fun `download is the original file and takes no format hint`() {
         val url = client("192.168.0.10:8096").downloadUrl("song1")
-        assertEquals("http://192.168.0.10:8096/Items/song1/Download?api_key=tok123", url)
+        assertEquals("http://192.168.0.10:8096/Items/song1/Download?ApiKey=tok123&api_key=tok123", url)
     }
 
     @Test

@@ -274,6 +274,67 @@ internal fun SearchErrorState(message: String, onRetry: () -> Unit) {
 }
 
 /**
+ * A saved server did not answer either of the two quick tries at startup (or on a
+ * library switch, or a Retry). Said once, plainly, with what can be done about it:
+ * try again, play what is already on the phone, or fix the address.
+ */
+@Composable
+internal fun UnreachableState(
+    message: String?,
+    hasDownloads: Boolean,
+    onRetry: () -> Unit,
+    onDownloads: () -> Unit,
+    onEdit: () -> Unit,
+) {
+    val accent = LocalAccent.current
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp).padding(top = 60.dp, bottom = navBarInset()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(64.dp).clip(RoundedCornerShape(20.dp)).background(Glass)
+                .border(1.dp, Hairline, RoundedCornerShape(20.dp)),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Default.CloudOff, null, tint = TextMuted, modifier = Modifier.size(26.dp)) }
+        Spacer(Modifier.height(16.dp))
+        Text(
+            message ?: "Couldn't reach the server", color = inkOn(0.8f), fontFamily = AppFont,
+            fontWeight = FontWeight.Bold, fontSize = 15.sp,
+            maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 280.dp),
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (hasDownloads) "The phone may be away from its network. Your downloads still play."
+            else "The phone may be away from its network. Nothing is downloaded yet to play offline.",
+            color = TextMuted, style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.widthIn(max = 280.dp),
+        )
+        Spacer(Modifier.height(22.dp))
+        Box(
+            Modifier.widthIn(min = 200.dp).clip(RoundedCornerShape(15.dp)).background(accent)
+                .clickable(onClick = onRetry).padding(horizontal = 22.dp, vertical = 15.dp),
+            contentAlignment = Alignment.Center,
+        ) { Text("Retry", color = Ink, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+        if (hasDownloads) {
+            Spacer(Modifier.height(10.dp))
+            Box(
+                Modifier.widthIn(min = 200.dp).clip(RoundedCornerShape(15.dp))
+                    .border(1.dp, accent.a(0.55f), RoundedCornerShape(15.dp))
+                    .clickable(onClick = onDownloads).padding(horizontal = 22.dp, vertical = 15.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("Go to Downloads", color = accent, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Edit connection", color = TextMuted, style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.clip(RoundedCornerShape(100)).clickable(onClick = onEdit)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+        )
+    }
+}
+
+/**
  * A failure that is not the whole page: one line, with Retry, above whatever did load.
  */
 @Composable

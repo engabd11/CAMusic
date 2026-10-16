@@ -525,10 +525,9 @@ class DownloadManager(
                 if (resp.code >= 500 || resp.code == 429 || resp.code == 408) return Outcome.Retry("Server said ${resp.code}")
                 return Outcome.Refused(
                     when (resp.code) {
-                        // Jellyfin answers a download the user is not allowed with 401
-                        // even on a valid token (its GetDownload returns Unauthorized
-                        // when the user lacks "Allow media downloading"); Emby and
-                        // Navidrome say 403. Either way it is the account, not the link.
+                        // A 401 from Jellyfin used to be the client, not the account:
+                        // the link carried only `api_key`, which 10.11+ ignores. With
+                        // `ApiKey` on it, a 401/403 here is the account's permission.
                         401, 403 -> "Not allowed for this user (${resp.code}) — check the account's download permission on the server"
                         404 -> "Not on the server any more (404)"
                         else -> "Server said ${resp.code}"
