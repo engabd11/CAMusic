@@ -1119,6 +1119,8 @@ class DirectLightSync(
          * the note on `AmbienceSession`'s own parameter.
          */
         analysis: com.engabd.sendpin.hue.ambience.AmbienceAudioAnalysis? = null,
+        /** The bundled recording's pre-analysed timeline, when there is one. See `AmbienceBedTimeline`. */
+        bedPlan: com.engabd.sendpin.hue.ambience.AmbienceBedTimeline? = null,
     ): Boolean = withContext(Dispatchers.IO) {
         stopAmbience()
         if (!running.get()) {
@@ -1140,6 +1142,7 @@ class DirectLightSync(
             params = params,
             onAudioFailed = onAudioFailed,
             analysis = analysis,
+            bedPlan = bedPlan,
         )
         if (!session.start(scope)) {
             if (ambienceOwnsSession) { ambienceOwnsSession = false; stop() }
@@ -1183,6 +1186,9 @@ class DirectLightSync(
     fun retuneAmbience(params: com.engabd.sendpin.hue.ambience.AmbienceParams) {
         ambience?.retune(params)
     }
+
+    /** Ease the running show towards dark (1 untouched, 0 off). The sleep timer's fade-out. */
+    fun setAmbienceFade(fade: Float) { ambience?.setFade(fade) }
 
     fun pauseAmbience() { ambience?.pause() }
 
@@ -1569,7 +1575,11 @@ class DirectLightSync(
                     // are kept, and the session brings its own limiter so the
                     // music show's flash budget and rung cannot leak into this one.
                     val ambGuarded = amb.safety.process(painted, dt)
-                    val ambDue = rateLimiter.process(ambGuarded, dt)
+                    // No EffectRateLimiter here: the session has already held the scene to
+                    // its own comfort limits in perceived brightness (ComfortLimiter), and
+                    // that limiter holds a channel at its extreme on an early reversal,
+                    // which on a slow scene would only prolong a peak.
+                    val ambDue = ambGuarded
                     if (isUnchanged(ambDue) && (now - lastSendAt) < RESEND_INTERVAL_NANOS) continue
                     when (emitFrame(ambDue, now, enc, client)) {
                         EmitResult.ABORT -> return

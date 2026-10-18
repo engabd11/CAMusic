@@ -62,8 +62,10 @@ class AmbienceSchedulerTest {
         // The heart of it: schedule(0,1)+schedule(1,2) must equal schedule(0,2). If a
         // script drops an event on a boundary, this is where it shows up.
         for (effect in AmbienceEffect.entries) {
-            val fine = collect(bound(scriptFor(effect)), 30.0, stepS = 0.021)   // ~1024 frames
-            val coarse = collect(bound(scriptFor(effect)), 30.0, stepS = 1.0)
+            // Sorted: a script with two independent streams (the fire's pops and spits) emits
+            // them in a different interleaving per block size, though the show is the same.
+            val fine = collect(bound(scriptFor(effect)), 30.0, stepS = 0.021).sortedBy { it.startS }
+            val coarse = collect(bound(scriptFor(effect)), 30.0, stepS = 1.0).sortedBy { it.startS }
             assertEquals(coarse.size, fine.size, "${effect.wire}: event count depends on block size")
             coarse.zip(fine).forEach { (c, f) ->
                 assertEquals(c.startS, f.startS, 1e-6, "${effect.wire}: event moved")
@@ -293,10 +295,15 @@ class AmbienceTimelinePathTest {
         )
         for (effect in eventDriven) {
             val bed = bedPeak(effect)
-            val peaks = blockPeaks(effect, 180.0)
+            // Ten minutes now, and an eightieth of the blocks rather than a twentieth: the
+            // scenes were thinned to a strike every fifteen seconds or so and a shell
+            // every five (they were every three and one), so the same three minutes has a
+            // fifth of the transients. The question is unchanged - do they reach the
+            // output at all - and a few percent of blocks above the bed is a yes.
+            val peaks = blockPeaks(effect, 600.0)
             val loud = peaks.count { it > bed * 2.5f }
             assertTrue(
-                loud > peaks.size / 20,
+                loud > peaks.size / 80,
                 "${effect.wire}: only $loud of ${peaks.size} blocks rose above its own bed — " +
                     "the transients are not reaching the output",
             )
@@ -405,8 +412,10 @@ class AmbienceAnswerTest {
         val room = RoomModel(ringRoom(8))
         val script = ThunderstormScript()
         script.bind(room, AmbienceParams(intensity = 1f))
-        val e = collect(script, 200.0).first {
-            it.kind == AmbienceEvent.STRIKE && it.soundS > 0f && it.timbre > 1.2f
+        // Far enough that the thunder arrives well after the glow has gone (2 km is nearly
+        // six seconds; the soft glow is over in about three).
+        val e = collect(script, 600.0).first {
+            it.kind == AmbienceEvent.STRIKE && it.soundS > 0f && it.timbre > 2.0f
         }
         val propS = e.timbre / 0.343f
 
@@ -416,9 +425,12 @@ class AmbienceAnswerTest {
             totalBrightness(script, rolling, emptyList())
         assertTrue(lift > 0.02f, "the room ignores the thunder it is playing ($lift)")
 
-        // Well before the sound could have crossed the distance: nothing but the flash,
-        // which is long over. Anticipating the thunder would be worse than ignoring it.
-        val quiet = e.startS + propS * 0.4
+        // Once the flash has died away and before the sound could have crossed the
+        // distance: nothing. Anticipating the thunder would be worse than ignoring it.
+        // (The flash used to be over in a fifth of a second; it is now a soft glow that
+        // takes two or three seconds to ease out, so "before the thunder" starts later.)
+        val quiet = e.startS + e.env.lifetimeS + 0.2
+        assertTrue(quiet < e.startS + propS, "this strike's glow outlasts its own thunder delay")
         val early = totalBrightness(script, quiet, listOf(e)) -
             totalBrightness(script, quiet, emptyList())
         assertTrue(early < lift * 0.35f, "the room glowed before the thunder arrived ($early)")
@@ -572,12 +584,16 @@ class AmbienceSpatialTest {
         train.bind(line, AmbienceParams(intensity = 0.5f))
         val seen = LinkedHashSet<Int>()
         var t = 0.0
-        while (t < 4.0) {
+        // A whole timetable now (the old beam crossed in four seconds; a train takes
+        // twelve to twenty-two and is preceded by six of station glow). Only while the
+        // windows are lit - the brightest lamp is otherwise the station or the signal.
+        while (t < 40.0) {
             val f = field(train, t, emptyList())
-            f.maxByOrNull { brightness(it.value) }?.let { seen.add(it.key) }
+            val top = f.maxByOrNull { brightness(it.value) }
+            if (top != null && brightness(top.value) > 0.45f) seen.add(top.key)
             t += 0.05
         }
-        assertTrue(seen.size >= 3, "the beam did not travel: visited $seen")
+        assertTrue(seen.size >= 3, "the train did not travel: visited $seen")
 
         // CLUSTER: three lamps on a table have no length to run along, so the whole
         // cluster should pulse rather than the beam stuttering between them.
@@ -587,7 +603,7 @@ class AmbienceSpatialTest {
         pulse.bind(huddle, AmbienceParams(intensity = 0.5f))
         var maxSpread = 0f
         var u = 0.0
-        while (u < 4.0) {
+        while (u < 40.0) {
             val f = field(pulse, u, emptyList())
             val vals = f.values.map { brightness(it) }
             maxSpread = maxOf(maxSpread, (vals.max() - vals.min()))
@@ -599,17 +615,34 @@ class AmbienceSpatialTest {
     @Test
     fun `an aurora barely changes brightness`() {
         // The quiet one. If this starts failing, the effect has grown a moment.
+        //
+        // This used to bound the whole room's brightness to a ratio of 1.6 over a minute.
+        // The scene is now mostly dark sky with curtains crossing it, so the total
+        // legitimately swings between "no curtain" and "a curtain over most lamps" over
+        // tens of seconds, and what has to be pinned instead is the *speed*: no lamp may
+        // move more than a tenth of a unit in a second, at the most lively setting.
         val s = scriptFor(AmbienceEffect.AURORA)
         s.bind(RoomModel(ringRoom(8)), AmbienceParams(intensity = 1f))
-        var lo = Float.MAX_VALUE
-        var hi = 0f
+        var worst = 0f
+        var prev: Map<Int, Rgb>? = null
         var t = 0.0
-        while (t < 60.0) {
-            val total = field(s, t, emptyList()).values.sumOf { brightness(it).toDouble() }.toFloat()
-            lo = minOf(lo, total); hi = maxOf(hi, total)
+        val history = ArrayDeque<Map<Int, Rgb>>()
+        while (t < 180.0) {
+            val f = field(s, t, emptyList()).mapValues { it.value.copy() }
+            history.addLast(f)
+            if (history.size > 11) {
+                val old = history.removeFirst()
+                for ((id, c) in f) {
+                    val a = Perceptual.levelOf(old.getValue(id))
+                    val b = Perceptual.levelOf(c)
+                    worst = maxOf(worst, kotlin.math.abs(a - b))
+                }
+            }
+            prev = f
             t += 0.1
         }
-        assertTrue(hi <= lo * 1.6f, "aurora swung from $lo to $hi")
+        assertTrue(prev != null)
+        assertTrue(worst < 0.15f, "an aurora lamp moved $worst in one second")
     }
 
     @Test

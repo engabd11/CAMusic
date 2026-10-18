@@ -9,61 +9,119 @@ import com.engabd.sendpin.hue.ambience.AmbienceParams
 import com.engabd.sendpin.hue.ambience.AmbienceScript
 import com.engabd.sendpin.hue.ambience.BedOnset
 import com.engabd.sendpin.hue.ambience.BedSample
+import com.engabd.sendpin.hue.ambience.Blackbody
+import com.engabd.sendpin.hue.ambience.ComfortProfile
 import com.engabd.sendpin.hue.ambience.Envelope
 import com.engabd.sendpin.hue.ambience.GrainCloud
 import com.engabd.sendpin.hue.ambience.OnePole
 import com.engabd.sendpin.hue.ambience.PinkNoise
 import com.engabd.sendpin.hue.ambience.Rng
 import com.engabd.sendpin.hue.ambience.RoomModel
+import com.engabd.sendpin.hue.ambience.SlowFollower
+import com.engabd.sendpin.hue.ambience.SmoothNoise
 import com.engabd.sendpin.hue.ambience.Svf
 import com.engabd.sendpin.hue.ambience.VoicePool
 import com.engabd.sendpin.hue.ambience.panGains
 import kotlin.math.PI
-import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.sin
 
 /**
- * A fire breathing in the corner of the room, popping now and then.
+ * A hearth in the corner of a room you are sitting in.
  *
- * Two things make this read as a fire rather than as lamps flickering.
+ * The target is a room you notice is lit by a fire and never a light show. Everything
+ * below is in service of that, and most of it is restraint.
  *
- * **The flicker is correlated.** Each lamp gets its own slow 1/f wander, but the wanders
- * are mixed through `RoomModel.coupling` — the Gaussian neighbour kernel — so lamps near
- * each other brighten together and the room breathes as one fire seen from different
- * angles. Independent per-lamp noise looks like a fault.
+ * ## What a real fireplace does to a room
  *
- * **The flicker is bounded.** Fire is restless, not strobing. The per-frame swing is kept
- * well under the flash limiter's threshold, so a fire never trips it — which matters,
- * because a limiter engaging would compress the whole room and the fire would go flat.
+ * **It is a warm, low, steady glow that never stops moving.** Each lamp carries a few
+ * octaves of smooth noise from about one cycle in twelve seconds up to two and a half a
+ * second, weighted roughly 1/f, so the slow octaves set the mood and the fast ones add
+ * life without ever being a strobe. The wander is a pure function of time ([SmoothNoise]),
+ * so nothing repeats and nothing needs a random generator on the render thread. On top
+ * of that sits a shared drift over minutes, a log settling or a draught finding the
+ * chimney, that no single lamp shows on its own.
  *
- * Pops are the exception: a real event, a flash on the nearest lamp and a filtered
- * impulse from the same [AmbienceEvent].
+ * **The lamps are one fire seen from different places.** The noise is mixed through
+ * `RoomModel.coupling`, so neighbours brighten together, and the hearth lamps and the far
+ * lamps are different light entirely. The lamps nearest the fire are the fire: a deep
+ * ember at about 1850 K, bright and steady, because from there you see coals and not
+ * flames. The far lamps are the fire's bounce off walls and ceiling: softer, warmer-white
+ * at about 2200 K, at a quarter to two fifths of the hearth's brightness, and livelier
+ * because a wall catches every flame that moves.
+ *
+ * **Pops are rare and small.** A fire spits a coal every few seconds, and when it does the
+ * nearest lamp or two warm and brighten for a moment and settle back like an ember
+ * cooling. They do not surge the room. See [react] and [schedule] for the cadence; the
+ * lamps never get more than about a tenth of a unit brighter, over a tenth of a second,
+ * and take most of a second to fade.
+ *
+ * **The recording sets the mood, slowly.** A recorded fire's roar scales the whole room
+ * by a few percent over several seconds ([ROAR_TAU_S]). It never reaches a lamp as a
+ * flicker of its own, and when the recording has nothing to say the last value is held.
+ *
+ * All brightness here is perceived (see [com.engabd.sendpin.hue.ambience.Perceptual]);
+ * `ComfortLimiter` holds the room to [comfort] so that even a pop landing on a flicker
+ * cannot be a jolt.
  */
 class FireplaceScript : AmbienceScript {
 
     override val effect = AmbienceEffect.FIREPLACE
 
+    /**
+     * Rise 0.7 a second is a pop's 0.1 over its 0.12 s attack with a little room;
+     * fall 0.4 lets that pop cool over about a quarter of a second at the very least
+     * and in practice over its own 0.6 to 0.9 s. The room mean may never move faster
+     * than 0.25 a second, which a fire at this scale does not come near.
+     */
+    override val comfort = ComfortProfile(
+        risePerS = 0.60f, fallPerS = 0.40f, roomSwingPerS = 0.25f,
+        burstRisePerS = 1.6f, burstFallPerS = 0.8f, burstRoomSwingPerS = 0.5f,
+    )
+
+    private var popping = false
+
+    /** A pop in its first quarter second is the fire's one named event; the rest is calm. */
+    override val burstActive: Boolean get() = popping
+
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
 
+    // Three generators, three threads, no sharing. The scheduler thread owns [rng]; the
+    // thread that reacts to a recording owns [reactRng]; the render thread owns
+    // [renderRng]. They used to be one stream, advanced from the ambience-gen thread
+    // and the render thread at once.
     private val rng = Rng(0xF12E_9L)
-    private var nextPopS = 0.4
+    private val reactRng = Rng(0x1F1AEL)
 
-    /** Per-lamp 1/f wander, and the coupled result. */
+    /**
+     * The ear-only spits get a stream of their own, apart from the pops'. Both are
+     * scheduled in time order, but a window can hold a pop and a spit in either order,
+     * so sharing one generator made the whole show depend on where the audio blocks
+     * happened to fall.
+     */
+    private val spitRng = Rng(0x5917_C0DEL)
+    private val renderRng = Rng(0x2E_4D_E6L)
+
+    private var nextPopS = 3.0
+    private var nextSpitS = 0.4
+
+    /** Seeds for each lamp's noise, fixed at bind. */
+    private lateinit var lampSeed: IntArray
+
+    /** Where the fire is: the lamp lowest in the room, and how much each lamp is "hearth". */
+    private var hearth = 0
+    private lateinit var hearthShare: FloatArray
+
+    /** Per-lamp scratch for the coupled noise. Render thread only. */
     private lateinit var wander: FloatArray
     private lateinit var coupled: FloatArray
-    private lateinit var phase: FloatArray
-    private var lastT = 0.0
-
-    /** Where the fire is: the lamp lowest in the room, and its neighbours by distance. */
-    private var hearth = 0
-    private lateinit var hearthFalloff: FloatArray
 
     private val bed = PinkNoise(0x0F1E)
     private val bedLp = OnePole()
     private val roar = OnePole()
     private lateinit var crackle: GrainCloud
+
     /** Per event, so two overlapping ones cannot share filter state. See [VoicePool]. */
     private class PopVoice {
         val filter = Svf()
@@ -81,48 +139,29 @@ class FireplaceScript : AmbienceScript {
     /** Scratch for the light tick's read of the bed. Render thread only. */
     private val bedNow = BedSample()
 
-    /**
-     * Per-lamp one-pole on the pop glint, so cast light lags its source.
-     *
-     * Light from the fire itself has nothing to bounce off and may arrive in a step;
-     * light reaching the far side of the room arrives off the walls, spread over
-     * frames. The cutoff scales with distance in [bind]: the near lamp is nearly
-     * transparent, the far wall diffuses over a few 60 Hz frames. Guided by the
-     * Light Effects Guide Book — brightness transitions read best slower than
-     * colour ones, and a reflection that arrives in lockstep with the flame reads
-     * as a second fire rather than as one room lit by one fire.
-     */
-    private var castFilters: Array<OnePole> = emptyArray()
+    /** The recording's roar, slowly. Render thread only. */
+    private val roarFollow = SlowFollower(ROAR_TAU_S, 0.5f)
+    private var lastT = Double.NaN
 
-    /** Reaction state. Analysis thread only. */
-    private var lastPopS = Double.NaN
-    private val reactRng = Rng(0x1F1AEL)
+    /** Reaction state. Whoever feeds [react] only. */
+    private var nextReactPopS = Double.NaN
 
     override fun bind(room: RoomModel, params: AmbienceParams) {
         this.room = room
         this.params = params
         val n = room.count
-        wander = FloatArray(n) { rng.f01() }
+        lampSeed = IntArray(n) { (renderRng.nextLong() ushr 33).toInt() }
+        wander = FloatArray(n)
         coupled = FloatArray(n)
-        phase = FloatArray(n) { rng.f01() }
         // The hearth is the lowest lamp — real height where the room recorded it,
         // synthetic otherwise. See RoomModel.heightOf: without the fallback every lamp
         // would be at z=0 and "the fire is on the floor over there" could not be said.
         hearth = room.ids.minByOrNull { room.heightOf(it) } ?: room.ids.firstOrNull() ?: 0
-        hearthFalloff = FloatArray(n) { i ->
+        // 1 at the fire, falling away over about half the room. Kept off zero so even
+        // the farthest lamp is partly lit by direct glow in a small room.
+        hearthShare = FloatArray(n) { i ->
             val d = room.gap(room.ids[i], hearth)
-            // Near the hearth is fire; far from it is the glow the fire throws.
-            (1f / (1f + 2.2f * d * d)).coerceIn(0.12f, 1f)
-        }
-        // Cast-light diffusion, per lamp: near the hearth the glint is direct light
-        // (no bounce, no lag), across the room it is bounced and arrives spread.
-        // gap is in roomShape units, which span 1.0 across the room's largest
-        // dimension, so the cutoff falls 18 Hz (transparent) to 2.5 Hz (a few
-        // 60 Hz frames of diffusion) from hearth to far wall.
-        castFilters = Array(n) { i ->
-            OnePole().also {
-                it.setCutoff(18f - 15.5f * room.gap(room.ids[i], hearth).coerceIn(0f, 1f), 60)
-            }
+            (1f / (1f + 6f * d * d)).coerceIn(0f, 1f)
         }
     }
 
@@ -133,83 +172,94 @@ class FireplaceScript : AmbienceScript {
     /**
      * A recorded fire already pops; inventing more on top would be two fires.
      *
-     * This effect was the one that always looked right, and the reason is worth
-     * stating: a fire has no structure to be out of step *with*. Nothing in it has to
-     * land on a frame, so a scripted flicker over a recording read as one fire by
-     * luck. Reacting is still better — the room now surges on the surges that are
-     * actually audible and sparks on the spits that actually happen — but this is the
-     * effect with the least to gain, not the most.
+     * The recording is the sound and the room answers only its strongest crackles, and
+     * only every few seconds (see [react]): the rest of the crackle is heard, not seen.
      */
     override val eventsComeFromAudio: Boolean get() = true
 
     override fun bindBed(bed: AmbienceBedTrack?) { this.recording = bed }
 
-    /** The bed jumped: forget the previous pass's last pop. */
     override fun onBedReset() {
-        lastPopS = Double.NaN
+        nextReactPopS = Double.NaN
     }
 
-    /** A spit in the recording throws a spark off the embers. */
+    /**
+     * A strong spit in the recording warms the nearest lamp or two, now and then.
+     *
+     * Thinned three ways. Only a crackle well over the fire's usual ([MIN_POP_STRENGTH]);
+     * only once a random 2.5 to 8 seconds have passed since the last one; and then only
+     * a small, slow glow on the lamps beside the hearth (see [renderLights]). A real fire
+     * crackles dozens of times a minute and a room that answered each would flicker like
+     * a faulty bulb. The ear gets every one of them from the recording regardless.
+     */
     override fun react(sample: BedSample, onset: BedOnset, emit: (AmbienceEvent) -> Unit) {
-        if (!onset.high) return
-        if (!lastPopS.isNaN() && sample.tS - lastPopS < POP_REFRACTORY_S) return
-        lastPopS = sample.tS
+        if (!onset.high || onset.highStrength < MIN_POP_STRENGTH) return
+        if (!nextReactPopS.isNaN() && sample.tS < nextReactPopS) return
+        nextReactPopS = sample.tS + POP_GAP_MIN_S + (POP_GAP_MAX_S - POP_GAP_MIN_S) * reactRng.f01()
+        emit(popEvent(onset.atS, onset.highStrength, reactRng))
+    }
+
+    private fun popEvent(startS: Double, strength: Float, r: Rng): AmbienceEvent {
         val hp = room.positions[hearth] ?: room.centre()
-        // Scattered around the hearth, as the scheduled ones are: a fire's crackles do
-        // not all come from one point, and a spark that always lit the same lamp would
-        // read as a fault rather than as a fire.
+        // Around the hearth rather than on it, so successive pops do not always warm
+        // exactly the same lamp.
         val spread = 0.10f
-        emit(
-            AmbienceEvent(
-                kind = AmbienceEvent.POP,
-                startS = onset.atS,
-                // The same deliberately slow attack the scheduled pops use: a 4 ms
-                // attack is a strobe on a lamp and would engage the flash limiter.
-                env = Envelope(attackS = 0.020f, holdS = 0.006f, decayTauS = 0.09f),
-                gain = (0.25f + 0.75f * onset.highStrength).coerceIn(0.1f, 1f),
-                origin = Vec3(
-                    hp.x + spread * reactRng.bipolar(),
-                    hp.y + spread * reactRng.bipolar(),
-                    hp.z + spread * reactRng.bipolar(),
-                ),
-                azimuth = room.azimuth[hearth] ?: 0.25f,
-                colour = EMBER,
-                timbre = (0.4f + 0.6f * onset.highStrength).coerceIn(0.2f, 1f),
-                seed = reactRng.nextLong(),
-                soundS = 0f,
+        return AmbienceEvent(
+            kind = AmbienceEvent.POP,
+            startS = startS,
+            // A glow with a visible rise, not a spark: 120 ms up, then an ember cooling
+            // over most of a second (three time constants to 5 percent of the peak).
+            env = Envelope(attackS = 0.12f, holdS = 0.03f, decayTauS = 0.25f, tailCut = 0.05f),
+            gain = POP_GAIN_MIN + (POP_GAIN_MAX - POP_GAIN_MIN) * strength.coerceIn(0f, 1f),
+            origin = Vec3(
+                hp.x + spread * r.bipolar(),
+                hp.y + spread * r.bipolar(),
+                hp.z + spread * r.bipolar(),
             ),
+            azimuth = room.azimuth[hearth] ?: 0.25f,
+            colour = POP_TINT,
+            timbre = 0.4f + 0.6f * strength.coerceIn(0f, 1f),
+            seed = r.nextLong(),
         )
     }
 
+    // ---- Scheduling ------------------------------------------------------
+
     override fun schedule(fromS: Double, toS: Double, emit: (AmbienceEvent) -> Unit) {
         if (nextPopS < fromS) nextPopS = fromS
+        if (nextSpitS < fromS) nextSpitS = fromS
         val intensity = params.intensity.coerceIn(0f, 1f)
-        val lambda = 0.5f + 2.5f * intensity          // pops per second
+
+        // The pops the room can see: one every 2.5 to 8 seconds, a little more often when
+        // the fire is turned up.
         while (nextPopS < toS) {
-            // Pops come from the fire, so they scatter around the hearth rather than
-            // around the room.
-            val hp = room.positions[hearth] ?: room.centre()
+            emit(popEvent(nextPopS, 0.3f + 0.7f * rng.pow2(), rng))
+            nextPopS += POP_GAP_MIN_S +
+                (3.0 + 5.0 * (1.0 - intensity)) * rng.f01()
+        }
+
+        // The spits only the ear gets. Without a recording the synthesised fire needs
+        // its crackle, and it is the *light* that was too busy, not the sound.
+        val lambda = 0.5f + 2.5f * intensity
+        while (nextSpitS < toS) {
             emit(
                 AmbienceEvent(
-                    kind = AmbienceEvent.POP,
-                    startS = nextPopS,
-                    // Attack spans more than one render frame on purpose. A 4 ms attack
-                    // takes a lamp from the fire's glow to full spark inside a single
-                    // 60 Hz tick, which is a strobe rather than a crackle — and it is
-                    // exactly the per-frame swing the flash limiter exists to catch, so
-                    // the fire would engage the limiter and the whole room would flatten.
-                    env = Envelope(attackS = 0.020f, holdS = 0.006f, decayTauS = 0.09f),
-                    gain = 0.25f + 0.75f * rng.pow2(),
-                    origin = hp,
+                    kind = AmbienceEvent.SPIT,
+                    startS = nextSpitS,
+                    env = Envelope(attackS = 0.004f, holdS = 0.006f, decayTauS = 0.09f),
+                    gain = 0.25f + 0.75f * spitRng.pow2(),
+                    origin = room.positions[hearth] ?: room.centre(),
                     azimuth = room.azimuth[hearth] ?: 0.25f,
-                    colour = EMBER,
-                    timbre = 0.4f + 0.6f * rng.f01(),   // how bright the pop is
-                    seed = rng.nextLong(),
+                    colour = POP_TINT,
+                    timbre = 0.4f + 0.6f * spitRng.f01(),
+                    seed = spitRng.nextLong(),
                 ),
             )
-            nextPopS += (-ln(rng.f01().coerceAtLeast(1e-6f)) / lambda).toDouble()
+            nextSpitS += (-ln(spitRng.f01().coerceAtLeast(1e-6f)) / lambda).toDouble()
         }
     }
+
+    // ---- Lights ----------------------------------------------------------
 
     override fun renderLights(
         tS: Double,
@@ -217,76 +267,93 @@ class FireplaceScript : AmbienceScript {
         n: Int,
         out: MutableMap<Int, Rgb>,
     ) {
-        val dt = ((tS - lastT).coerceIn(0.0, 0.1)).toFloat()
+        val dt = if (lastT.isNaN()) 0f else (tS - lastT).coerceIn(0.0, 0.25).toFloat()
         lastT = tS
         val intensity = params.intensity.coerceIn(0f, 1f)
+        val ids = room.ids
 
-        // 1. Per-lamp 1/f wander, stepped towards a fresh target. Slow enough that the
-        //    flicker never approaches the limiter's per-frame delta.
-        val rate = (dt * (2.2f + 2.5f * intensity)).coerceIn(0f, 1f)
+        // 1. The roar: how hard the fire is burning, a few percent either way, slowly.
+        //    With a recording it is the recording's level; held, never snapped, when
+        //    the recording has nothing for this instant. Without one, the fire's own
+        //    slow breathing stands in.
+        val r = recording
+        val haveBed = r != null && r.sampleAt(tS, bedNow)
+        val target = if (haveBed) bedNow.level else 0.5f + 0.5f * SmoothNoise.fractal(ROAR_SEED, tS, 0.03f, 2)
+        val roarLevel = ROAR_MIN + (ROAR_MAX - ROAR_MIN) * roarFollow.step(haveBed || r == null, target, dt)
+
+        // 2. The settling: a drift over minutes shared by the whole room.
+        val settle = 1f + SETTLE_DEPTH * SmoothNoise.fractal(SETTLE_SEED, tS, 1f / 110f, 2, ratio = 2.2f)
+
+        // 3. Each lamp's own wander, then mixed through the neighbour kernel so the room
+        //    breathes as one fire seen from different angles.
         for (i in wander.indices) {
-            phase[i] += dt * (0.7f + 0.9f * ((i * 37) % 11) / 11f)
-            val target = 0.5f + 0.5f * sin(2f * PI.toFloat() * phase[i]) * (0.4f + 0.6f * rng.f01())
-            wander[i] += (target - wander[i]) * rate
+            wander[i] = SmoothNoise.fractal(lampSeed[i], tS, FLICKER_BASE_HZ, FLICKER_OCTAVES, FLICKER_RATIO, FLICKER_ROLLOFF)
         }
-
-        // 2. Mix through the neighbour kernel so the room breathes as one fire.
         for (i in coupled.indices) {
             var acc = 0f
             val row = room.coupling[i]
             for (j in row.indices) acc += row[j] * wander[j]
-            coupled[i] = acc
+            // Mostly the shared wander, a little of the lamp's own, so neighbours move
+            // together without being identical.
+            coupled[i] = 0.7f * acc + 0.3f * wander[i]
         }
 
-        // How hard the fire is burning, from the recording when there is one. A log
-        // catching is a real surge in the low-mid, and the room lifting with it is the
-        // difference between a fire and a flickering lamp.
-        val r = recording
-        val haveBed = r != null && r.sampleAt(tS, bedNow)
-        val roarLevel = if (haveBed) {
-            (0.78f + 0.55f * bedNow.level).coerceIn(0.6f, 1.4f)
-        } else 1f
+        var nowPopping = false
+        val hearthLevel = HEARTH_BASE + HEARTH_GAIN * intensity
+        val farLevel = FAR_BASE + FAR_GAIN * intensity
+        val depth = 0.8f + 0.4f * intensity
 
-        for ((i, id) in room.ids.withIndex()) {
-            val flick = 0.55f + 0.45f * coupled[i]
-            val level = (0.20f + 0.55f * intensity) * flick * hearthFalloff[i] * roarLevel
-            // Hotter at the heart, redder at the edges — a fire is not one colour.
-            val heat = (hearthFalloff[i] * flick).coerceIn(0f, 1f)
-            var r = lerp(EMBER.first, FLAME.first, heat) * level
-            var g = lerp(EMBER.second, FLAME.second, heat) * level
-            var b = lerp(EMBER.third, FLAME.third, heat) * level
+        for ((i, id) in ids.withIndex()) {
+            val h = hearthShare[i]
+            // Hearth lamps are coals: bright, deep, steady. Far lamps are bounce: soft,
+            // paler, and they show every flame that moves.
+            val base = farLevel + (hearthLevel - farLevel) * h
+            val amp = (FLICKER_FAR + (FLICKER_HEARTH - FLICKER_FAR) * h) * depth
+            val slow = 1f + LAMP_DRIFT * SmoothNoise.value(lampSeed[i] + 91, tS / 70.0)
+            val level = base * (1f + amp * coupled[i]) * slow * settle * roarLevel
 
-            // Sum this frame's raw glint from every live pop before filtering. The
-            // cast filter is per-lamp state and has to advance exactly once per frame:
-            // stepping it inside this loop made its time constant depend on how many
-            // pops happened to overlap, and at full intensity (lambda 3/s against a
-            // 0.38 s envelope) two or more usually do.
-            var glintIn = 0f
+            val colour = Blackbody.rgb(FAR_KELVIN + (HEARTH_KELVIN - FAR_KELVIN) * h)
+            var rr = colour.first * level
+            var gg = colour.second * level
+            var bb = colour.third * level
+
+            // 4. Pops: a small glow on the one or two lamps nearest where the coal spat.
+            var pop = 0f
             var k = 0
             while (k < n) {
                 val e = live[k]
                 k++
                 if (e == null || e.kind != AmbienceEvent.POP) continue
-                val d = room.distanceTo(id, e.origin)
-                // A pop is a glint off the embers, not a flash of lightning. POP_LIGHT
-                // keeps it that side of the line; the audio pop is unscaled, because a
-                // crackle that is quiet is just a fire further away.
-                glintIn += POP_LIGHT * e.levelAt(tS) * e.timbre / (1f + 5f * d * d)
+                if (e.ageAt(tS) in 0f..0.3f) nowPopping = true
+                pop += e.levelAt(tS) * popShare(i, e)
             }
-            // Bounced light arrives spread over frames, not in a step: transparent
-            // near the hearth, diffusing across the room. Stepped on every frame,
-            // including the quiet ones between pops — left unstepped the tail froze
-            // at its last value and reappeared on the front of the next pop. Render
-            // runs at 60 Hz, matching the cutoff the filters were built for in bind().
-            val glint = castFilters.getOrNull(i)?.lp(glintIn) ?: glintIn
-            if (glint > 0f) {
-                r = minOf(1f, r + SPARK.first * glint)
-                g = minOf(1f, g + SPARK.second * glint)
-                b = minOf(1f, b + SPARK.third * glint)
+            if (pop > 0f) {
+                val p = pop * (0.85f + 0.3f * intensity)
+                rr += POP_TINT.first * p
+                gg += POP_TINT.second * p
+                bb += POP_TINT.third * p
             }
-            out[id] = Rgb(r, g, b)
+            out[id] = Rgb(rr.coerceIn(0f, 1f), gg.coerceIn(0f, 1f), bb.coerceIn(0f, 1f))
         }
+        popping = nowPopping
     }
+
+    /**
+     * How much of event [e]'s glow lamp [i] gets: all of it for the lamp nearest the
+     * spit, 60 percent for the second nearest, none for anything else.
+     */
+    private fun popShare(i: Int, e: AmbienceEvent): Float {
+        val ids = room.ids
+        val mine = room.distanceTo(ids[i], e.origin)
+        var closer = 0
+        for (j in ids.indices) {
+            if (j != i && room.distanceTo(ids[j], e.origin) < mine) closer++
+            if (closer >= 2) return 0f
+        }
+        return if (closer == 0) 1f else 0.6f
+    }
+
+    // ---- Audio -----------------------------------------------------------
 
     override fun renderAudio(
         out: FloatArray,
@@ -321,25 +388,29 @@ class FireplaceScript : AmbienceScript {
             i++
         }
 
-        // Pops: one impulse each, from the same event that flashed the lamp.
+        // Pops and spits: one impulse each. The pops are also what the lamps glow on, but
+        // the audio plays them at full strength regardless of how little the room shows.
         var k = 0
         while (k < n) {
             val e = live[k]
             k++
-            if (e == null || e.kind != AmbienceEvent.POP) continue
+            if (e == null || (e.kind != AmbienceEvent.POP && e.kind != AmbienceEvent.SPIT)) continue
             // No block-boundary skip: it would make the shared voices' state depend
             // on the buffer size. Gated per sample below instead.
             val v = voices.voiceFor(e) { it.reset() }
             val entry = voices.entryGain(v, frames)
             v.filter.set(700f + 2200f * e.timbre, 4.5f, sampleRate)
+            // The light envelope of a pop is a slow glow; the sound is a short tick.
+            val env = if (e.kind == AmbienceEvent.POP) POP_SOUND else e.env
+            val gain = if (e.kind == AmbienceEvent.POP) 0.25f + 0.75f * e.timbre else e.gain
             var j = 0
             while (j < frames) {
                 val age = (startS + j.toDouble() / sampleRate - e.startS).toFloat()
                 if (age >= 0f) {
-                    val env = e.env.at(age)
-                    if (env > 0f) {
+                    val a = env.at(age)
+                    if (a > 0f) {
                         // entry: the de-click ramp on a freshly recycled voice.
-                        val s = v.filter.bp(v.noise.bipolar()) * env * e.gain * entry * 0.5f
+                        val s = v.filter.bp(v.noise.bipolar()) * a * gain * entry * 0.5f
                         out[j * 2] += s * pan[0]
                         out[j * 2 + 1] += s * pan[1]
                     }
@@ -349,26 +420,59 @@ class FireplaceScript : AmbienceScript {
         }
     }
 
-    private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
-
     private companion object {
+        /** Shortest and longest gap between two pops the room shows, in seconds. */
+        const val POP_GAP_MIN_S = 2.5
+        const val POP_GAP_MAX_S = 8.0
+
+        /** A crackle must be this far over the fire's usual to be worth a glow. */
+        const val MIN_POP_STRENGTH = 0.45f
+
+        /** How much brighter, in perceived units, the nearest lamp gets at a pop's peak. */
+        const val POP_GAIN_MIN = 0.06f
+        const val POP_GAIN_MAX = 0.10f
+
+        /** The sound of a pop is a short tick, however slowly the lamp glows. */
+        val POP_SOUND = Envelope(attackS = 0.004f, holdS = 0.006f, decayTauS = 0.09f)
+
         /**
-         * Shortest gap between two sparks, in seconds.
-         *
-         * Very short: a fire crackles many times a second and each one is real. The
-         * light each throws is small enough (see POP_LIGHT) that a dense run of them
-         * reads as a fire catching rather than as a strobe.
+         * Time constant the recording's roar is followed at. Long on purpose: the fire's
+         * mood changes over several seconds, and the per-frame brightness is the noise's
+         * business, not the recording's.
          */
-        const val POP_REFRACTORY_S = 0.07
+        const val ROAR_TAU_S = 3f
+        const val ROAR_MIN = 0.94f
+        const val ROAR_MAX = 1.06f
+        const val ROAR_SEED = 0x6A11
+        const val SETTLE_SEED = 0x5E77
+        const val SETTLE_DEPTH = 0.05f
+        const val LAMP_DRIFT = 0.04f
 
+        /**
+         * The flicker's four octaves: about one cycle in twelve seconds, then roughly
+         * three times faster each, up to about two and a half a second. Each octave is
+         * 0.6 of the last, which is close to 1/f amplitude for a ratio of three.
+         */
+        const val FLICKER_BASE_HZ = 0.08f
+        const val FLICKER_OCTAVES = 4
+        const val FLICKER_RATIO = 3.1f
+        const val FLICKER_ROLLOFF = 0.75f
 
-        /** How much of a lamp a single pop may claim. */
-        const val POP_LIGHT = 0.40f
+        /** Flicker depth, as a fraction of a lamp's own level. Coals are steadier. */
+        const val FLICKER_HEARTH = 0.20f
+        const val FLICKER_FAR = 0.42f
 
-        val EMBER = Rgb(1.00f, 0.28f, 0.05f)
-        val FLAME = Rgb(1.00f, 0.62f, 0.18f)
-        val SPARK = Rgb(1.00f, 0.85f, 0.55f)
-        // Kept for symmetry with the other scripts' unused-tail guard.
-        @Suppress("unused") val DECAY = exp(-1f)
+        /** Perceived brightness of the hearth lamps and the far lamps at intensity 0 and 1. */
+        const val HEARTH_BASE = 0.36f
+        const val HEARTH_GAIN = 0.26f
+        const val FAR_BASE = 0.20f
+        const val FAR_GAIN = 0.14f
+
+        /** Colour temperature of the coals and of the bounce, in kelvin. */
+        const val HEARTH_KELVIN = 1850f
+        const val FAR_KELVIN = 2200f
+
+        /** The glow of a pop: orange-gold, a little paler than the coals. */
+        val POP_TINT = Blackbody.rgb(2500f)
     }
 }

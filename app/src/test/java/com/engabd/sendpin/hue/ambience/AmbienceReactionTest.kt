@@ -178,7 +178,11 @@ class AmbienceReactionTest {
         // Every strike should be the leading edge of a clap. Lightning does re-strike,
         // and a close one is allowed its double flicker inside a tenth of a second; what
         // it never does is flash again four seconds into its own rumble.
-        val strays = out.events.filter { e -> STORM.none { abs(e.startS - it.atS) < 0.35 } }
+        //
+        // A clap's own strokes follow it by up to a second and a quarter now (two to four
+        // return strokes with dark gaps, or a second soft glow), so "belongs to a clap"
+        // means starting between its onset and a second and a half after it.
+        val strays = out.events.filter { e -> STORM.none { e.startS - it.atS in -0.35..1.6 } }
         assertTrue(
             strays.isEmpty(),
             "re-triggered on a roll at ${strays.map { "%.2f".format(it.startS) }}",
@@ -244,18 +248,27 @@ class AmbienceReactionTest {
     @Test
     fun `the room swells with the rumble it is playing`() {
         val (script, out) = storm()
-        fun brightness(t: Double): Float {
-            val map = HashMap<Int, Rgb>()
+        // The rumble is followed over seconds now, so the script has to be walked through
+        // the storm a frame at a time like the render loop does; two isolated calls would
+        // each see a follower that had barely moved.
+        val sums = HashMap<Int, Float>()
+        var t = 0.0
+        val map = HashMap<Int, Rgb>()
+        while (t < STORM[1].atS + 4.0) {
+            map.clear()
             script.renderLights(t, arrayOfNulls(1), 0, map)
-            return map.values.fold(0f) { a, c -> a + c.first + c.second + c.third }
+            sums[(t * 10).toInt()] = map.values.fold(0f) { a, c -> a + c.first + c.second + c.third }
+            t += 1.0 / 60.0
         }
+        fun brightness(at: Double) = sums.getValue((at * 10).toInt())
         // Rain only, before anything has happened, against the middle of a long roll.
         // Deliberately measured with *no events live at all*, so what is being compared
         // is purely the bed's answer to the audio rather than any flash still fading.
+        // A few percent: the roll is a hint of sky now, not a second flash (it was 30).
         val quiet = brightness(2.0)
-        val rolling = brightness(STORM[1].atS + 1.6)
+        val rolling = brightness(STORM[1].atS + 3.0)
         assertTrue(
-            rolling > quiet * 1.3f,
+            rolling > quiet * 1.02f,
             "the room ignored the rumble it was playing ($quiet then $rolling)",
         )
         assertTrue(out.bed.ready, "nothing was ever written to the bed track")

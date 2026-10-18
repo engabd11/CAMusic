@@ -650,6 +650,20 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * instead means the one place that knows how to end a show is reachable from
      * every place that can ask for one to end.
      */
+    /**
+     * Ease the running show towards dark and silent: 1 is untouched, 0 is off.
+     *
+     * The sleep timer's last minute. Goes through the holder and the light engine rather
+     * than the view model so it works when the Activity is long gone and only the
+     * foreground service is keeping the show alive.
+     */
+    fun setAmbienceFade(fade: Float) {
+        appScope.launch {
+            ambienceAudio.setFade(fade)
+            directLightSync.setAmbienceFade(fade)
+        }
+    }
+
     fun stopAmbienceShow() {
         appScope.launch {
             runCatching { directLightSync.stopAmbience() }
