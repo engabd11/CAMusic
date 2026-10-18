@@ -86,6 +86,7 @@ import com.engabd.sendpin.ui.screens.ArtistDetailScreen
 import com.engabd.sendpin.ui.screens.LibraryScreen
 import com.engabd.sendpin.ui.screens.LightSyncScreen
 import com.engabd.sendpin.ui.screens.MiniPlayerBar
+import com.engabd.sendpin.ui.screens.WakeSleepScreen
 import com.engabd.sendpin.ui.screens.NowPlayingOverlay
 import com.engabd.sendpin.ui.screens.NowPlayingScreen
 import com.engabd.sendpin.ui.screens.OnboardingWizard
@@ -195,7 +196,7 @@ private fun sectionOf(route: String?): String? = when {
     // branch below — whose popUpTo(saveState) + restoreState puts the screen you were
     // trying to leave straight back on top.
     route == "downloads?from=library" -> "library"
-    route == "downloads" || route == "stats" -> "settings"
+    route == "downloads" || route == "stats" || route == "wake_sleep" -> "settings"
     route == "rhythm_game" -> "light_sync"
     // Effects is a sibling of Light Sync in the flat graph, and reached from it — so
     // the Lights tab is the one that should stay lit while it is open.
@@ -864,6 +865,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         StatsScreen(onBack = { navController.popBackStack() })
                     }
                     screen("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
+                    screen("wake_sleep") { WakeSleepScreen(onBack = { navController.popBackStack() }) }
                     screen("light_sync") {
                         LightSyncScreen(
                             onBack = { navController.popBackStack() },
@@ -877,6 +879,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             viewModel = lightSyncVm,
                             onOpenEffects = { navController.navigate("effects") },
                             onOpenRhythmGame = { navController.navigate("rhythm_game") },
+                            onOpenWakeSleep = { navController.navigate("wake_sleep") },
                             // The same view model the Effects screen drives, so the
                             // Light Sync tile and that screen are two views of one
                             // running show rather than two that can disagree.
@@ -911,6 +914,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onDetail = { settingsDetail = it },
                             onOpenDownloads = { navController.navigate("downloads") },
                             onOpenStats = { navController.navigate("stats") },
+                            onOpenWakeSleep = { navController.navigate("wake_sleep") },
                         )
                     }
                     } // NavHost

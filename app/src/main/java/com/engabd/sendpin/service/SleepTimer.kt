@@ -56,6 +56,19 @@ class SleepTimer(private val app: SendpinApp) {
         val running: Boolean get() = mode != Mode.OFF
     }
 
+    /**
+     * Told when a timer starts, is cancelled, or runs out. Wind-down (dimming a room,
+     * handing over to a scene) lives behind this so the timer stays about the music.
+     */
+    interface Listener {
+        /** [totalMs] is the timer length, or null for "stop after this song". */
+        fun onStarted(totalMs: Long?)
+        fun onCancelled()
+        fun onEnded()
+    }
+
+    @Volatile var listener: Listener? = null
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var job: Job? = null
 
@@ -72,10 +85,11 @@ class SleepTimer(private val app: SendpinApp) {
 
     /** Fade out over the last [FADE_MS] of [minutes], then pause. 0 cancels. */
     fun start(minutes: Int) {
-        cancel()
-        if (minutes <= 0) return
+        if (minutes <= 0) { cancel(); return }
+        reset()
         val deadline = System.currentTimeMillis() + minutes * 60_000L
         _state.value = State(Mode.TIMED, minutes, minutes * 60_000L)
+        listener?.onStarted(minutes * 60_000L)
         job = scope.launch {
             while (true) {
                 val left = deadline - System.currentTimeMillis()
@@ -90,8 +104,9 @@ class SleepTimer(private val app: SendpinApp) {
 
     /** Pause when the song playing now ends. */
     fun endOfTrack() {
-        cancel()
+        reset()
         _state.value = State(Mode.END_OF_TRACK)
+        listener?.onStarted(null)
         job = scope.launch {
             val local = app.localPlayer
             if (local.active.value && local.playing.value) {
@@ -133,6 +148,12 @@ class SleepTimer(private val app: SendpinApp) {
     }
 
     fun cancel() {
+        val wasRunning = _state.value.running
+        reset()
+        if (wasRunning) listener?.onCancelled()
+    }
+
+    private fun reset() {
         job?.cancel()
         job = null
         restore()
@@ -143,6 +164,7 @@ class SleepTimer(private val app: SendpinApp) {
         _state.value = State()
         job = null
         _ended.tryEmit(Unit)
+        listener?.onEnded()
     }
 
     private suspend fun fadeOutAndPause(deadline: Long) {

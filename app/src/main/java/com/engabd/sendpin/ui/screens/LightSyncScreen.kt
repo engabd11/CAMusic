@@ -159,6 +159,7 @@ fun LightSyncScreen(
      * screen drive the same object rather than two that can disagree.
      */
     onStopAmbience: () -> Unit = {},
+    onOpenWakeSleep: () -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings = remember(context) {
@@ -175,7 +176,7 @@ fun LightSyncScreen(
         // Effects drives the bridge's entertainment stream directly, which is what the
         // direct path already owns. The Home Assistant path talks to HA's own light
         // service and has no per-frame stream to script, so it does not offer them.
-        "direct" -> DirectLightSyncScreen(onBack, onOpenEffects, onOpenRhythmGame, onStopAmbience)
+        "direct" -> DirectLightSyncScreen(onBack, onOpenEffects, onOpenRhythmGame, onStopAmbience, onOpenWakeSleep)
         else -> HaLightSyncScreen(onBack, viewModel)
     }
 }
@@ -580,6 +581,7 @@ private fun DirectLightSyncScreen(
     onOpenEffects: () -> Unit = {},
     onOpenRhythmGame: () -> Unit = {},
     onStopAmbience: () -> Unit = {},
+    onOpenWakeSleep: () -> Unit = {},
 ) {
     val accent = LocalAccent.current
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -1078,6 +1080,12 @@ private fun DirectLightSyncScreen(
                             "plays alongside whatever music is on rather than stopping it, so " +
                             "a thunderstorm can sit under a record — turn that off under " +
                             "Ambience if you would rather it had the room to itself.",
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    com.engabd.sendpin.ui.screens.settings.NavRow(
+                        androidx.compose.material.icons.Icons.Default.Alarm, "Wake & Sleep",
+                        "Sunrise alarms with lights and music, and a bedtime wind-down", accent,
+                        onClick = onOpenWakeSleep,
                     )
                 }
 
