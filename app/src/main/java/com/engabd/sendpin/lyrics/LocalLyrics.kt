@@ -23,6 +23,10 @@ object LocalLyrics {
     suspend fun read(context: Context, track: LocalTrack): MaLyrics? = withContext(Dispatchers.IO) {
         track.localPath?.let { path ->
             val audio = File(path)
+            // Word-timed TTML beside the file wins over a line-timed LRC: it says more.
+            File(audio.path + ".ttml").takeIf { it.isFile }
+                ?.let { runCatching { EmbeddedLyrics.toLyrics(it.readText()) }.getOrNull() }
+                ?.let { return@withContext it }
             sidecarFor(audio).takeIf { it.isFile }
                 ?.let { runCatching { EmbeddedLyrics.toLyrics(it.readText()) }.getOrNull() }
                 ?.let { return@withContext it }

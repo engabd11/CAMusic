@@ -61,6 +61,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.ma.MaLyrics
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.style.ResolvedTextDirection
+import com.engabd.sendpin.lyrics.LyricsTranslation
+import com.engabd.sendpin.ma.LyricLine
+import com.engabd.sendpin.ma.LyricTiming
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.LocalReducedMotion
 import com.engabd.sendpin.ui.design.Motion
@@ -92,6 +101,8 @@ fun LyricsPane(
     val globalOffsetMs by viewModel.lyricsOffsetMs.collectAsStateWithLifecycle()
     val songOffsetMs by viewModel.songLyricsOffsetMs.collectAsStateWithLifecycle()
     val online by viewModel.lyricsOnline.collectAsStateWithLifecycle()
+    val wordByWord by viewModel.lyricsWordByWord.collectAsStateWithLifecycle()
+    val translation by viewModel.lyricsTranslation.collectAsStateWithLifecycle()
     // The two nudges add: the Settings one for a provider, this song's for itself.
     val offsetMs = globalOffsetMs + songOffsetMs
 
@@ -138,12 +149,13 @@ fun LyricsPane(
                 } else {
                     Column(Modifier.fillMaxSize()) {
                         SyncedLyrics(
-                            lyrics, positionMs, accent, offsetMs,
+                            lyrics, positionMs, accent, offsetMs, wordByWord,
+                            (translation as? LyricsTranslation.Ready)?.lines,
                             // Tap a line to go there: seek to where it lights up.
                             onLine = { atMs -> viewModel.seekTo((atMs - offsetMs).coerceAtLeast(0)) },
                             modifier = Modifier.weight(1f),
                         )
-                        LyricsFooter(lyrics, songOffsetMs, accent, viewModel)
+                        LyricsFooter(lyrics, songOffsetMs, accent, viewModel, translation)
                     }
                 }
             }
@@ -300,7 +312,28 @@ private val FocusTravel: AnimationSpec<Float> =
  * make once per song, not a control you use while listening.
  */
 @Composable
-private fun LyricsFooter(lyrics: MaLyrics, songOffsetMs: Int, accent: Color, viewModel: NowPlayingViewModel) {
+private fun LyricsFooter(
+    lyrics: MaLyrics,
+    songOffsetMs: Int,
+    accent: Color,
+    viewModel: NowPlayingViewModel,
+    translation: LyricsTranslation,
+) {
+    // Why there is no translation, said once and quietly. A working one needs no words.
+    (translation as? LyricsTranslation.Note)?.let {
+        Text(
+            it.message,
+            color = TextFaint, fontFamily = AppFont, fontSize = 10.sp, lineHeight = 14.sp,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        )
+    }
+    if (translation is LyricsTranslation.Working) {
+        Text(
+            "Translating on this phone...",
+            color = TextFaint, fontFamily = AppFont, fontSize = 10.sp,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        )
+    }
     if (!lyrics.synced && lyrics.source == null) return
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
@@ -343,16 +376,28 @@ private fun SyncedLyrics(
     positionMs: Long,
     accent: Color,
     offsetMs: Int,
+    wordByWord: Boolean,
+    translations: List<String?>?,
     onLine: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val lines = lyrics.lines
+    // Word timing: the source's own where it has it, otherwise spread across the line
+    // by length (marked `estimated`, drawn softer). Off drops back to whole lines.
+    val lines = remember(lyrics, wordByWord) {
+        val parsed = lyrics.lines
+        when {
+            !lyrics.synced -> parsed
+            wordByWord -> LyricTiming.withEstimatedWords(parsed)
+            else -> parsed.map { if (it.words == null) it else it.copy(words = null) }
+        }
+    }
     // The line in force: the last one whose timestamp has passed, read slightly into
     // the future so the scroll starts before the vocal rather than chasing it. The
     // user offset is signed — a negative value means "these lyrics run early".
     val head = positionMs + LEAD_MS + offsetMs
     val active = if (!lyrics.synced) -1 else {
-        val i = lines.indexOfLast { it.atMs <= head }.coerceAtLeast(0)
+        // Backing vocals sit beside the main line and never take the focus from it.
+        val i = lines.indexOfLast { it.atMs <= head && !it.background }.coerceAtLeast(0)
         // A blank line holds an index but has nothing to highlight, so land on the
         // last line that says something instead of lighting up a gap.
         if (lines.getOrNull(i)?.text.isNullOrBlank()) {
@@ -473,73 +518,243 @@ private fun SyncedLyrics(
                 Spacer(Modifier.height(VERSE_GAP))
             } else {
                 val isActive = i == active && lyrics.synced
-                // Colour is the one part of the hierarchy that cannot be set from
-                // inside a layer block, so it keeps a spring of its own. Two states
-                // rather than a continuum, and critically damped, so it lands a little
-                // ahead of the size — brightness arriving first is what makes the line
-                // feel picked out rather than pushed forward.
-                val activeness by animateFloatAsState(
-                    targetValue = if (isActive) 1f else 0f,
-                    animationSpec = Motion.effects(),
-                    label = "lyricActive",
-                )
-                val resting = if (!lyrics.synced) TextSecondary else if (i < active) TextFaint else TextMuted
-                Text(
-                    line.text,
-                    style = LyricTextStyle,
-                    color = lerp(resting, accent, activeness),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // A line is somewhere to go: tap it and the song seeks there. Only
-                        // on synced lyrics, where a line has a time to go to.
-                        .then(
-                            if (lyrics.synced) {
-                                Modifier.clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    onClickLabel = "Play from this line",
-                                ) { following = true; onLine(line.atMs) }
-                            } else Modifier,
-                        )
-                        // graphicsLayer *outside* the padding, so the layer's bounds
-                        // include it: a blur is clipped to the layer it is set on, and
-                        // a layer measured tight to the glyphs would cut the softness
-                        // off square at the top and bottom of every dimmed line.
-                        .graphicsLayer {
-                            if (!lyrics.synced) {
-                                // Nothing to be in focus, so nothing is out of it.
-                                scaleX = RESTING_SCALE
-                                scaleY = RESTING_SCALE
-                                return@graphicsLayer
-                            }
-                            val offset = i - focus.value
-                            // 1 on the line being sung, 0 a whole line away. Both
-                            // neighbours are part-lit while the focus is between them,
-                            // which is what makes the emphasis hand over instead of
-                            // blinking from one line to the next.
-                            val lit = smoothstep(1f - abs(offset).coerceAtMost(1f))
-                            val reach = if (offset < 0f) FALLOFF_BEHIND else FALLOFF_AHEAD
-                            val near = smoothstep(1f - (abs(offset) / reach).coerceIn(0f, 1f))
-
-                            val s = RESTING_SCALE + (1f - RESTING_SCALE) * lit
-                            scaleX = s
-                            scaleY = s
-                            alpha = ALPHA_FAR +
-                                (ALPHA_NEAR - ALPHA_FAR) * near +
-                                (1f - ALPHA_NEAR) * lit
-                            // A Gaussian blur is an offscreen layer per line, recomputed
-                            // every frame the focus moves — the most expensive thing on
-                            // this screen by a wide margin, and it is pure depth cueing.
-                            // Reduced motion drops it and keeps the dimming, which is the
-                            // same information without the per-frame cost.
-                            val blur = if (reducedMotion) 0f else MAX_BLUR.toPx() * (1f - near)
-                            renderEffect =
-                                if (blur > MIN_BLUR_PX) BlurEffect(blur, blur, TileMode.Decal)
-                                else null
-                        }
-                        .padding(vertical = LINE_PADDING),
+                // A backing vocal runs beside the main line, so it is live for as long as
+                // it is being sung rather than only when it holds the focus.
+                val words = line.words
+                val live = lyrics.synced && words != null &&
+                    (isActive || (line.background && head >= line.atMs && head <= words.last().endMs + BG_LINGER_MS))
+                LyricRow(
+                    line = line,
+                    index = i,
+                    sungBefore = i < active,
+                    isActive = isActive,
+                    live = live,
+                    // Only a live line is handed the moving playhead; every other row gets a
+                    // constant, so it is skipped on every tick instead of being redrawn.
+                    headMs = if (live) head else 0L,
+                    synced = lyrics.synced,
+                    accent = accent,
+                    reducedMotion = reducedMotion,
+                    translation = translations?.getOrNull(i),
+                    focus = focus,
+                    onClick = { following = true; onLine(line.atMs) },
                 )
             }
+        }
+    }
+}
+
+/** How long after its last word a backing vocal stays lit. */
+private const val BG_LINGER_MS = 600L
+
+/** A backing vocal is drawn at this fraction of a main line's size. */
+private const val BACKGROUND_SCALE = 0.8f
+
+/** How far ahead of the sung edge the fill fades out, so it reads as a wipe. */
+private val FILL_FEATHER = 14.dp
+
+/** The softer wipe for word times that were estimated, not read from the source. */
+private val FILL_FEATHER_ESTIMATED = 26.dp
+
+/** An estimated fill is a little less saturated, so it never claims to be exact. */
+private const val ESTIMATED_FILL_ALPHA = 0.82f
+
+private val TranslationTextStyle = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.Medium,
+    fontSize = 15.sp,
+    lineHeight = 21.sp,
+    textAlign = TextAlign.Center,
+    lineBreak = LineBreak.Paragraph,
+)
+
+/**
+ * One lyric line: its words, the translation under them if there is one, and all the
+ * focus-driven scale, fade and blur.
+ *
+ * Its own function so Compose can skip it. Every parameter is a value or an instance
+ * that does not change between playhead ticks, except [headMs], which is 0 for every
+ * row that is not being sung: only the live line is redrawn as the song moves.
+ */
+@Composable
+private fun LyricRow(
+    line: LyricLine,
+    index: Int,
+    sungBefore: Boolean,
+    isActive: Boolean,
+    live: Boolean,
+    headMs: Long,
+    synced: Boolean,
+    accent: Color,
+    reducedMotion: Boolean,
+    translation: String?,
+    focus: Animatable<Float, *>,
+    onClick: () -> Unit,
+) {
+    // Colour is the one part of the hierarchy that cannot be set from
+    // inside a layer block, so it keeps a spring of its own. Two states
+    // rather than a continuum, and critically damped, so it lands a little
+    // ahead of the size — brightness arriving first is what makes the line
+    // feel picked out rather than pushed forward.
+    val activeness by animateFloatAsState(
+        targetValue = if (isActive) 1f else 0f,
+        animationSpec = Motion.effects(),
+        label = "lyricActive",
+    )
+    val resting = if (!synced) TextSecondary else if (sungBefore) TextFaint else TextMuted
+    // A line with words is filled in as it is sung, so its base stays the dimmed
+    // "still to come" colour and the accent is painted over it. A line without word
+    // timing lights up whole, as it always did.
+    val wordFill = live && line.words != null
+    val baseColor = if (wordFill) TextMuted else lerp(resting, accent, activeness)
+    val background = line.background
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            // A line is somewhere to go: tap it and the song seeks there. Only
+            // on synced lyrics, where a line has a time to go to.
+            .then(
+                if (synced) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClickLabel = "Play from this line",
+                        onClick = onClick,
+                    )
+                } else Modifier,
+            )
+            // graphicsLayer *outside* the padding, so the layer's bounds
+            // include it: a blur is clipped to the layer it is set on, and
+            // a layer measured tight to the glyphs would cut the softness
+            // off square at the top and bottom of every dimmed line.
+            .graphicsLayer {
+                val kind = if (background) BACKGROUND_SCALE else 1f
+                if (!synced) {
+                    // Nothing to be in focus, so nothing is out of it.
+                    scaleX = RESTING_SCALE
+                    scaleY = RESTING_SCALE
+                    return@graphicsLayer
+                }
+                val offset = index - focus.value
+                // 1 on the line being sung, 0 a whole line away. Both
+                // neighbours are part-lit while the focus is between them,
+                // which is what makes the emphasis hand over instead of
+                // blinking from one line to the next.
+                val lit = smoothstep(1f - abs(offset).coerceAtMost(1f))
+                val reach = if (offset < 0f) FALLOFF_BEHIND else FALLOFF_AHEAD
+                val near = smoothstep(1f - (abs(offset) / reach).coerceIn(0f, 1f))
+
+                val s = (RESTING_SCALE + (1f - RESTING_SCALE) * lit) * kind
+                scaleX = s
+                scaleY = s
+                alpha = ALPHA_FAR +
+                    (ALPHA_NEAR - ALPHA_FAR) * near +
+                    (1f - ALPHA_NEAR) * lit
+                // A Gaussian blur is an offscreen layer per line, recomputed
+                // every frame the focus moves — the most expensive thing on
+                // this screen by a wide margin, and it is pure depth cueing.
+                // Reduced motion drops it and keeps the dimming, which is the
+                // same information without the per-frame cost.
+                val blur = if (reducedMotion) 0f else MAX_BLUR.toPx() * (1f - near)
+                renderEffect =
+                    if (blur > MIN_BLUR_PX) BlurEffect(blur, blur, TileMode.Decal)
+                    else null
+            }
+            .padding(vertical = LINE_PADDING),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (wordFill) {
+            WordFillText(line, headMs, baseColor, accent, reducedMotion, Modifier.fillMaxWidth())
+        } else {
+            Text(line.text, style = LyricTextStyle, color = baseColor, modifier = Modifier.fillMaxWidth())
+        }
+        if (!translation.isNullOrBlank()) {
+            Text(
+                translation,
+                style = TranslationTextStyle,
+                color = if (isActive) TextSecondary else TextFaint,
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * A line whose words are filled in left to right as they are sung.
+ *
+ * The text is laid out once, as an ordinary [Text], so TalkBack reads the line as one
+ * string and wrapping behaves exactly as it does for every other line. The fill is
+ * drawn over it from the layout's own geometry: each wrapped row is clipped at the
+ * sung edge and the same layout is painted again in the accent, with a short feathered
+ * fade at the edge. Nothing is recomposed per frame beyond this one line.
+ */
+@Composable
+private fun WordFillText(
+    line: LyricLine,
+    headMs: Long,
+    base: Color,
+    accent: Color,
+    reducedMotion: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    var layout by remember(line) { mutableStateOf<TextLayoutResult?>(null) }
+    val estimated = line.words?.firstOrNull()?.estimated == true
+    Text(
+        line.text,
+        style = LyricTextStyle,
+        color = base,
+        onTextLayout = { layout = it },
+        modifier = modifier.drawWithContent {
+            drawContent()
+            val l = layout ?: return@drawWithContent
+            val feather = if (reducedMotion) 0f else (if (estimated) FILL_FEATHER_ESTIMATED else FILL_FEATHER).toPx()
+            val colour = if (estimated) accent.copy(alpha = accent.alpha * ESTIMATED_FILL_ALPHA) else accent
+            drawSungFill(l, LyricTiming.sungChars(line, headMs, stepByWord = reducedMotion), colour, feather)
+        },
+    )
+}
+
+/** Paint [layout] in [colour] up to the fractional character index [sung]. */
+private fun DrawScope.drawSungFill(layout: TextLayoutResult, sung: Float, colour: Color, feather: Float) {
+    val total = layout.layoutInput.text.length
+    if (sung <= 0f || total == 0) return
+    val pos = sung.coerceAtMost(total.toFloat())
+    for (row in 0 until layout.lineCount) {
+        val start = layout.getLineStart(row)
+        val end = layout.getLineEnd(row, visibleEnd = true)
+        if (pos <= start) break
+        val left = layout.getLineLeft(row)
+        val right = layout.getLineRight(row)
+        val top = layout.getLineTop(row)
+        val bottom = layout.getLineBottom(row)
+        val rtl = layout.getParagraphDirection(start) == ResolvedTextDirection.Rtl
+        if (pos >= end) {
+            clipRect(left, top, right, bottom) { drawText(layout, brush = SolidColor(colour)) }
+            continue
+        }
+        val ci = pos.toInt().coerceIn(start, (end - 1).coerceAtLeast(start))
+        val box = layout.getBoundingBox(ci)
+        val frac = pos - ci
+        // The edge of the fill: left to right for most scripts, right to left for Arabic and Hebrew.
+        val edge = if (rtl) box.right - frac * box.width else box.left + frac * box.width
+        if (feather <= 0f) {
+            if (rtl) clipRect(edge, top, right, bottom) { drawText(layout, brush = SolidColor(colour)) }
+            else clipRect(left, top, edge, bottom) { drawText(layout, brush = SolidColor(colour)) }
+        } else if (rtl) {
+            val far = (edge - feather).coerceAtLeast(left)
+            val brush = Brush.horizontalGradient(
+                0f to Color.Transparent, ((edge - far) / (right - far)).coerceIn(0f, 1f) to colour, 1f to colour,
+                startX = far, endX = right,
+            )
+            clipRect(far, top, right, bottom) { drawText(layout, brush = brush) }
+        } else {
+            val far = (edge + feather).coerceAtMost(right)
+            val brush = Brush.horizontalGradient(
+                0f to colour, ((edge - left) / (far - left)).coerceIn(0f, 1f) to colour, 1f to Color.Transparent,
+                startX = left, endX = far,
+            )
+            clipRect(left, top, far, bottom) { drawText(layout, brush = brush) }
         }
     }
 }

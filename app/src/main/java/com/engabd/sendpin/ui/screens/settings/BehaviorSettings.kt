@@ -2,6 +2,8 @@ package com.engabd.sendpin.ui.screens.settings
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import com.engabd.sendpin.lyrics.LyricsTranslator
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
@@ -130,6 +132,10 @@ internal fun BehaviorScansCard(
 internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
     val offset by settings.lyricsOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
     val online by settings.lyricsOnline.collectAsStateWithLifecycle(initialValue = false)
+    val wordByWord by settings.lyricsWordByWord.collectAsStateWithLifecycle(initialValue = true)
+    val translate by settings.lyricsTranslate.collectAsStateWithLifecycle(initialValue = false)
+    val targetLang by settings.lyricsTranslateLang.collectAsStateWithLifecycle(initialValue = "")
+    val translateWifiOnly by settings.lyricsTranslateWifiOnly.collectAsStateWithLifecycle(initialValue = true)
     SettingsCard(
         title = "Lyrics",
         lead = "Where lyrics come from, and nudging synced ones against the vocal.",
@@ -149,6 +155,57 @@ internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
             accent = com.engabd.sendpin.ui.design.LocalAccent.current,
         ) { on -> scope.launch { settings.setLyricsOnline(on) } }
         Note("Downloads keep their lyrics beside the file, so they work offline.")
+        CardDivider()
+        ToggleRow(
+            title = "Word-by-word highlight",
+            subtitle = "Fill each word in as it is sung",
+            checked = wordByWord,
+            accent = com.engabd.sendpin.ui.design.LocalAccent.current,
+            info = "Uses the word timing in the lyrics when they have it (enhanced LRC, TTML, or " +
+                "a server that sends it). Otherwise the words are spread across each line by " +
+                "length, and drawn a little softer so you can tell it is an estimate.\n\n" +
+                "With Reduce motion on, each word lights up whole instead of wiping across.",
+        ) { on -> scope.launch { settings.setLyricsWordByWord(on) } }
+        CardDivider()
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val translateAvailable = remember { LyricsTranslator.isAvailable(context) }
+        ToggleRow(
+            title = "Translate lyrics",
+            subtitle = if (translateAvailable) "Show a translation under each line" else "Not available on this phone",
+            checked = translate && translateAvailable,
+            accent = com.engabd.sendpin.ui.design.LocalAccent.current,
+            enabled = translateAvailable,
+            info = "Translation runs on this phone with Google's on-device ML Kit. Each " +
+                "language is downloaded once, about 30 MB, the first time you need it. " +
+                "Lyrics stay on the phone to be translated. While this is on, ML Kit also " +
+                "sends Google usage statistics about the translator and may fetch updates " +
+                "for it. Finished translations are kept for next time.",
+        ) { on -> scope.launch { settings.setLyricsTranslate(on) } }
+        if (!translateAvailable) {
+            Note(LyricsTranslator.UNAVAILABLE_COPY)
+        } else if (translate) {
+            val languages = remember { LyricsTranslator.languages() }
+            val phoneLanguage = remember {
+                java.util.Locale.getDefault().getDisplayLanguage(java.util.Locale.getDefault())
+                    .replaceFirstChar { it.titlecase(java.util.Locale.getDefault()) }
+            }
+            val options = listOf("Same as this phone ($phoneLanguage)") + languages.map { it.second }
+            FieldLabel("Translate into")
+            DropdownPicker(
+                options = options,
+                selectedIndex = languages.indexOfFirst { it.first == targetLang }.let { if (it < 0) 0 else it + 1 },
+                accent = com.engabd.sendpin.ui.design.LocalAccent.current,
+            ) { i -> scope.launch { settings.setLyricsTranslateLang(if (i == 0) "" else languages[i - 1].first) } }
+            ToggleRow(
+                title = "Download languages on Wi-Fi only",
+                checked = translateWifiOnly,
+                accent = com.engabd.sendpin.ui.design.LocalAccent.current,
+            ) { on -> scope.launch { settings.setLyricsTranslateWifiOnly(on) } }
+            Note(
+                "Once a language is on the phone, translating happens here. ML Kit's own " +
+                    "usage statistics go to Google.",
+            )
+        }
         CardDivider()
         FieldLabel("Timing, every song")
         SliderRow(

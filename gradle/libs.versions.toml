@@ -12,6 +12,8 @@ ksp = "2.3.12"
 room = "2.8.5"
 baselineprofile = "1.5.0"
 oboe = "1.11.0"
+mlkit-translate = "17.0.3"
+mlkit-language-id = "17.0.6"
 compose-bom = "2026.09.00"
 material3 = "1.5.0-beta01"
 core-ktx = "1.19.1"
@@ -42,6 +44,8 @@ benchmark-macro = "1.5.0"
 
 [libraries]
 oboe = { module = "com.google.oboe:oboe", version.ref = "oboe" }
+mlkit-translate = { module = "com.google.mlkit:translate", version.ref = "mlkit-translate" }
+mlkit-language-id = { module = "com.google.mlkit:language-id", version.ref = "mlkit-language-id" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
 compose-runtime = { module = "androidx.compose.runtime:runtime" }
 compose-ui = { module = "androidx.compose.ui:ui" }

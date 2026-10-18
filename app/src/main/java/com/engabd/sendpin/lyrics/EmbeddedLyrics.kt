@@ -1,6 +1,7 @@
 package com.engabd.sendpin.lyrics
 
 import com.engabd.sendpin.ma.MaLyrics
+import com.engabd.sendpin.ma.Ttml
 import java.io.DataInputStream
 import java.io.EOFException
 import java.io.InputStream
@@ -45,6 +46,11 @@ object EmbeddedLyrics {
     fun toLyrics(text: String): MaLyrics? {
         val t = text.replace("\r\n", "\n").replace('\r', '\n').trim()
         if (t.isEmpty()) return null
+        // A TTML document (a `.ttml` sidecar, or a server that hands one back) is
+        // turned into enhanced LRC so everything downstream has one format to read.
+        if (Ttml.looksLikeTtml(t)) {
+            return Ttml.toEnhancedLrc(t)?.let { MaLyrics(it, synced = true) }
+        }
         return MaLyrics(t, synced = LRC_LINE.containsMatchIn(t))
     }
 
