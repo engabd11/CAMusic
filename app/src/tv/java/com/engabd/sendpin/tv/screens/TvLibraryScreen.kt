@@ -223,6 +223,7 @@ private fun TvLibraryRoot(
         "In progress" to shelves.inProgress,
         "Recommended" to shelves.recommendations,
         "Frequently played" to shelves.frequent,
+        *shelves.rediscover.map { it.title to it.items }.toTypedArray(),
     ).filter { it.second.isNotEmpty() }
 
     LazyColumn(

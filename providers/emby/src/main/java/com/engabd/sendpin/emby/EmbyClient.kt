@@ -703,6 +703,7 @@ class EmbyClient(
             },
             album = o.str("Album"),
             year = o.int("ProductionYear"),
+            addedAtMs = com.engabd.sendpin.ma.AddedDates.parseIso(o.str("DateCreated")),
             genres = o["Genres"]?.jsonArray.orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull },
             // Sent on a playlist's children (checked against Emby 4.10); the handle
             // removing or moving one entry needs. Null everywhere else.

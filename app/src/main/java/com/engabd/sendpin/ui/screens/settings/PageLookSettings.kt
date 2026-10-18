@@ -118,6 +118,7 @@ internal fun LibraryExtrasCard(settings: AppSettings, accent: Color, scope: Coro
     val tiles by settings.libraryTileStyle.collectAsStateWithLifecycle(initialValue = TileStyle.CLASSIC)
     val spotlight by settings.librarySpotlight.collectAsStateWithLifecycle(initialValue = false)
     val backdrop by settings.libraryBackdrop.collectAsStateWithLifecycle(initialValue = false)
+    val rediscover by settings.rediscoverShelves.collectAsStateWithLifecycle(initialValue = true)
     SettingsCard(
         title = "Library extras",
         lead = "Covers, a featured record, and the album's colours behind it all.",
@@ -146,5 +147,11 @@ internal fun LibraryExtrasCard(settings: AppSettings, accent: Color, scope: Coro
             checked = backdrop,
             accent = accent,
         ) { on -> scope.launch { settings.setLibraryBackdrop(on) } }
+        ToggleRow(
+            title = "Rediscover shelves",
+            subtitle = if (rediscover) "On: On this day, forgotten favourites, never played and deep cuts" else "Off",
+            checked = rediscover,
+            accent = accent,
+        ) { on -> scope.launch { settings.setRediscoverShelves(on) } }
     }
 }
