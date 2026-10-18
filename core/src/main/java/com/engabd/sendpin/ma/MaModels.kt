@@ -642,6 +642,8 @@ data class MaQueueItem(
     val artist: String? = null,
     val image: String? = null,
     val available: Boolean = true,
+    /** The listening-party guest who added this song, when one did. Display only. */
+    val addedBy: String? = null,
 )
 
 /**

@@ -195,7 +195,7 @@ private fun sectionOf(route: String?): String? = when {
     // branch below — whose popUpTo(saveState) + restoreState puts the screen you were
     // trying to leave straight back on top.
     route == "downloads?from=library" -> "library"
-    route == "downloads" || route == "stats" -> "settings"
+    route == "downloads" || route == "stats" || route == "party" -> "settings"
     route == "rhythm_game" -> "light_sync"
     // Effects is a sibling of Light Sync in the flat graph, and reached from it — so
     // the Lights tab is the one that should stay lit while it is open.
@@ -354,6 +354,12 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         }
 
         val navController = rememberNavController()
+        val partyContext = androidx.compose.ui.platform.LocalContext.current
+        LaunchedEffect(Unit) {
+            (partyContext.applicationContext as com.engabd.sendpin.SendpinApp).partyManager.openScreen.collect {
+                navController.navigate("party") { launchSingleTop = true }
+            }
+        }
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentRoute = navBackStackEntry?.destination?.route
 
@@ -863,6 +869,9 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                     screen("stats") {
                         StatsScreen(onBack = { navController.popBackStack() })
                     }
+                    screen("party") {
+                        com.engabd.sendpin.ui.screens.PartyScreen(onBack = { navController.popBackStack() })
+                    }
                     screen("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
                     screen("light_sync") {
                         LightSyncScreen(
@@ -911,6 +920,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onDetail = { settingsDetail = it },
                             onOpenDownloads = { navController.navigate("downloads") },
                             onOpenStats = { navController.navigate("stats") },
+                            onOpenParty = { navController.navigate("party") },
                         )
                     }
                     } // NavHost

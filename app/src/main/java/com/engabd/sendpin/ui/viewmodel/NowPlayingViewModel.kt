@@ -1515,7 +1515,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         if (!silent || _queueItems.value !is Load.Ready) _queueItems.value = Load.Loading
         viewModelScope.launch {
             val next = try {
-                Load.Ready(repo.allQueueItems(q))
+                Load.Ready(repo.allQueueItems(q).map { it.copy(addedBy = partyAddedBy(it.mediaItem?.uri)) })
             } catch (e: Exception) {
                 Load.Failed(e.message ?: "Couldn't load the queue")
             }
@@ -1682,8 +1682,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 index = i,
                 artist = t.artist,
                 image = t.artUrl,
+                addedBy = partyAddedBy(t.id),
             )
         }
+
+    /** The listening-party guest behind the queue entry with [key], if a party is running. */
+    private fun partyAddedBy(key: String?): String? =
+        key?.let { (getApplication<android.app.Application>() as com.engabd.sendpin.SendpinApp).partyManager.addedBy(it) }
 
     /**
      * A stable row key. The track id alone isn't enough — the same track can sit in

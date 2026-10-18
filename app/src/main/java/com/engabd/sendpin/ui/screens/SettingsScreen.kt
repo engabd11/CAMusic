@@ -180,6 +180,7 @@ fun SettingsScreen(
     onOpenDownloads: () -> Unit = {},
     /** Stats gets a screen of its own for the same reason. */
     onOpenStats: () -> Unit = {},
+    onOpenParty: () -> Unit = {},
 ) {
     // Back unwinds one level at a time, so a server's page returns to the server list
     // rather than all the way out of Settings.
@@ -353,6 +354,8 @@ fun SettingsScreen(
                             // rather than opening a page underneath this one.
                             IndexRow.Stats ->
                                 NavRow(row.icon, row.title, row.subtitle, tint, onClick = onOpenStats)
+                            IndexRow.Party ->
+                                NavRow(row.icon, row.title, row.subtitle, tint, onClick = onOpenParty)
                         }
                     }
                 } else {

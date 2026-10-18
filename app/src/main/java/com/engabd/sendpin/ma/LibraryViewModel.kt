@@ -4680,8 +4680,98 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun downloadItem(d: DownloadedTrack) = com.engabd.sendpin.local.DownloadsIndex.item(d)
 
+    // --- listening party ---------------------------------------------------------
+
+    /**
+     * The library side of a listening party: guests' searches and adds come through
+     * here because this is where the connections to every library are held.
+     */
+    private val partyLibrary: com.engabd.sendpin.party.PartyLibrary = object : com.engabd.sendpin.party.PartyLibrary {
+        private val owner get() = (getApplication<Application>() as SendpinApp).playbackOwner.state.value
+
+        /** Local queue unless Music Assistant owns the session (or is the library and nothing plays). */
+        private fun useLocal(): Boolean =
+            owner.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.LOCAL ||
+                (!owner.anyActive && activeConfig?.kind?.playsLocally == true)
+
+        override suspend fun searchTracks(query: String, limit: Int): List<MaItem> {
+            val local = useLocal()
+            return searchEveryLibrary(query).tracks.filter { item ->
+                // An MA queue can only take MA's own tracks; the local queue takes any library's.
+                item.mediaType == "track" &&
+                    (local || (!isForeign(item) && item.provider != DOWNLOAD && !MusicSources.isLocalProvider(item.provider)))
+            }.take(limit)
+        }
+
+        override suspend fun enqueue(item: MaItem, position: Int): String? = try {
+            if (useLocal()) enqueueLocal(item, position) else enqueueMa(item, position)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            null
+        }
+
+        private suspend fun enqueueLocal(item: MaItem, position: Int): String? = withContext(Dispatchers.Main) {
+            val track = if (isForeign(item)) {
+                val src = item.serverId?.let { foreignSource(it) } ?: return@withContext null
+                downloadManager.toLocalTrack(item, streamUrl = src.streamUrl(item.itemId))
+            } else {
+                localTrack(item)
+            }
+            when {
+                localPlayer.queue.value.isEmpty() -> localPlayer.setQueue(listOf(track))
+                // A library that plays its own music has no way to insert at a place.
+                localPlayer.remote != null -> localPlayer.playNext(listOf(track))
+                else -> localPlayer.insertAt(localPlayer.index.value + 1 + position, track)
+            }
+            track.id
+        }
+
+        private suspend fun enqueueMa(item: MaItem, position: Int): String? {
+            val uri = item.uri ?: return null
+            val target = playTarget()
+            maRepo.playOn(target, listOf(uri), "next", radioMode = false)
+            if (position > 0) {
+                // "next" lands the song straight after the current one; shift it down past
+                // the guest songs that are meant to play first.
+                val queueId = maRepo.activeQueueId(target)
+                val current = maRepo.queues().firstOrNull { it.queueId == queueId }?.currentIndex ?: -1
+                maRepo.queueItems(queueId, offset = current + 1, limit = 1)
+                    .firstOrNull()?.takeIf { it.mediaItem?.uri == uri }
+                    ?.let { maRepo.moveQueueItem(queueId, it.queueItemId, position) }
+            }
+            return uri
+        }
+
+        override suspend fun upNext(limit: Int): List<com.engabd.sendpin.party.PartyUpNext> {
+            if (useLocal()) {
+                return withContext(Dispatchers.Main) {
+                    localPlayer.queue.value.drop(localPlayer.index.value + 1).take(limit).map {
+                        com.engabd.sendpin.party.PartyUpNext(it.id, it.title, it.artist.orEmpty(), it.artUrl)
+                    }
+                }
+            }
+            val target = playTarget()
+            val queueId = maRepo.activeQueueId(target)
+            val current = maRepo.queues().firstOrNull { it.queueId == queueId }?.currentIndex ?: return emptyList()
+            return maRepo.queueItems(queueId, offset = current + 1, limit = limit).map {
+                com.engabd.sendpin.party.PartyUpNext(it.mediaItem?.uri ?: it.queueItemId, it.name, it.artist.orEmpty(), it.image)
+            }
+        }
+
+        override fun skip() {
+            viewModelScope.launch { (getApplication<Application>() as SendpinApp).playbackOwner.next() }
+        }
+    }
+
+    init {
+        com.engabd.sendpin.party.PartyLibraries.current = partyLibrary
+    }
+
     override fun onCleared() {
         super.onCleared()
+        if (com.engabd.sendpin.party.PartyLibraries.current === partyLibrary) {
+            com.engabd.sendpin.party.PartyLibraries.current = null
+        }
         // The MaApiClient and the LocalPlayer are process-scoped and shared — a
         // ViewModel going away (a rotation, a tab swap) must not stop the music.
         stopPreview()

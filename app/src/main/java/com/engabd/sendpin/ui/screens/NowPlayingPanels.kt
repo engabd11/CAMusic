@@ -498,6 +498,12 @@ private fun QueueRow(
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
+            item.addedBy?.let {
+                Text(
+                    "Added by $it", color = accent, fontFamily = AppFont, fontSize = 10.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         item.duration?.takeIf { it > 0 }?.let {
             Text(
