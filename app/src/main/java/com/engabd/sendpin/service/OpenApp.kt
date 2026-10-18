@@ -61,4 +61,5 @@ object OpenAppRequest {
     const val TILE = 103
     const val EFFECTS = 104
     const val DOWNLOADS = 105
+    const val WAKE = 106
 }

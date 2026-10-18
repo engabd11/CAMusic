@@ -33,6 +33,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
 import com.engabd.sendpin.hue.CoverPaletteOverride
+import com.engabd.sendpin.wake.WakeAlarm
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -272,6 +273,12 @@ class AppSettings(private val context: Context) {
         private val HUE_APP_ID = stringPreferencesKey("hue_app_id")           // hue-application-id for DTLS PSK identity
         private val HUE_CONFIG_ID = stringPreferencesKey("hue_entertainment_config_id") // entertainment area UUID
         private val HUE_BRIDGE_ID = stringPreferencesKey("hue_bridge_id")
+        // Wake & Sleep (sunrise alarms, wind-down). See wake/.
+        private val WAKE_ALARMS = stringPreferencesKey("wake_alarms")
+        private val WIND_DOWN_DIM = booleanPreferencesKey("wind_down_dim")
+        private val WIND_DOWN_ROOM_ID = stringPreferencesKey("wind_down_room_id")
+        private val WIND_DOWN_ROOM_NAME = stringPreferencesKey("wind_down_room_name")
+        private val WIND_DOWN_AMBIENCE = stringPreferencesKey("wind_down_ambience")
         private val LIGHT_SYNC_MODE = stringPreferencesKey("light_sync_mode") // "ha" | "direct"
 
         /**
@@ -2264,6 +2271,45 @@ class AppSettings(private val context: Context) {
     /** Layer 1 — a deterministic per-track visual fingerprint. Off by default. */
     val musicDnaEnabled: Flow<Boolean> = pref { it[MUSIC_DNA_ENABLED] ?: false }
 
+    // --- Wake & Sleep ---
+
+    /** Sunrise alarms. Null-safe: an unreadable blob reads as none but is never written over by a read. */
+    val wakeAlarms: Flow<List<WakeAlarm>> = pref { prefs ->
+        prefs[WAKE_ALARMS]?.let { WakeAlarm.decode(it) } ?: emptyList()
+    }
+
+    suspend fun saveWakeAlarms(list: List<WakeAlarm>) {
+        context.dataStore.edit { it[WAKE_ALARMS] = WakeAlarm.encode(list) }
+    }
+
+    /** Insert or replace by id, atomically with respect to other writers. */
+    suspend fun upsertWakeAlarm(alarm: WakeAlarm) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[WAKE_ALARMS]?.let { WakeAlarm.decode(it) } ?: emptyList()
+            val next = if (current.any { it.id == alarm.id }) current.map { if (it.id == alarm.id) alarm else it } else current + alarm
+            prefs[WAKE_ALARMS] = WakeAlarm.encode(next)
+        }
+    }
+
+    suspend fun deleteWakeAlarm(id: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[WAKE_ALARMS]?.let { WakeAlarm.decode(it) } ?: return@edit
+            prefs[WAKE_ALARMS] = WakeAlarm.encode(current.filterNot { it.id == id })
+        }
+    }
+
+    /** The sleep timer also dims [windDownRoomId] when this is on. */
+    val windDownDim: Flow<Boolean> = pref { it[WIND_DOWN_DIM] ?: false }
+    val windDownRoomId: Flow<String> = pref { it[WIND_DOWN_ROOM_ID] ?: "" }
+    val windDownRoomName: Flow<String> = pref { it[WIND_DOWN_ROOM_NAME] ?: "" }
+    /** [com.engabd.sendpin.hue.ambience.AmbienceEffect.wire] to start when the music ends, or blank. */
+    val windDownAmbience: Flow<String> = pref { it[WIND_DOWN_AMBIENCE] ?: "" }
+
+    suspend fun setWindDownDim(on: Boolean) { context.dataStore.edit { it[WIND_DOWN_DIM] = on } }
+    suspend fun setWindDownRoom(id: String, name: String) {
+        context.dataStore.edit { it[WIND_DOWN_ROOM_ID] = id; it[WIND_DOWN_ROOM_NAME] = name }
+    }
+    suspend fun setWindDownAmbience(wire: String) { context.dataStore.edit { it[WIND_DOWN_AMBIENCE] = wire } }
     // --- Effects (ambience shows) ---
 
     val effectsLast: Flow<String> = pref { it[EFFECTS_LAST] ?: "" }
