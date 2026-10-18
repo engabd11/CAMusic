@@ -10,7 +10,19 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import com.engabd.sendpin.SendpinApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Keeps an ambience show alive while the app is not on screen.
@@ -44,13 +56,31 @@ class EffectsService : Service() {
         const val NOTIFICATION_ID = 1003
         const val ACTION_START = "com.engabd.sendpin.START_EFFECT"
         const val ACTION_STOP = "com.engabd.sendpin.STOP_EFFECT"
+        const val ACTION_SET_SLEEP = "com.engabd.sendpin.SET_EFFECT_SLEEP"
         const val EXTRA_TITLE = "title"
+        const val EXTRA_SLEEP_MINUTES = "sleep_minutes"
+
+        /** The last minute of a sleep timer is spent easing the room and the sound to nothing. */
+        const val FADE_OUT_S = 60
+
+        private val _remainingS = MutableStateFlow<Int?>(null)
+
+        /**
+         * Seconds the running show has left before the sleep timer ends it, or null.
+         *
+         * Lives here, in the service, rather than in the Effects view model. The view
+         * model is Activity-scoped; the service is what keeps the show alive when the
+         * Activity is gone, so it is the only thing that can honestly promise "stop in
+         * an hour".
+         */
+        val remainingS: StateFlow<Int?> = _remainingS.asStateFlow()
 
         /** Requested by the UI when a show starts. */
-        fun start(context: Context, title: String) {
+        fun start(context: Context, title: String, sleepMinutes: Int = 0) {
             val intent = Intent(context, EffectsService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_TITLE, title)
+                putExtra(EXTRA_SLEEP_MINUTES, sleepMinutes)
             }
             // Same guard as SendspinConnectionService: Android 12+ refuses a foreground
             // service started from the background, and the refusal is an exception. A
@@ -71,6 +101,22 @@ class EffectsService : Service() {
         }
 
         /**
+         * Change the sleep timer of the show that is running. 0 turns it off.
+         *
+         * Only meaningful while a show is up; the service is already in the foreground
+         * then, so a plain `startService` is enough to reach it.
+         */
+        fun setSleepTimer(context: Context, minutes: Int) {
+            val intent = Intent(context, EffectsService::class.java).apply {
+                action = ACTION_SET_SLEEP
+                putExtra(EXTRA_SLEEP_MINUTES, minutes)
+            }
+            runCatching { context.startService(intent) }.onFailure {
+                android.util.Log.w("EffectsService", "couldn't set sleep timer: ${it.message}")
+            }
+        }
+
+        /**
          * Set by the UI so the notification's Stop action can reach the running show
          * without this service knowing anything about the light engine.
          *
@@ -83,6 +129,12 @@ class EffectsService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var sleepJob: Job? = null
+
+    /** True once a show's notification is up, so a stray SET_SLEEP cannot start a timer for nothing. */
+    private var showing = false
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
@@ -90,10 +142,15 @@ class EffectsService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_SET_SLEEP -> {
+                if (showing) armSleep(intent.getIntExtra(EXTRA_SLEEP_MINUTES, 0))
+            }
             else -> {
                 createChannel()
                 val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Ambience"
                 startForegroundCompat(buildNotification(title))
+                showing = true
+                armSleep(intent?.getIntExtra(EXTRA_SLEEP_MINUTES, 0) ?: 0)
             }
         }
         // Deliberately not sticky. A restarted service would have no show to keep
@@ -144,8 +201,45 @@ class EffectsService : Service() {
             .createNotificationChannel(channel)
     }
 
+    /**
+     * Count [minutes] down, ease the show out over the last [FADE_OUT_S] seconds, then end it.
+     *
+     * The fade goes through [SendpinApp.setAmbienceFade] (lights and sound together) and
+     * the end through [SendpinApp.stopAmbienceShow], the same app-level calls the
+     * notification's Stop action uses, so nothing here needs the Activity. A timer shorter
+     * than the fade spends all of itself fading. Re-arming restores full brightness and
+     * volume first, so extending a timer that was already fading brings the room back up.
+     */
+    private fun armSleep(minutes: Int) {
+        sleepJob?.cancel()
+        val app = applicationContext as? SendpinApp
+        app?.setAmbienceFade(1f)
+        if (minutes <= 0) {
+            _remainingS.value = null
+            return
+        }
+        val totalMs = minutes * 60_000L
+        val fadeMs = minOf(FADE_OUT_S * 1_000L, totalMs)
+        sleepJob = scope.launch {
+            val endAt = SystemClock.elapsedRealtime() + totalMs
+            while (true) {
+                val leftMs = endAt - SystemClock.elapsedRealtime()
+                if (leftMs <= 0) break
+                _remainingS.value = ((leftMs + 999) / 1000).toInt()
+                if (leftMs <= fadeMs) app?.setAmbienceFade(leftMs.toFloat() / fadeMs)
+                delay(250)
+            }
+            _remainingS.value = null
+            app?.stopAmbienceShow()
+        }
+    }
+
     override fun onDestroy() {
         onStopRequested = null
+        sleepJob?.cancel()
+        scope.cancel()
+        _remainingS.value = null
+        showing = false
         super.onDestroy()
     }
 }

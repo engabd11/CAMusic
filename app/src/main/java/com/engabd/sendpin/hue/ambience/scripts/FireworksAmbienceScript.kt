@@ -10,16 +10,20 @@ import com.engabd.sendpin.hue.ambience.AmbienceScript
 import com.engabd.sendpin.hue.ambience.BedOnset
 import com.engabd.sendpin.hue.ambience.BedSample
 import com.engabd.sendpin.hue.ambience.BrownNoise
+import com.engabd.sendpin.hue.ambience.ComfortProfile
 import com.engabd.sendpin.hue.ambience.Envelope
 import com.engabd.sendpin.hue.ambience.GrainCloud
 import com.engabd.sendpin.hue.ambience.OnePole
 import com.engabd.sendpin.hue.ambience.PinkNoise
 import com.engabd.sendpin.hue.ambience.Rng
 import com.engabd.sendpin.hue.ambience.RoomModel
+import com.engabd.sendpin.hue.ambience.SlowFollower
+import com.engabd.sendpin.hue.ambience.SmoothNoise
 import com.engabd.sendpin.hue.ambience.Svf
 import com.engabd.sendpin.hue.ambience.VoicePool
 import com.engabd.sendpin.hue.ambience.azimuthOfPan
 import com.engabd.sendpin.hue.ambience.panGains
+import com.engabd.sendpin.hue.ambience.smoothstep
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.ln
@@ -32,6 +36,27 @@ import kotlin.math.sin
  * effect — an expanding Gaussian shell, `EXPAND` metres a second, fading on its own
  * lifetime — but sourced from scheduled events rather than from beat detection, and in
  * real 3D rather than the (xrank, height) plane the music version works in.
+ *
+ * ## What the room does
+ *
+ * **The flash leads the bang.** Light crosses the distance instantly and sound takes a
+ * few tenths of a second, so the sky lights up and then it thumps. On the scheduled path
+ * that is the sound's own air delay. With a bundled recording the shell is stamped that
+ * long before the bang the recording will play, because the plan is read ahead of the
+ * playhead (see `AmbienceBedTimeline`).
+ *
+ * **A burst blooms and then trails.** The ring opens and is gone in about a second, and
+ * the shell's embers drift down over a second and a half to three, twinkling slowly
+ * (under 2 Hz) so they read as sparks and not as flicker.
+ *
+ * **Between shells there is smoke.** Each burst leaves a faint warm-grey veil that clears
+ * over about ten seconds, so a busy display sits a little brighter and hazier than a lull.
+ *
+ * **Distance shows.** The furthest shells are about 40 percent dimmer than the nearest.
+ *
+ * **Not a finale.** Shells come a few seconds apart, never closer than 0.8 s, and the
+ * room answers a recording's bangs no more than every 0.7 s. All brightness is perceived
+ * (see `Perceptual`); only the bloom is allowed to be sudden (see [comfort]).
  *
  * ## One shell, three moments, both media
  *
@@ -67,11 +92,35 @@ class FireworksAmbienceScript(
     private val shellColours: Array<Rgb> = SHELL_COLOURS,
 ) : AmbienceScript {
 
+    /**
+     * Calm limits for the sky, the haze and the trailing sparks; burst limits for the
+     * shell breaking, which is the one sudden thing in the scene. Sparks twinkling at
+     * 2 Hz stay well inside the calm rate, so they read as embers rather than flicker.
+     */
+    override val comfort = ComfortProfile(
+        risePerS = 1.0f, fallPerS = 0.8f, roomSwingPerS = 0.6f,
+        burstRisePerS = 30f, burstFallPerS = 6f, burstRoomSwingPerS = 40f,
+    )
+
+    private var bursting = false
+    override val burstActive: Boolean get() = bursting
+
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
 
+    // One generator per thread: the scheduler's, the reaction's and the light tick's.
     private val rng = Rng(seed)
+    private val renderRng = Rng(seed xor 0x0516_47L)
     private var nextBurstS = 0.8
+
+    /** Seeds for each lamp's faint sky shimmer. Set at bind from [renderRng]. */
+    private var lampSeed = IntArray(0)
+
+    /** Smoke hanging in the room after shells, 0..1, decaying over seconds. Render thread only. */
+    private var smoke = 0f
+    private var hazeMarkS = Double.NEGATIVE_INFINITY
+    private var lastT = Double.NaN
+    private val skyFollow = SlowFollower(SKY_TAU_S, 0.3f)
 
     /**
      * Everything one shell needs to make its own sound.
@@ -124,6 +173,7 @@ class FireworksAmbienceScript(
         this.room = room
         this.params = params
         acc = FloatArray(room.count * 3)
+        lampSeed = IntArray(room.count) { (renderRng.nextLong() ushr 33).toInt() }
     }
 
     override fun retune(params: AmbienceParams) { this.params = params }
@@ -170,21 +220,28 @@ class FireworksAmbienceScript(
             0.5f + radius * sin(2f * PI.toFloat() * az),
             0.75f + 0.25f * size,
         )
+        // Light first. The flash is stamped the time the bang would take to cross the
+        // distance the shell implies *before* the bang, as far as the analysis lets it
+        // (BedOnset.aheadS is zero for a live clip, so the flash lands on the bang then).
+        // The 0.25 s margin is so the event reaches the timeline before it starts.
+        val lead = airDelayOf(radius).coerceAtMost((onset.aheadS - 0.25f).coerceAtLeast(0f))
+        // A rising ember only when there is room to show the climb as well.
+        val climb = if (onset.aheadS > lead + LAUNCH_S + 0.25) LAUNCH_S.toFloat() else 0f
         emit(
             AmbienceEvent(
                 kind = AmbienceEvent.BURST,
-                // Where the bang began; see BedOnset.atS.
-                startS = onset.atS,
-                env = Envelope(attackS = 0.05f, holdS = 0.05f, decayTauS = 0.55f),
+                // Where the bang began, less the lead; see BedOnset.atS.
+                startS = onset.atS - lead,
+                env = BURST_ENV,
                 gain = (0.40f + 0.60f * strength).coerceIn(0.15f, 1f),
                 origin = origin,
                 azimuth = az,
                 colour = shellColours[reactRng.nextInt(shellColours.size)],
                 timbre = size,
                 seed = reactRng.nextLong(),
-                // The recording is the sound, so there is nothing to lead into and
-                // nothing left to play afterwards. See ThunderstormScript.react.
-                leadS = 0f,
+                // The recording is the sound, so nothing is synthesised, and nothing is
+                // left to play afterwards. The lead is only what the lights draw.
+                leadS = climb,
                 soundS = 0f,
             ),
         )
@@ -204,7 +261,10 @@ class FireworksAmbienceScript(
     override fun schedule(fromS: Double, toS: Double, emit: (AmbienceEvent) -> Unit) {
         if (nextBurstS < fromS) nextBurstS = fromS
         val intensity = params.intensity.coerceIn(0f, 1f)
-        val lambda = 0.25f + 1.15f * intensity          // bursts per second
+        // Bursts per second. A real display fires a shell every few seconds with the odd
+        // salvo; the old one-a-second-or-more was a finale, and a finale is not a room
+        // you can sit in.
+        val lambda = 0.05f + 0.30f * intensity
         while (nextBurstS < toS) {
             val az = rng.f01()
             // Overhead and out: a firework is not in the room with you.
@@ -221,7 +281,7 @@ class FireworksAmbienceScript(
                     kind = AmbienceEvent.BURST,
                     startS = nextBurstS,
                     // Long enough to expand and fade; matches FireworksEffect's BURST_LIFE.
-                    env = Envelope(attackS = 0.05f, holdS = 0.05f, decayTauS = 0.55f),
+                    env = BURST_ENV,
                     gain = 0.45f + 0.55f * rng.f01(),
                     origin = origin,
                     azimuth = az,
@@ -238,7 +298,7 @@ class FireworksAmbienceScript(
                     soundS = airS + CRACKLE_S.toFloat(),
                 ),
             )
-            nextBurstS += (-ln(rng.f01().coerceAtLeast(1e-6f)) / lambda).toDouble()
+            nextBurstS += (-ln(rng.f01().coerceAtLeast(1e-6f)) / lambda).coerceAtLeast(MIN_GAP_S).toDouble()
         }
     }
 
@@ -250,22 +310,48 @@ class FireworksAmbienceScript(
     ) {
         val ids = room.ids
         if (acc.size < ids.size * 3) acc = FloatArray(ids.size * 3)
+        val dt = if (lastT.isNaN()) 0f else (tS - lastT).coerceIn(0.0, 0.25).toFloat()
+        lastT = tS
         val intensity = params.intensity.coerceIn(0f, 1f)
+        // How bright a shell is allowed to be follows the intensity, so a gentle setting
+        // is a gentler sky and not merely a quieter one.
+        val trim = 0.65f + 0.35f * intensity
 
-        // Night sky between bursts — not black, or the room looks switched off. Lifted a
-        // little by whatever the recording is doing, so the sky over a busy stretch of
-        // the display sits brighter than the sky over a lull.
+        // 1. The night, and the smoke the shells leave in it.
+        //
+        //    Not black, or the room looks switched off, and not static: each lamp's sky
+        //    wanders faintly. A recording's level lifts it a little over seconds (never
+        //    per frame; with no reading the last value is held).
         val r = recording
         val haveBed = r != null && r.sampleAt(tS, bedNow)
-        val sky = if (haveBed) 1f + 2.5f * bedNow.level else 1f
+        val busy = skyFollow.step(haveBed || r == null, if (haveBed) bedNow.level else 0.3f, dt)
+        smoke *= exp(-dt / SMOKE_TAU_S)
+        var newest = hazeMarkS
+        var s = 0
+        while (s < n) {
+            val e = live[s]
+            s++
+            // A shell adds its smoke once, the moment it breaks. Pre-fed events that
+            // have not started yet (age < 0) wait their turn.
+            if (e == null || e.kind != AmbienceEvent.BURST || e.startS <= hazeMarkS || e.ageAt(tS) < 0f) continue
+            smoke = minOf(1f, smoke + SMOKE_PER_SHELL * e.gain)
+            if (e.startS > newest) newest = e.startS
+        }
+        hazeMarkS = newest
+
         var j = 0
         while (j < ids.size) {
-            acc[j * 3] = NIGHT.first * sky
-            acc[j * 3 + 1] = NIGHT.second * sky
-            acc[j * 3 + 2] = NIGHT.third * sky
+            val shimmer = 0.85f + 0.30f * (0.5f + 0.5f * SmoothNoise.fractal(lampSeed[j], tS, 0.05f, 2))
+            val sky = SKY_LEVEL * (0.85f + 0.30f * busy) * shimmer
+            val haze = HAZE_LEVEL * smoke
+            acc[j * 3] = NIGHT.first * sky + HAZE.first * haze
+            acc[j * 3 + 1] = NIGHT.second * sky + HAZE.second * haze
+            acc[j * 3 + 2] = NIGHT.third * sky + HAZE.third * haze
             j++
         }
 
+        // 2. The shells.
+        var anyBloom = false
         var k = 0
         while (k < n) {
             val e = live[k]
@@ -273,18 +359,15 @@ class FireworksAmbienceScript(
             if (e == null || e.kind != AmbienceEvent.BURST) continue
             val age = e.ageAt(tS)
 
-            // 1. The climb. A single ember tracking up towards where the shell will
-            //    break, which is the whistle made visible: the sound rises for most of
-            //    a second and, until now, nothing in the room acknowledged that
-            //    anything was on its way.
+            // 2a. The climb. A single ember tracking up towards where the shell will
+            //     break, which is the whistle made visible. Dim: a lifted fuse, not a
+            //     second firework.
             if (age < 0f) {
                 val climb = (1f + age / LAUNCH_S.toFloat()).coerceIn(0f, 1f)
                 if (climb > 0f) {
                     // Straight up from where it will break, so the ember arrives exactly
                     // where the shell opens rather than sliding across the room.
                     val at = Vec3(e.origin.x, e.origin.y, e.origin.z * climb)
-                    // Fades *in* as it climbs and never gets bright: a lifted fuse, not
-                    // a second firework.
                     val amp = TRACER * climb * climb * e.gain
                     var i = 0
                     while (i < ids.size) {
@@ -302,14 +385,21 @@ class FireworksAmbienceScript(
                 continue        // nothing has burst yet
             }
 
-            // 2. The burst: a ring travelling outward, not a flash.
-            val shellR = EXPAND * age * e.timbre
-            val burst = e.levelAt(tS)
-            if (burst > 0f) {
+            // Distant shells are dimmer, and read as lower: the ring is fainter the
+            // further out the shell broke, and not so tall.
+            val far = ((radiusOf(e) - 0.55f) / 0.45f).coerceIn(0f, 1f)
+            val proximity = 1f - FAR_DIM * far
+
+            // 2b. The bloom: a ring travelling outward and fading, not a flash. Quick
+            //     to open and gone in a second or so.
+            val bloom = e.levelAt(tS)
+            if (bloom > 0f) {
+                if (age < BLOOM_WINDOW_S) anyBloom = true
+                val shellR = EXPAND * age * e.timbre
                 var i = 0
                 while (i < ids.size) {
                     val x = (room.distanceTo(ids[i], e.origin) - shellR) / SHELL_WIDTH
-                    val lvl = burst * exp(-x * x)
+                    val lvl = trim * proximity * BURST_PEAK * bloom * exp(-x * x)
                     if (lvl > 1e-4f) {
                         val o = i * 3
                         acc[o] += e.colour.first * lvl
@@ -320,26 +410,20 @@ class FireworksAmbienceScript(
                 }
             }
 
-            // 3. The crackle, seen while it is heard.
-            //
-            // Held open across the sound's arrival on purpose. The embers of a real
-            // shell twinkle for a couple of seconds after the flash and their crackle
-            // reaches you late, so the two genuinely do overlap — and that overlap is
-            // the whole reason the delayed boom reads as distance rather than as the
-            // audio being out of step. Each lamp twinkles on its own seeded phase, so
-            // it is a scatter of sparks rather than the room breathing.
-            // With a recording playing there is no air delay to wait out — the crackle
-            // is audible *now* — and its brightness is the recording's own top end
-            // rather than a modelled decay, so the embers die when the crackle does.
-            val crackleAge = if (haveBed) age else age - airDelayOf(radiusOf(e))
-            if (crackleAge > 0f && crackleAge < CRACKLE_S) {
-                val heard = if (haveBed) (0.25f + 0.85f * bedNow.rain).coerceIn(0f, 1f) else 1f
-                val fade = exp(-crackleAge / 0.85f) * heard * e.gain * SPARKLE
+            // 2c. The trail: the shell's embers drifting down and twinkling out over one
+            //     and a half to three seconds, bigger shells lasting longer. Each lamp
+            //     twinkles on its own seeded phase, slowly, so it is a scatter of sparks
+            //     and not the room breathing.
+            val trailS = TRAIL_MIN_S + (TRAIL_MAX_S - TRAIL_MIN_S) * e.timbre
+            val trailAge = age - TRAIL_DELAY_S
+            if (trailAge > 0f && trailAge < trailS) {
+                val fade = exp(-trailAge / (trailS * 0.38f)) * (1f - smoothstep(0.8f, 1f, trailAge / trailS))
+                val heard = if (haveBed) (0.7f + 0.5f * bedNow.rain).coerceIn(0f, 1.2f) else 1f
                 var i = 0
                 while (i < ids.size) {
                     val ph = (e.seed ushr (i % 32)).toFloat() * 0.61803f + ids[i] * 0.31f
-                    val tw = sin(2f * PI.toFloat() * (crackleAge * 5.7f + ph))
-                    val lvl = fade * (0.5f + 0.5f * tw) * (0.5f + 0.5f * tw)
+                    val tw = 0.5f + 0.5f * sin(2f * PI.toFloat() * (trailAge * TWINKLE_HZ + ph))
+                    val lvl = trim * proximity * SPARKLE * fade * heard * e.gain * tw * tw
                     if (lvl > 1e-4f) {
                         val o = i * 3
                         acc[o] += e.colour.first * lvl
@@ -350,19 +434,21 @@ class FireworksAmbienceScript(
                 }
             }
         }
+        bursting = anyBloom
 
-        val trim = 0.6f + 0.4f * intensity
         var i = 0
         while (i < ids.size) {
             val o = i * 3
             out[ids[i]] = Rgb(
-                (acc[o] * trim).coerceIn(0f, 1f),
-                (acc[o + 1] * trim).coerceIn(0f, 1f),
-                (acc[o + 2] * trim).coerceIn(0f, 1f),
+                acc[o].coerceIn(0f, 1f),
+                acc[o + 1].coerceIn(0f, 1f),
+                acc[o + 2].coerceIn(0f, 1f),
             )
             i++
         }
     }
+
+
 
     override fun renderAudio(
         out: FloatArray,
@@ -509,22 +595,57 @@ class FireworksAmbienceScript(
         const val CRACKLE_S = 2.4
 
         /**
-         * Shortest gap between two shells, in seconds.
+         * Shortest gap between two bursts the room shows, for a recording's bangs.
          *
-         * Far shorter than the storm's, and it has to be: the finale of a display is
-         * three bangs a second and every one of them should light the room. Short
-         * enough not to lose any of them, long enough that one bang's own decay does
-         * not read as a second shell.
+         * The old 0.12 s lit the room on every bang of a finale, three a second, which is
+         * a strobe with extra steps. Seven tenths of a second thins a barrage to the
+         * shells you can tell apart, and keeps a flash from landing inside the last
+         * one's bloom. The ear still gets every bang from the recording.
          */
-        const val BURST_REFRACTORY_S = 0.12
+        const val BURST_REFRACTORY_S = 0.7
 
+        /** Shortest gap the scheduler leaves between two shells, in seconds. */
+        const val MIN_GAP_S = 0.8f
+
+        /**
+         * A shell's light: a quick bloom (the ring), then gone. The sparks that follow
+         * are drawn separately, so the envelope is short; 0.4 s of decay is a bloom that
+         * has faded to a tenth in about a second.
+         */
+        val BURST_ENV = Envelope(attackS = 0.05f, holdS = 0.04f, decayTauS = 0.40f)
+
+        /** How long after the burst the bloom still counts as the named event, in seconds. */
+        const val BLOOM_WINDOW_S = 0.5f
+
+        /** Perceived brightness of a shell's ring at its peak, before distance and intensity. */
+        const val BURST_PEAK = 1.0f
+
+        /** How much dimmer the furthest shells are than the nearest. */
+        const val FAR_DIM = 0.40f
 
         /** Brightness the climbing ember is allowed, and how tightly it is focused. */
-        const val TRACER = 0.30f
+        const val TRACER = 0.16f
         const val TRACER_WIDTH = 0.42f
 
         /** Brightness the twinkling embers are allowed once the shell has broken. */
-        const val SPARKLE = 0.22f
+        const val SPARKLE = 0.20f
+
+        /** The trail of sparks: starts just after the bloom, lasts 1.5 to 3 s by shell size. */
+        const val TRAIL_DELAY_S = 0.2f
+        const val TRAIL_MIN_S = 1.5f
+        const val TRAIL_MAX_S = 3.0f
+        const val TWINKLE_HZ = 1.8f
+
+        /**
+         * The night and its smoke, perceived. The sky is dim enough that a shell is the
+         * brightest thing in the room by far; the smoke is a faint warm-grey veil that
+         * builds with each shell and clears over about ten seconds.
+         */
+        const val SKY_LEVEL = 0.07f
+        const val SKY_TAU_S = 3f
+        const val HAZE_LEVEL = 0.07f
+        const val SMOKE_TAU_S = 9f
+        const val SMOKE_PER_SHELL = 0.30f
 
         /**
          * Seconds of sound delay for a shell at the far edge of the display.
@@ -547,7 +668,10 @@ class FireworksAmbienceScript(
         fun airDelayOf(radius: Float): Float =
             MIN_AIR_S + (MAX_AIR_S - MIN_AIR_S) * (radius / 0.95f).coerceIn(0f, 1f)
 
-        val NIGHT = Rgb(0.02f, 0.02f, 0.06f)
+        val NIGHT = Rgb(0.30f, 0.34f, 0.70f)
+
+        /** The smoke hanging between shells: warm grey, lit by the last burst. */
+        val HAZE = Rgb(0.85f, 0.75f, 0.70f)
 
         /** The lifted fuse: burning magnesium, before the shell has any colour of its own. */
         val EMBER = Rgb(1.00f, 0.52f, 0.14f)

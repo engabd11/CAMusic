@@ -161,6 +161,16 @@ class AmbienceEvent(
     val seed: Long = 0L,
     val leadS: Float = 0f,
     val soundS: Float = 0f,
+    /**
+     * Whether the light is a soft, diffuse wash rather than a sharp, directional one.
+     *
+     * Only the storm reads it: a far strike is seen "through cloud" as a glow over the
+     * whole sky, a near one as white strokes from one side. Kept apart from
+     * [timbre] (the distance, which the audio reads) so a clap the recording says is
+     * close can still be drawn softly when the intensity setting does not allow strokes,
+     * without lying about how far away it was.
+     */
+    val soft: Boolean = false,
 ) {
     /**
      * How long after [startS] this event still matters to *either* medium.
@@ -208,6 +218,11 @@ class AmbienceEvent(
         /** A slow travelling wash — headlights on a rainy window, not a moment. */
         const val SWEEP = 5
         const val SWELL = 6
+        /**
+         * A sound with no light: a fire's tiny spit, which the ear wants and the room
+         * must not answer. Lights ignore it; the audio renders it like a [POP].
+         */
+        const val SPIT = 7
     }
 }
 
@@ -261,6 +276,26 @@ interface AmbienceScript {
      */
     val eventsComeFromAudio: Boolean get() = false
 
+    /**
+     * How fast this scene may change, in perceived brightness per second.
+     *
+     * Read by [ComfortLimiter], which sits between the script and the lamps. A script
+     * declares its own because comfortable means different things: a fire may breathe,
+     * an aurora should barely move, and a storm may be violent for as long as a named
+     * event lasts and no longer.
+     */
+    val comfort: ComfortProfile get() = ComfortProfile.DEFAULT
+
+    /**
+     * True while a **named event** (a lightning stroke, a firework burst) is under way,
+     * so [ComfortLimiter] applies the profile's burst limits instead of its calm ones.
+     * Written during [renderLights] and read straight after it on the same thread.
+     *
+     * Everything else in a scene is held to the calm limits, which is the point: the
+     * exemption is for the event the listener asked for, not for the scene around it.
+     */
+    val burstActive: Boolean get() = false
+
     /** Called once before the first [schedule], with the room this show will run in. */
     fun bind(room: RoomModel, params: AmbienceParams)
 
@@ -275,9 +310,15 @@ interface AmbienceScript {
     /**
      * The recording did something; turn it into this effect's events.
      *
-     * Called on the analysis thread once per hop, with [sample] describing that moment
-     * and [onset] saying what, if anything, crossed a threshold in it. Both are reused
-     * between calls: read them, emit, and keep neither.
+     * Called once per hop with [sample] describing that moment and [onset] saying what,
+     * if anything, crossed a threshold in it. Both are reused between calls: read them,
+     * emit, and keep neither.
+     *
+     * Two sources feed it. A user's own clip is analysed live on the analysis thread, so
+     * [BedOnset.aheadS] is 0 and an event can only be stamped where the sound already is.
+     * A bundled bed is analysed ahead of time and replayed from the render thread a few
+     * seconds early, so [BedOnset.aheadS] says how much room there is to stamp the event
+     * *before* its sound, which is how lightning gets to lead its thunder.
      *
      * Detection is shared and generic (see [AmbienceBedAnalyser]); interpretation is
      * not, and lives here. Only this script knows that a loud, dull, low onset is a
