@@ -479,8 +479,8 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
-    // On-device lyric translation (opt-in, off by default). The model download is the
-    // only network use; translation runs on the phone. LyricsTranslator guards every
+    // On-device lyric translation (opt-in, off by default). Lyrics are translated on the
+    // phone; ML Kit downloads models and reports its own usage metrics to Google. LyricsTranslator guards every
     // call, so a device without Google Play services just loses the toggle.
     implementation(libs.mlkit.translate)
     implementation(libs.mlkit.language.id)

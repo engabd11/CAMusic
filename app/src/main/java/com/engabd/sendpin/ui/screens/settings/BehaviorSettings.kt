@@ -175,10 +175,11 @@ internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
             checked = translate && translateAvailable,
             accent = com.engabd.sendpin.ui.design.LocalAccent.current,
             enabled = translateAvailable,
-            info = "Translation runs on this phone with Google's on-device ML Kit. The only " +
-                "network use is a one-off download of the language, about 30 MB each, the " +
-                "first time you need it. Lyrics are never sent anywhere to be translated. " +
-                "Finished translations are kept for next time.",
+            info = "Translation runs on this phone with Google's on-device ML Kit. Each " +
+                "language is downloaded once, about 30 MB, the first time you need it. " +
+                "Lyrics stay on the phone to be translated. While this is on, ML Kit also " +
+                "sends Google usage statistics about the translator and may fetch updates " +
+                "for it. Finished translations are kept for next time.",
         ) { on -> scope.launch { settings.setLyricsTranslate(on) } }
         if (!translateAvailable) {
             Note(LyricsTranslator.UNAVAILABLE_COPY)
@@ -201,8 +202,8 @@ internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
                 accent = com.engabd.sendpin.ui.design.LocalAccent.current,
             ) { on -> scope.launch { settings.setLyricsTranslateWifiOnly(on) } }
             Note(
-                "The language download is the only network call. Once it is on the phone, " +
-                    "translating happens here.",
+                "Once a language is on the phone, translating happens here. ML Kit's own " +
+                    "usage statistics go to Google.",
             )
         }
         CardDivider()
