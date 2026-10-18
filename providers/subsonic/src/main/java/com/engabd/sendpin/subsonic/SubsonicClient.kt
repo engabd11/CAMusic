@@ -883,6 +883,7 @@ class SubsonicClient(
         userRating = o.int("userRating")?.takeIf { it in 1..5 },
         year = o.int("year"),
         parentId = o.str("artistId"),
+        addedAtMs = com.engabd.sendpin.ma.AddedDates.parseIso(o.str("created")),
         // Was never parsed, so the Navidrome album header showed a year and a track
         // count where the MA one showed a genre too — and nothing had a genre to fall
         // back on when looking for something similar.

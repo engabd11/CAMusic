@@ -193,6 +193,13 @@ data class MaItem(
      * unrated or unknown. See [com.engabd.sendpin.library.Capability.RATING].
      */
     val userRating: Int? = null,
+    /**
+     * When the library first saw this item, as epoch millis, where the source says:
+     * Subsonic's `created`, Jellyfin and Emby's `DateCreated`, Plex's `addedAt`, Music
+     * Assistant's `timestamp_added`, a local file's `DATE_ADDED`. Null where it does
+     * not. The "Never played" shelf is the reader; a source without it is skipped.
+     */
+    val addedAtMs: Long? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -935,6 +942,8 @@ object MaParse {
             audioFormat = audioFormat(o),
             providerDomains = providerDomains(o),
             year = o["year"]?.jsonPrimitive?.intOrNull,
+            addedAtMs = o["timestamp_added"]?.jsonPrimitive?.doubleOrNull
+                ?.takeIf { it > 0 }?.let { (it * 1000).toLong() },
             genres = genreList(o),
             trackNumber = o["track_number"]?.jsonPrimitive?.intOrNull,
             discNumber = o["disc_number"]?.jsonPrimitive?.intOrNull,
@@ -1444,4 +1453,33 @@ object MaParse {
             )
         }
     }
+}
+
+/**
+ * Parses the ISO-8601 timestamps servers send for "when was this added" (Subsonic's
+ * `created`, Jellyfin and Emby's `DateCreated`) into epoch millis, or null when the
+ * text is missing or in a shape nobody expected. Never throws: a date nobody can read
+ * is a missing date, not a broken library.
+ */
+object AddedDates {
+    fun parseIso(text: String?): Long? {
+        if (text.isNullOrBlank()) return null
+        return try {
+            java.time.Instant.parse(text).toEpochMilli()
+        } catch (_: Exception) {
+            try {
+                java.time.OffsetDateTime.parse(text).toInstant().toEpochMilli()
+            } catch (_: Exception) {
+                try {
+                    // No zone at all ("2024-03-01T10:00:00"): the server's clock, taken as UTC.
+                    java.time.LocalDateTime.parse(text).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    /** Plex sends `addedAt` in epoch seconds. */
+    fun fromEpochSeconds(seconds: Long?): Long? = seconds?.takeIf { it > 0 }?.times(1000)
 }

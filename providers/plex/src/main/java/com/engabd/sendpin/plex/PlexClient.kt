@@ -524,6 +524,7 @@ class PlexClient(
             },
             album = o.str("parentTitle").takeIf { mediaType == "track" },
             year = o.int("year"),
+            addedAtMs = com.engabd.sendpin.ma.AddedDates.fromEpochSeconds(o.long("addedAt")),
             genres = o["Genre"]?.jsonArray.orEmpty().mapNotNull { (it as? JsonObject)?.str("tag") },
             // 0–10 on Plex, where its own apps draw five stars in half steps; whole
             // stars here, so a 7 (three and a half) shows as four.

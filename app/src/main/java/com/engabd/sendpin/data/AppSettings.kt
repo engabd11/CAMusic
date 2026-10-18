@@ -147,6 +147,7 @@ class AppSettings(private val context: Context) {
         private val DISCOGRAPHY_LAYOUT = stringPreferencesKey("discography_layout") // list | grid
         private val LIBRARY_TILE_STYLE = stringPreferencesKey("library_tile_style") // classic | gallery
         private val LIBRARY_SPOTLIGHT = booleanPreferencesKey("library_spotlight")
+        private val REDISCOVER_SHELVES = booleanPreferencesKey("rediscover_shelves")
         private val LIBRARY_BACKDROP = booleanPreferencesKey("library_backdrop")
         // The library's category buttons: shape, size, corner, and which of them
         // appear and in what order. Every default is the row exactly as it shipped,
@@ -1652,6 +1653,10 @@ class AppSettings(private val context: Context) {
     /** A featured record at the top of the library, painted in its own colours. Off by default. */
     val librarySpotlight: Flow<Boolean> = pref { it[LIBRARY_SPOTLIGHT] ?: false }
     suspend fun setLibrarySpotlight(on: Boolean) { context.dataStore.edit { it[LIBRARY_SPOTLIGHT] = on } }
+
+    /** The "Rediscover" shelves on the library home. On by default; each hides itself when empty. */
+    val rediscoverShelves: Flow<Boolean> = pref { it[REDISCOVER_SHELVES] ?: true }
+    suspend fun setRediscoverShelves(on: Boolean) { context.dataStore.edit { it[REDISCOVER_SHELVES] = on } }
 
     /** The playing (or spotlit) cover's colours washed behind the library. Off by default. */
     val libraryBackdrop: Flow<Boolean> = pref { it[LIBRARY_BACKDROP] ?: false }

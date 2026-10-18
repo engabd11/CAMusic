@@ -947,6 +947,7 @@ class JellyfinClient(
             album = o.str("Album"),
             entryId = o.str("PlaylistItemId"),
             year = o.int("ProductionYear"),
+            addedAtMs = com.engabd.sendpin.ma.AddedDates.parseIso(o.str("DateCreated")),
             genres = o["Genres"]?.jsonArray.orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull },
         )
     }

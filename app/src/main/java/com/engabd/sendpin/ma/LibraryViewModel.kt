@@ -48,6 +48,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
@@ -115,6 +116,8 @@ data class LibraryShelves(
      */
     val recent: List<MaItem> = emptyList(),
     val frequent: List<MaItem> = emptyList(),
+    /** On this day, Forgotten favourites, Never played, Deep cuts: see [Rediscover]. */
+    val rediscover: List<RediscoverShelf> = emptyList(),
     /** Music Assistant's own Discover rows — see [LibraryViewModel.loadDiscoverRows]. */
     val discover: List<DiscoverShelf> = emptyList(),
 )
@@ -551,6 +554,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _frequent = MutableStateFlow<List<MaItem>>(emptyList()); val frequent: StateFlow<List<MaItem>> = _frequent
 
+    // The Rediscover shelves and their day-long cache. Declared here with the other
+    // shelves, above [init], for the reason [_frequent] documents.
+    private val _rediscover = MutableStateFlow<List<RediscoverShelf>>(emptyList())
+    private var rediscoverCacheKey: String? = null
+    private var rediscoverCache: List<RediscoverShelf> = emptyList()
+    private var rediscoverCachedAt = 0L
+    private var rediscoverJob: Job? = null
+    private var rediscoverJobKey: String? = null
+    @Volatile private var rediscoverFailed = false
+
     /**
      * The seven root shelves as one value.
      *
@@ -567,6 +580,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val shelves: StateFlow<LibraryShelves> = combine(
         _favoriteAlbums, _favoriteArtists, _inProgress, _recentlyAdded,
         _recommendations, _recent, _frequent, _discover,
+        _rediscover.combine(settings.rediscoverShelves) { list, on -> if (on) list else emptyList() },
     ) { s ->
         @Suppress("UNCHECKED_CAST")
         val split = ContinueListening.split(
@@ -579,6 +593,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             inProgress = split.continueListening, recentlyAdded = s[3] as List<MaItem>,
             recommendations = s[4] as List<MaItem>, recent = split.recentlyPlayed,
             frequent = s[6] as List<MaItem>, discover = s[7] as List<DiscoverShelf>,
+            rediscover = s[8] as List<RediscoverShelf>,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, LibraryShelves())
 
@@ -893,7 +908,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         listOfNotNull(
             loadFavoriteAlbums(), loadFavoriteArtists(), loadRecent(),
             loadRecentlyAdded(), loadRecommendations(), loadDiscoverRows(),
-            loadInProgress(), loadFrequent(),
+            loadInProgress(), loadFrequent(), loadRediscover(force = true),
         ).joinAll()
     }
 
@@ -4188,6 +4203,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         loadDiscoverRows()
         loadInProgress()
         loadFrequent()
+        loadRediscover()
     }
 
     /** Best-effort — a shelf is hidden rather than erroring if a server lacks it. */
@@ -4325,6 +4341,137 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (_backend.value == Backend.MA) maRepo.inProgress() else source?.continueListening(12).orEmpty()
             }
             rememberFavorites(_inProgress.value)
+        }
+    }
+
+    /**
+     * The Rediscover shelves: built off the main thread from the play history, then held
+     * for a day per library. Pull-to-refresh ([force]) rebuilds them; reopening the
+     * library root does not, since it would repeat a handful of searches for the same
+     * answer. A build that hit a network failure is not kept, so a flaky moment does not
+     * hide the shelves until tomorrow.
+     */
+    private fun loadRediscover(force: Boolean = false): Job? {
+        if (_offline.value || (_backend.value != Backend.MA && source == null)) {
+            _rediscover.value = emptyList(); return null
+        }
+        val key = "${_activeServerConfig.value?.id}|${_backend.value}"
+        // A build for another library is stale the moment you switch: drop it.
+        rediscoverJob?.takeIf { it.isActive }?.let { if (rediscoverJobKey == key) return it else it.cancel() }
+        rediscoverJobKey = key
+        val job = viewModelScope.launch {
+            if (!settings.rediscoverShelves.first()) { _rediscover.value = emptyList(); return@launch }
+            val now = System.currentTimeMillis()
+            if (!force && rediscoverCacheKey == key && now - rediscoverCachedAt < Rediscover.DAY_MS) {
+                _rediscover.value = rediscoverCache
+                return@launch
+            }
+            rediscoverFailed = false
+            val built = withContext(Dispatchers.IO) { shelfLoad("rediscover") { buildRediscover(now) } }
+            _rediscover.value = built
+            built.forEach { rememberFavorites(it.items) }
+            if (!rediscoverFailed) {
+                rediscoverCacheKey = key; rediscoverCache = built; rediscoverCachedAt = now
+            }
+        }
+        rediscoverJob = job
+        return job
+    }
+
+    private suspend fun buildRediscover(now: Long): List<RediscoverShelf> {
+        val dao = com.engabd.sendpin.local.db.LocalMediaDatabase.get(getApplication()).playHistoryDao()
+        val rows = dao.rediscoverRows()
+        val zone = java.time.ZoneId.systemDefault()
+        val seed = java.time.LocalDate.now(zone).toEpochDay()
+        val gate = Semaphore(REDISCOVER_CONCURRENCY)
+        val out = mutableListOf<RediscoverShelf>()
+
+        if (rows.isNotEmpty()) {
+            Rediscover.onThisDay(rows, now, zone)?.let { day ->
+                val items = resolveSongs(day.picks, gate)
+                if (items.isNotEmpty()) out += RediscoverShelf("onThisDay", Rediscover.onThisDayTitle(day.year), items)
+            }
+            val forgotten = resolveSongs(Rediscover.forgottenFavourites(rows, now), gate)
+            if (forgotten.isNotEmpty()) out += RediscoverShelf("forgottenFavourites", "Forgotten favourites", forgotten)
+        }
+
+        val never = Rediscover.neverPlayed(scanAlbums(), rows, now, seed)
+        if (never.isNotEmpty()) out += RediscoverShelf("neverPlayed", "Never played", never)
+
+        if (rows.isNotEmpty()) {
+            val artists = Rediscover.topArtists(dao.topArtists(0L, limit = 10).map { it.artist to it.plays })
+            val perArtist = artists.map { name -> deepCutsFor(name, rows, seed, gate) }
+            // Round robin, so the first artist does not take the whole shelf.
+            val cuts = buildList {
+                for (i in 0 until (perArtist.maxOfOrNull { it.size } ?: 0)) perArtist.forEach { it.getOrNull(i)?.let(::add) }
+            }.distinctBy { it.itemId }.take(Rediscover.SHELF_LIMIT)
+            if (cuts.isNotEmpty()) out += RediscoverShelf("deepCuts", "Deep cuts", cuts)
+        }
+        return out
+    }
+
+    /** Looks the picked songs up in the active library; those it does not hold are dropped. */
+    private suspend fun resolveSongs(picks: List<SongPick>, gate: Semaphore): List<MaItem> = coroutineScope {
+        picks.take(Rediscover.SHELF_LIMIT).map { pick -> async { gate.withPermit { resolveSong(pick) } } }
+            .awaitAll().filterNotNull().distinctBy { it.itemId }
+    }
+
+    private suspend fun resolveSong(pick: SongPick): MaItem? = try {
+        val found = if (_backend.value == Backend.MA) maRepo.search(pick.title, 20) else source?.search(pick.title, 20)
+        val want = Rediscover.norm(pick.title)
+        val by = Rediscover.norm(pick.artist)
+        found?.tracks?.firstOrNull { t ->
+            val credit = Rediscover.norm(t.subtitle.orEmpty())
+            t.playable && Rediscover.norm(t.name) == want &&
+                (by.isEmpty() || credit.isEmpty() || credit.contains(by) || by.contains(credit))
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        rediscoverFailed = true; null
+    }
+
+    /**
+     * Up to [REDISCOVER_ALBUM_CAP] albums, a page at a time, for the Never played shelf.
+     * Skipped outright when the first page carries no added dates (a source without
+     * them), so such a library costs one call.
+     */
+    private suspend fun scanAlbums(): List<MaItem> {
+        val all = mutableListOf<MaItem>()
+        try {
+            var offset = 0
+            while (offset < REDISCOVER_ALBUM_CAP) {
+                val page = if (_backend.value == Backend.MA) maRepo.albums(offset, REDISCOVER_ALBUM_PAGE)
+                else source?.albums(offset, REDISCOVER_ALBUM_PAGE).orEmpty()
+                if (page.isEmpty()) break
+                all += page
+                if (offset == 0 && page.none { it.addedAtMs != null }) return emptyList()
+                if (page.size < REDISCOVER_ALBUM_PAGE) break
+                offset += REDISCOVER_ALBUM_PAGE
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            rediscoverFailed = true
+        }
+        return all
+    }
+
+    private suspend fun deepCutsFor(
+        name: String, rows: List<com.engabd.sendpin.local.db.PlayRow>, seed: Long, gate: Semaphore,
+    ): List<MaItem> = gate.withPermit {
+        try {
+            val want = Rediscover.norm(name)
+            val found = if (_backend.value == Backend.MA) maRepo.search(name, 10) else source?.search(name, 10)
+            val artist = found?.artists?.firstOrNull { Rediscover.norm(it.name) == want }
+                ?: return@withPermit emptyList()
+            val catalogue = if (_backend.value == Backend.MA) maRepo.artistTracks(artist) else source?.tracksUnder(artist).orEmpty()
+            val theirs = rows.filter { Rediscover.norm(it.artist).contains(want) }
+            Rediscover.deepCuts(catalogue, theirs, seed)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            rediscoverFailed = true; emptyList()
         }
     }
 
@@ -4597,6 +4744,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         /** `getAlbumList2`'s documented maximum `size`. */
         const val SUBSONIC_PAGE = 500
+        /** Rediscover: parallel searches, albums scanned for Never played, and the page they come in. */
+        const val REDISCOVER_CONCURRENCY = 3
+        const val REDISCOVER_ALBUM_CAP = 1000
+        const val REDISCOVER_ALBUM_PAGE = 200
 
         /**
          * How long typing has to pause before the query is sent.
