@@ -132,3 +132,44 @@ internal fun smoothstep(e0: Float, e1: Float, x: Float): Float {
     val t = ((x - e0) / (e1 - e0)).coerceIn(0f, 1f)
     return t * t * (3f - 2f * t)
 }
+
+/** [c] scaled so its brightest channel is 1: a pure direction in colour, brightness set elsewhere. */
+internal fun normalised(c: Rgb): Rgb {
+    val m = maxOf(c.first, c.second, c.third)
+    return if (m <= 1e-6f) Rgb(1f, 1f, 1f) else Rgb(c.first / m, c.second / m, c.third / m)
+}
+
+/**
+ * A path through colour and perceived brightness over a scene's own clock (0..1).
+ *
+ * Used by the scenes that move through a day: dawn, sunset. Each pair of neighbouring
+ * keys is blended with a smoothstep, so the path has no corner at a key and a change
+ * of colour never reads as a step. Colours are directions (brightest channel 1) and the
+ * brightness is carried separately, which is what [com.engabd.sendpin.hue.ambience.ComfortLimiter]
+ * wants to see.
+ */
+internal class Keyframes(
+    private val at: FloatArray,
+    colours: Array<Rgb>,
+    private val levels: FloatArray,
+) {
+    private val dirs = Array(colours.size) { normalised(colours[it]) }
+
+    private fun segment(p: Float): Int {
+        var i = 0
+        while (i < at.size - 2 && p >= at[i + 1]) i++
+        return i
+    }
+
+    private fun weight(p: Float, i: Int) = smoothstep(at[i], at[i + 1], p)
+
+    fun colourAt(p: Float): Rgb {
+        val i = segment(p)
+        return normalised(mix(dirs[i], dirs[i + 1], weight(p, i)))
+    }
+
+    fun levelAt(p: Float): Float {
+        val i = segment(p)
+        return levels[i] + (levels[i + 1] - levels[i]) * weight(p, i)
+    }
+}

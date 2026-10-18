@@ -14,11 +14,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Celebration
+import androidx.compose.material.icons.filled.Cottage
+import androidx.compose.material.icons.filled.EmojiObjects
+import androidx.compose.material.icons.filled.Forest
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Thunderstorm
 import androidx.compose.material.icons.filled.Train
+import androidx.compose.material.icons.filled.WbTwilight
 import androidx.compose.material.icons.filled.Water
 import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.Icon
@@ -409,6 +413,10 @@ internal fun ambienceIcon(e: AmbienceEffect): ImageVector = when (e) {
     AmbienceEffect.LIGHT_TRAIN -> Icons.Default.Train
     AmbienceEffect.AURORA -> Icons.Default.AutoAwesome
     AmbienceEffect.COASTAL_RAIN -> Icons.Default.WaterDrop
+    AmbienceEffect.CANDLELIGHT -> Icons.Default.EmojiObjects
+    AmbienceEffect.FOREST_DAWN -> Icons.Default.Forest
+    AmbienceEffect.TIN_ROOF_RAIN -> Icons.Default.Cottage
+    AmbienceEffect.GOLDEN_HOUR -> Icons.Default.WbTwilight
 }
 
 private fun formatRemaining(seconds: Int): String {
