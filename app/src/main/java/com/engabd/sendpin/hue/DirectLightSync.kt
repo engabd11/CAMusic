@@ -3,6 +3,7 @@ package com.engabd.sendpin.hue
 import com.engabd.sendpin.util.runCatchingCancellable
 import android.animation.ValueAnimator
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.engabd.sendpin.crash.LogRedactor
 import com.engabd.sendpin.audio.ANALYSIS_HOP
@@ -21,7 +22,10 @@ import com.engabd.sendpin.audio.StructureTracker
 import com.engabd.sendpin.audio.TempoTracker
 import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.audio.TrackScanRepository
-import com.engabd.sendpin.game.GameBand
+import com.engabd.sendpin.game.GameLightField
+import com.engabd.sendpin.game.GameOnset
+import com.engabd.sendpin.game.GameOnsetBuffer
+import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.GameChartSource
 import androidx.core.graphics.drawable.toBitmap
 import coil.imageLoader
@@ -205,60 +209,6 @@ private const val PREDROP_WINDOW_S = 2f
 
 /** How much louder the next section must be to read as a drop rather than a change. */
 private const val DROP_LEVEL_STEP = 0.15f
-
-// ── Rhythm game ──────────────────────────────────────────────────────────────────
-
-/**
- * The dim level the room rests at in game mode.
- *
- * A floor, and an absolute one. It is not scaled by the brightness ceiling, because
- * it is not competing with it: the ceiling says how bright the show may *peak*, and
- * this says how dark the room sits between the moments the player earns. Scaling the
- * floor by the ceiling was the first version's mistake in miniature — it made the
- * whole room, reactions included, a function of a setting that was only ever meant
- * to cap the top.
- *
- * Clamped under the ceiling at the point of use, since a floor above the ceiling
- * would be a floor holding the room *up*.
- */
-private const val GAME_FLOOR_LEVEL = 0.08f
-
-/**
- * The floor's colour, as a multiplier per channel on [GAME_FLOOR_LEVEL].
- *
- * Very slightly cool, so a room being held down reads as deliberate rather than as a
- * warm lamp that failed to come up.
- */
-private const val FLOOR_TINT_R = 0.90f
-private const val FLOOR_TINT_G = 0.95f
-private const val FLOOR_TINT_B = 1.15f
-
-/** How long the gate takes to open. Short enough to read as the tap itself. */
-private const val GATE_ATTACK_MS = 25f
-
-/** How long it stays fully open on a hit with no combo behind it. */
-private const val GATE_HOLD_MS = 90f
-
-/**
- * Extra hold per unbroken note, and the combo at which that stops growing.
- *
- * At the cap this is roughly a third of a second of hold on top of the base, which
- * turns a long run from a string of separate flashes into a show that is very nearly
- * continuous. That is the reward, and it needs no explaining because it is simply
- * more of the thing the player is already playing for.
- */
-private const val GATE_HOLD_PER_COMBO_MS = 10f
-private const val GATE_HOLD_COMBO_CAP = 30
-
-/**
- * How long the gate takes to close.
- *
- * Long enough that a room of Zigbee bulbs relaying at ~25 Hz renders the fall rather
- * than receiving one bright frame and one dark one, and long enough that a beat's
- * own reaction has time to play out inside the window rather than being cut off
- * mid-swell.
- */
-private const val GATE_RELEASE_MS = 340f
 
 /**
  * Whichever backend is actually producing sound right now, and what
@@ -477,10 +427,26 @@ class DirectLightSync(
     private var roomPositions: Map<Int, Vec3> = emptyMap()
 
     /**
-     * True while the rhythm game owns the room — see [setGameMode] and
-     * [applyGameGate].
+     * True while the rhythm game owns the room — see [setGameMode]. The music show
+     * does not render then; [gameField] paints the room.
      */
     @Volatile private var gameMode = false
+
+    /**
+     * What the room shows while [gameMode] is on, or null when it is off. Commands
+     * come in from the main thread through its own queue and the render loop is the
+     * only reader of its frame, so nothing here needs a lock.
+     */
+    @Volatile private var gameField: GameLightField? = null
+
+    /**
+     * Beat and onset flags for the game, pushed from the analysis thread so a frame
+     * the game's conflated flow drops cannot take its beat with it.
+     */
+    private val gameOnsets = GameOnsetBuffer()
+
+    /** Everything the analyser flagged since the game last asked. See [GameOnsetBuffer]. */
+    fun drainGameOnsets(): List<GameOnset> = gameOnsets.drain()
 
     /**
      * The light engine's beat clock for the rhythm game, published each analysis
@@ -502,34 +468,6 @@ class DirectLightSync(
      * actually played, across backends. Null when nothing identifiable is playing.
      */
     fun currentGameTrackKey(): String? = scanKeyOf(currentTrack)
-
-    /**
-     * How far open the game's gate is, and since when.
-     *
-     * A single envelope over the whole room rather than a per-lamp overlay, because
-     * what it gates is the show itself: when it is open the engine's own frame goes
-     * out untouched, so a kick lights the room the way a kick does and a hi-hat the
-     * way a hi-hat does, scan and all. There is nothing here that needs to know
-     * which lamps those are — the engine already decided.
-     *
-     * The gate is additionally **shaped** by the struck note's band (see
-     * [receiveGameHit]): low-band hits favour the floor lamps, high-band the
-     * ceiling, and a melody hit rotates colour rather than punching brightness —
-     * the room answers in the shape of the music.
-     */
-    @Volatile private var gateOpenedAtMs = 0L
-    @Volatile private var gatePeak = 0f
-    @Volatile private var gateHoldMs = 0f
-    @Volatile private var gateBand: GameBand = GameBand.FULL
-
-    /**
-     * The game's lamp classes, rebuilt with the room. Index 0 = bass-leaning
-     * lamps, 1 = top-leaning; a lamp's split is its height-band blend, the same
-     * arithmetic the engine's heightFreq path uses, so "bass lamps" means the
-     * same thing here as it does in the show.
-     */
-    private var gameBassLamps: Map<Int, Float> = emptyMap()
-    private var gameTopLamps: Map<Int, Float> = emptyMap()
 
     /** What shape the lamps are in, cached alongside [channels]. */
     private var roomTopology: RoomTopology = RoomTopology.CLUSTER
@@ -930,24 +868,6 @@ class DirectLightSync(
             roomPositions = normalizePositions(channels)
             roomTopology = classifyTopology(channels)
 
-            // The game's lamp classes: each lamp's height-band blend, the same
-            // arithmetic the engine's heightFreq path uses. Rebuilt here because
-            // the lamps do not move while a session is up — the same argument
-            // roomPositions makes.
-            val bassLamps = HashMap<Int, Float>(channels.size)
-            val topLamps = HashMap<Int, Float>(channels.size)
-            for (ch in channels) {
-                val nz = roomPositions[ch.channelId]?.z ?: 0.5f
-                val lower = heightBandLower(nz)
-                val frac = heightBandFrac(nz)
-                // Bass weight: 1.0 pure sub_bass, 0.0 pure high, blended between.
-                val bassW = 1f - (lower + frac) / (HEIGHT_BANDS.size - 1).coerceAtLeast(1)
-                bassLamps[ch.channelId] = bassW.coerceIn(0f, 1f)
-                topLamps[ch.channelId] = (1f - bassW).coerceIn(0f, 1f)
-            }
-            gameBassLamps = bassLamps
-            gameTopLamps = topLamps
-
             // 2. Start the stream on the bridge (PUT action:start).
             // Passing our own application id lets the bridge tell "someone else has
             // this area" from "we already do" — a reconnect must still reclaim it.
@@ -1330,11 +1250,33 @@ class DirectLightSync(
         // Published alongside the volatile snapshot trio with the same discipline:
         // a reference assignment, read by the game on the main thread, never
         // mutated in place afterwards (BeatGrid and TrackScan are immutable).
+        //
+        // One snapshot: the grid, the frame it came from, when it was analysed and how
+        // far behind the audio it ran all travel together. The game times its chart
+        // from `frameAtMs`, not from when its collector got the frame.
+        val analysedAtMs = SystemClock.elapsedRealtime()
         chartSource = GameChartSource(
             grid = grid,
             scan = if (mapCommitted == true) activeScan else null,
             frameTAudioS = if (pos.isNaN()) frame.tAudio else pos,
+            frame = published,
+            frameAtMs = analysedAtMs,
+            frameLagMs = latestFrameLagMs,
         )
+        if (gameMode && (frame.beat || frame.bassBeat || frame.midBeat)) {
+            gameOnsets.push(
+                GameOnset(
+                    atMs = analysedAtMs,
+                    lagMs = latestFrameLagMs,
+                    beat = frame.beat,
+                    beatStrength = frame.beatStrength,
+                    bass = frame.bassBeat,
+                    bassStrength = frame.bassStrength,
+                    mid = frame.midBeat,
+                    midStrength = frame.midStrength,
+                ),
+            )
+        }
     }
 
     /**
@@ -1533,6 +1475,31 @@ class DirectLightSync(
             val enc = encoder ?: continue
             val client = dtls ?: continue
 
+            // The rhythm game paints the room itself and outranks everything below:
+            // no music engine, no delay queue, no layers. Only the player's taps are
+            // light. Its frame goes straight out, because a hit is already timed for
+            // the moment it should be seen (see [GameLightField]). The user's flash
+            // safety and the rate limiter still apply.
+            val game = gameField
+            if (gameMode && game != null) {
+                if (idlePacer.onFrame(false, now)) acquireLocks()
+                game.bindChannels(channels)
+                val scene = game.render(
+                    nowMs = SystemClock.elapsedRealtime(),
+                    ceiling = layerBrightness,
+                    idle = lastAlbumColours?.colors?.firstOrNull(),
+                )
+                val gameGuarded = safety?.process(scene, dt) ?: scene
+                val gameDue = rateLimiter.process(gameGuarded, dt)
+                if (isUnchanged(gameDue) && (now - lastSendAt) < RESEND_INTERVAL_NANOS) continue
+                when (emitFrame(gameDue, now, enc, client)) {
+                    EmitResult.ABORT -> return
+                    EmitResult.RETRY -> continue@render
+                    EmitResult.OK -> lastSent = gameDue
+                }
+                continue@render
+            }
+
             // An ambience show, if one is running, takes the room outright — unless
             // the game is up, which outranks it. A scripted effect is a show of its
             // own and would paint the room on its own schedule, which is the one
@@ -1655,22 +1622,10 @@ class DirectLightSync(
                 )
             }
 
-            // The rhythm game holds the room down and lets the *real* show through
-            // in the moments the player earns. See [applyGameGate].
-            //
-            // Applied here, on the finished frame, rather than as a branch that
-            // replaces the whole render: everything that makes the show worth
-            // watching — the scan's beat grid, the per-instrument reactions, the
-            // layer chain — has to still be running, because "the lights react
-            // correctly" is the reward. Gating the output is what makes them react
-            // *only* when a note lands; rendering something else entirely, which is
-            // what this used to do, threw away the reaction along with the flashing.
-            val gated = if (gameMode) applyGameGate(layered) else layered
-
             // Safety runs on what is about to be sent, at the moment it is sent —
             // its flash budget is measured in wall-clock seconds, so it has to
             // sit after the delay queue rather than before it.
-            val guarded = safety?.process(gated, dt) ?: gated
+            val guarded = safety?.process(layered, dt) ?: layered
             val due = rateLimiter.process(guarded, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
@@ -1704,8 +1659,6 @@ class DirectLightSync(
             // next stage that learns to pass its input through rather than a live
             // bug — and it costs one map copy on frames that actually differ.
             lastSent = if (due === layered) HashMap(due) else due
-            // (`gated` is a fresh map on every frame the gate is applied, so it is
-            // never the chain's reused buffer and needs no copy of its own.)
         }
     }
 
@@ -2589,181 +2542,51 @@ class DirectLightSync(
     /**
      * Hand the room to the rhythm game, or take it back.
      *
-     * While this is on the show still runs in full — the beat grid, the scan, the
-     * per-instrument reactions, the layer chain — and [applyGameGate] holds its
-     * output down to a dim floor. A correctly-struck note opens the gate, and for
-     * as long as it is open the room does exactly what it would have done anyway.
+     * While this is on, the music show does not render at all: a [GameLightField]
+     * paints a dim album-colour glow, and the only brighter light is what the player's
+     * taps ask for through [receiveGameHit] and [receiveGameMiss]. The analysis keeps
+     * running, because the chart is written from its beat grid.
      *
-     * That is the whole design, and it is a correction of the first attempt at it.
-     * The first version replaced the render with a floor plus a coloured flash per
-     * lane, which meant hitting a note lit a red lamp on the left rather than
-     * *playing the kick's reaction*: it threw away everything the engine knows about
-     * what the music is doing at that instant, which is the only reason the reward
-     * is worth having. It also scaled its flashes by the brightness ceiling, so the
-     * whole room — reactions included — came out dim. Nothing here touches the
-     * ceiling now: the floor comes down, and a hit plays at the brightness the show
-     * was always going to use.
+     * An earlier version kept the show running and gated its output, which meant the
+     * lights were already reacting to the music and the taps only added to them. The
+     * taps are the reaction now.
      */
     fun setGameMode(on: Boolean) {
         if (gameMode == on) return
-        gameMode = on
-        closeGate()
-        // Nothing else to do: the render loop picks the gate up on its next tick.
-    }
-
-    private fun closeGate() {
-        gatePeak = 0f
-        gateHoldMs = 0f
-        gateOpenedAtMs = 0L
-    }
-
-    /**
-     * A note was struck in the rhythm game: open the gate.
-     *
-     * [strength] is 0..1 for how well it was hit and becomes how far the gate opens,
-     * so a Perfect plays the show at full and a scrappy Good plays it at rather
-     * less. [combo] lengthens the hold — the better the run, the more continuous the
-     * show becomes, which is a reward that costs nothing to explain because it is
-     * simply more of the thing the player already wanted.
-     *
-     * [band] shapes *where* in the room the answer lands. A bass note favours the
-     * floor lamps, a hat the ceiling, a snare the whole room, and a melody note is
-     * a colour rotation with only a gentle brightness lift — the Hue guide book's
-     * rule that a colour transition may be quicker than a brightness one, applied
-     * to the reward. The previous hit's gate is never weakened: a later hit can
-     * only widen the shape.
-     *
-     * Not scaled by the brightness ceiling. The engine has already applied that to
-     * the frame this gate multiplies, and scaling here as well is what made the
-     * first version dim the whole room instead of only its floor.
-     *
-     * Called from the main thread; the fields are volatile and the render loop only
-     * reads them, so there is nothing to lock.
-     */
-    fun receiveGameHit(strength: Float, combo: Int, band: GameBand = GameBand.FULL) {
-        val peak = strength.coerceIn(0f, 1f)
-        if (peak <= 0f) return
-        // Never let a new hit drop the room below where the last one has it. A weak
-        // hit landing while a strong one is still ringing should extend the show,
-        // not chop it — the player did not do anything wrong.
-        gatePeak = maxOf(gameGate(), peak)
-        gateHoldMs = GATE_HOLD_MS + (combo.coerceAtMost(GATE_HOLD_COMBO_CAP) * GATE_HOLD_PER_COMBO_MS)
-        gateOpenedAtMs = System.currentTimeMillis()
-        gateBand = band
-    }
-
-    /**
-     * The sympathy floor: how much of the gate a lamp outside the hit's band still
-     * gets. Not zero — a room that goes black except for one lamp reads as a fault,
-     * and peripheral-vision flashes want company — but well under the band's own.
-     */
-    private val bandSympathy = 0.35f
-
-    /** Melody hits lift brightness by this much at most; the reward is the colour. */
-    private val colorBandBrightness = 0.6f
-
-    /** How far a melody hit rotates the room's hue, as a fraction of a turn. */
-    private val colorBandShift = 0.08f
-
-    /** Reusable HSV buffer for the melody lane's colour rotation, render thread only. */
-    private val gameHsv = FloatArray(3)
-
-    /**
-     * How strongly this lamp participates in [band]'s answer, 0..1.
-     *
-     * FULL is every lamp. BASS/TOP use the lamp's height-band blend computed once
-     * per session ([gameBassLamps]/[gameTopLamps]) — the same stacking the engine
-     * already performs, so a kick and the engine's own bass response agree on which
-     * lamps are low. Flat Hue floor plans put every lamp at the same height, in
-     * which case every lamp is an equal mix and the band degrades gracefully toward
-     * "the whole room, gently shaped".
-     */
-    private fun bandWeight(id: Int, band: GameBand): Float = when (band) {
-        GameBand.FULL -> 1f
-        GameBand.BASS -> gameBassLamps[id] ?: 0.5f
-        GameBand.TOP -> gameTopLamps[id] ?: 0.5f
-        GameBand.COLOR -> 1f
-    }
-
-    /**
-     * Hold the room at a dim floor, and open to the full show where the player has
-     * earned it — shaped by the struck note's band.
-     *
-     * The floor is a *floor*, not a ceiling: it lifts whatever the show is doing up
-     * to a dim minimum so the room is never black, and it never holds anything down.
-     * The gate above it is a plain multiplier on the engine's own frame, so at full
-     * open this returns the frame unchanged — the reaction is the show's, at the
-     * show's brightness, with the user's ceiling already applied to it upstream.
-     *
-     * Componentwise `max` rather than a blend toward a floor colour: a blend would
-     * wash the show's colours toward neutral in proportion to how dim they are,
-     * which is exactly backwards for a deep-blue verse.
-     */
-    private fun applyGameGate(field: Map<Int, Rgb>): Map<Int, Rgb> {
-        val gate = gameGate()
-        // Kept under the user's ceiling: a room limited to 5% must not have a 6%
-        // floor propping it up. Otherwise absolute, so the floor is the same dim
-        // room whatever the show is allowed to peak at.
-        val floor = minOf(GAME_FLOOR_LEVEL, layerBrightness)
-        val band = gateBand
-        val isColor = band == GameBand.COLOR
-        // A melody hit rotates hue rather than punching brightness. The shift is
-        // fixed (not scaled by the gate) so the sweep reads the same for a Good as
-        // for a Perfect — what scales is only how bright it rides.
-        val hueShift = if (isColor) colorBandShift else 0f
-        val out = HashMap<Int, Rgb>(field.size)
-        for ((id, c) in field) {
-            val w = bandWeight(id, band)
-            // Sympathy: lamps outside the band still get the gate, at a floor of
-            // the band's weight — the room moves together, just less so.
-            val shaped = if (isColor) {
-                colorBandBrightness
-            } else {
-                maxOf(w, bandSympathy)
-            }
-            var r = c.first * gate * shaped
-            var g = c.second * gate * shaped
-            var b = c.third * gate * shaped
-            if (hueShift > 0f && gate > 0.05f) {
-                rgbToHsvInto(c, gameHsv)
-                val shifted = hsvToRgb(wrap1(gameHsv[0] + hueShift), gameHsv[1], gameHsv[2])
-                r = shifted.first * gate * shaped
-                g = shifted.second * gate * shaped
-                b = shifted.third * gate * shaped
-            }
-            out[id] = Rgb(
-                maxOf(floor * FLOOR_TINT_R, r),
-                maxOf(floor * FLOOR_TINT_G, g),
-                maxOf(floor * FLOOR_TINT_B, b),
-            )
-        }
-        return out
-    }
-
-    /**
-     * How far open the gate is right now, 0..1.
-     *
-     * Attack, hold, release. The attack is short enough to read as the tap itself;
-     * the release is long enough that a room of Zigbee bulbs relaying at 25 Hz
-     * actually renders the fall rather than receiving one bright frame and one dark
-     * one, and that a beat's own reaction has time to play out inside it.
-     */
-    private fun gameGate(): Float {
-        val peak = gatePeak
-        if (peak <= 0f) return 0f
-        val age = (System.currentTimeMillis() - gateOpenedAtMs).toFloat()
-        if (age < 0f) return 0f
-        val hold = gateHoldMs
-        return when {
-            age < GATE_ATTACK_MS -> peak * (age / GATE_ATTACK_MS)
-            age < GATE_ATTACK_MS + hold -> peak
-            else -> {
-                val d = (age - GATE_ATTACK_MS - hold) / GATE_RELEASE_MS
-                if (d >= 1f) 0f else peak * (1f - d) * (1f - d)
-            }
+        gameOnsets.clear()
+        if (on) {
+            // Field first, flag second: the render loop checks the flag and then
+            // reads the field.
+            gameField = GameLightField()
+            gameMode = true
+        } else {
+            gameMode = false
+            gameField = null
         }
     }
 
+    /**
+     * A note was struck in the rhythm game: flash its lane.
+     *
+     * [startMs] is when the flash should begin, on `SystemClock.elapsedRealtime()`.
+     * That is the tap's own time for a tap on or after the beat, and later for an early
+     * tap, held back so the light and the beat arrive together (the lamps take
+     * [com.engabd.sendpin.game.GameTiming.LIGHT_PIPELINE_MS] to show a command).
+     * Called from the main thread; the field takes it through a queue.
+     */
+    fun receiveGameHit(lane: Int, judgement: Judgement, combo: Int, startMs: Long) {
+        gameField?.postHit(lane, judgement, combo, startMs)
+    }
+
+    /** A note on [lane] fell past the line untouched: a dim ember, never a flash. */
+    fun receiveGameMiss(lane: Int, atMs: Long) {
+        gameField?.postMiss(lane, atMs)
+    }
+
+    /** The combo broke: the lane colours fade back over 400 ms. */
+    fun receiveGameComboBreak(atMs: Long) {
+        gameField?.postComboBreak(atMs)
+    }
 
     // ── Track scans ─────────────────────────────────────────────────────────
 

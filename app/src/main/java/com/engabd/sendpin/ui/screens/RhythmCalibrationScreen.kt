@@ -133,7 +133,7 @@ fun RhythmCalibrationScreen(
                     Text(
                         when {
                             !state.locked -> "Play something with a clear beat…"
-                            state.done -> "Applied ${state.appliedOffsetMs} ms — timing centred"
+                            state.done -> "Applied ${state.appliedOffsetMs} ms, timing centred"
                             else -> "Tap when the circle pulses · ${state.taps} of 12"
                         },
                         color = TextMuted, fontFamily = AppFont,
@@ -154,7 +154,16 @@ fun RhythmCalibrationScreen(
                                 val event = awaitPointerEvent()
                                 for (change in event.changes) {
                                     if (change.pressed && !change.previousPressed) {
-                                        viewModel.tap(viewModel.nowMs())
+                                        // The touch's own stamp, not the time this
+                                        // handler ran: the game times its taps the same
+                                        // way, so the two measure the same latency.
+                                        viewModel.tap(
+                                            com.engabd.sendpin.game.GameTiming.tapGameMs(
+                                                viewModel.nowMs(),
+                                                android.os.SystemClock.uptimeMillis(),
+                                                change.uptimeMillis,
+                                            ),
+                                        )
                                         change.consume()
                                     }
                                 }
@@ -175,7 +184,7 @@ fun RhythmCalibrationScreen(
                 )
                 if (state.done) {
                     Text(
-                        "Done — timing centred",
+                        "Done, timing centred",
                         color = TextPrimary, fontFamily = AppFont,
                         fontWeight = FontWeight.Bold, fontSize = 15.sp,
                         modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp),

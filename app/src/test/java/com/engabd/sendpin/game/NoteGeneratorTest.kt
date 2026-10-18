@@ -68,7 +68,7 @@ class NoteGeneratorTest {
     @Test
     fun `notes are charted ahead of the music, not behind it`() {
         val gen = NoteGenerator()
-        val end = gen.playSteady(startMs = 10_000L, beats = 8)
+        val end = gen.playSteady(startMs = 10_000L, beats = 16)
 
         val notes = gen.active()
         assertTrue(notes.isNotEmpty(), "nothing charted after eight beats of a steady tempo")
@@ -99,9 +99,7 @@ class NoteGeneratorTest {
     @Test
     fun `charted notes sit on the beat grid`() {
         val gen = NoteGenerator()
-        // Long enough that the pre-lock fallback notes — which are reactive and
-        // deliberately off-grid, being the best that can be done before a tempo is
-        // known — have all been reaped, leaving only what the locked grid wrote.
+        // Long enough for the count-in to end and the locked grid to chart a few bars.
         gen.playSteady(startMs = 0L, beats = 16)
 
         // Every note is on a beat or a quarter-beat subdivision of it: the offbeat
@@ -120,9 +118,9 @@ class NoteGeneratorTest {
     @Test
     fun `the lead shifts the whole chart into audible time`() {
         val without = NoteGenerator()
-        without.playSteady(startMs = 0L, beats = 8)
+        without.playSteady(startMs = 0L, beats = 16)
         val with = NoteGenerator()
-        with.playSteady(startMs = 0L, beats = 8, leadMs = 300L)
+        with.playSteady(startMs = 0L, beats = 16, leadMs = 300L)
 
         val a = without.active().minOf { it.triggerTimeMs }
         val b = with.active().minOf { it.triggerTimeMs }
@@ -136,7 +134,7 @@ class NoteGeneratorTest {
     @Test
     fun `a note can only be taken once`() {
         val gen = NoteGenerator()
-        val end = gen.playSteady(startMs = 0L, beats = 8)
+        val end = gen.playSteady(startMs = 0L, beats = 16)
         val target = gen.active().minByOrNull { it.triggerTimeMs }
         assertNotNull(target)
 
@@ -156,7 +154,7 @@ class NoteGeneratorTest {
     @Test
     fun `a tap outside the hit window takes nothing`() {
         val gen = NoteGenerator()
-        gen.playSteady(startMs = 0L, beats = 8)
+        gen.playSteady(startMs = 0L, beats = 16)
         val target = gen.active().minByOrNull { it.triggerTimeMs }
         assertNotNull(target)
 
@@ -168,7 +166,7 @@ class NoteGeneratorTest {
     @Test
     fun `notes past the window are reaped exactly once`() {
         val gen = NoteGenerator()
-        gen.playSteady(startMs = 0L, beats = 8, reap = false)
+        gen.playSteady(startMs = 0L, beats = 16, reap = false)
         val charted = gen.active().size
         assertTrue(charted > 0)
 
@@ -182,17 +180,18 @@ class NoteGeneratorTest {
     @Test
     fun `the revision only moves when the board does`() {
         val gen = NoteGenerator()
-        gen.playSteady(startMs = 0L, beats = 8)
+        val end = gen.playSteady(startMs = 0L, beats = 16)
         val before = gen.revision
-        // A frame that charts nothing new — no onset, and the horizon already full.
-        gen.onFrame(quietFrame(), 4_000L)
+        // A frame that charts nothing new: no onset, and the horizon already full.
+        gen.onFrame(quietFrame(), end)
         assertEquals(before, gen.revision, "an empty frame bumped the revision")
     }
 
     @Test
-    fun `an unlocked tempo still produces something to play`() {
-        // No tempo estimate at all: the fallback has to keep the game alive rather
-        // than showing an empty board for the whole track.
+    fun `an unlocked tempo charts nothing rather than late notes`() {
+        // No tempo estimate at all. A note written from an onset that has already
+        // been heard is late by construction, so the board stays empty until the beat
+        // is found; the count-in covers the wait.
         val gen = NoteGenerator()
         var t = 0L
         repeat(40) {
@@ -204,17 +203,92 @@ class NoteGeneratorTest {
             t += 20L
         }
         assertTrue(!gen.locked, "locked with no tempo estimate")
-        assertTrue(gen.active().isNotEmpty(), "the fallback charted nothing")
+        assertTrue(gen.active().isEmpty(), "charted late reactive notes: ${gen.active()}")
+        assertEquals(-1, gen.countInBeatsLeft(t), "reported a count-in before the beat was found")
+    }
+
+    @Test
+    fun `locking starts a four beat count-in with no notes in it`() {
+        val gen = NoteGenerator()
+        val end = gen.playSteady(startMs = 0L, beats = 10, reap = false)
+        assertTrue(gen.locked)
+        // Three agreeing onsets lock the grid about two beats in; the count-in runs
+        // four beats from there, and nothing is charted inside it.
+        val first = gen.active().minOf { it.triggerTimeMs }
+        assertTrue(
+            first >= 2 * periodMs + COUNT_IN_BEATS * periodMs,
+            "a note at $first sits inside the count-in",
+        )
+        assertEquals(0, gen.countInBeatsLeft(end + 10 * periodMs), "the count-in never ended")
+    }
+
+    @Test
+    fun `the count-in counts down in whole beats`() {
+        val gen = NoteGenerator()
+        gen.playWithEngine(startMs = 0L, frames = 2)
+        assertEquals(COUNT_IN_BEATS, gen.countInBeatsLeft(20L))
+        assertEquals(2, gen.countInBeatsLeft(20L + 2 * periodMs))
+        assertEquals(0, gen.countInBeatsLeft(20L + COUNT_IN_BEATS * periodMs + 1))
+    }
+
+    @Test
+    fun `onsets from the buffer steer the phase loop like frame flags`() {
+        val viaFrames = NoteGenerator()
+        val viaOnsets = NoteGenerator()
+        var t = 0L
+        repeat(250) {
+            val onBeat = (t % periodMs) < 20L
+            viaFrames.onFrame(if (onBeat) beatFrame() else quietFrame(), t, 0L)
+            viaOnsets.onFrame(quietFrame(), t, 0L)
+            if (onBeat) viaOnsets.onOnset(beat = true, bass = true, mid = false, midStrength = 0f, audibleMs = t)
+            t += 20L
+        }
+        assertTrue(viaOnsets.locked, "onsets alone never locked the grid")
+        assertEquals(viaFrames.locked, viaOnsets.locked)
     }
 
     @Test
     fun `reset clears the board`() {
         val gen = NoteGenerator()
-        gen.playSteady(startMs = 0L, beats = 8)
+        gen.playSteady(startMs = 0L, beats = 16)
         assertTrue(gen.active().isNotEmpty())
         gen.reset()
         assertTrue(gen.active().isEmpty())
         assertTrue(!gen.locked)
+        assertEquals(-1, gen.countInBeatsLeft(0L), "the count-in survived a reset")
+    }
+
+    // ── Difficulty-scaled reaping ────────────────────────────────────────────
+
+    @Test
+    fun `reaping uses the difficulty's own window`() {
+        val easy = DIFFICULTY_SCALE.getValue("easy")
+        val expert = DIFFICULTY_SCALE.getValue("expert")
+        for (scale in listOf(easy, 1f, expert)) {
+            val gen = NoteGenerator()
+            gen.playSteady(startMs = 0L, beats = 16, reap = false)
+            val note = gen.active().minBy { it.triggerTimeMs }
+            val window = Judgement.hitWindowMs(scale)
+            assertTrue(
+                gen.reap(note.triggerTimeMs + window, scale).none { it.id == note.id },
+                "x$scale: reaped a note a tap could still score",
+            )
+            assertTrue(
+                gen.reap(note.triggerTimeMs + window + 1, scale).any { it.id == note.id },
+                "x$scale: kept a note no tap could score",
+            )
+        }
+    }
+
+    @Test
+    fun `a note take can reach is still on the board at the edge of the window`() {
+        val expert = DIFFICULTY_SCALE.getValue("expert")
+        val gen = NoteGenerator()
+        gen.playSteady(startMs = 0L, beats = 16, reap = false)
+        val note = gen.active().minBy { it.triggerTimeMs }
+        val atEdge = note.triggerTimeMs + Judgement.hitWindowMs(expert)
+        assertTrue(gen.reap(atEdge, expert).none { it.id == note.id })
+        assertNotNull(gen.take(note.lane, atEdge, expert))
     }
 
     // ── Engine-grid path (A1) ────────────────────────────────────────────────
@@ -396,29 +470,6 @@ class NoteGeneratorTest {
             "the null-chart path diverged from the legacy PLL",
         )
     }
-
-    // ── Band mapping (A3) ────────────────────────────────────────────────────
-
-    @Test
-    fun `note kinds map to the room bands the show stacks`() {
-        // The engine stacks bass on the floor and treble at the ceiling; the
-        // game's answer must use the same vocabulary or the two disagree about
-        // what "low" means.
-        assertEquals(GameBand.BASS, bandOf(NoteKind.KICK))
-        assertEquals(GameBand.FULL, bandOf(NoteKind.SNARE))
-        assertEquals(GameBand.TOP, bandOf(NoteKind.HAT))
-        assertEquals(GameBand.COLOR, bandOf(NoteKind.MELODY))
-    }
-
-    @Test
-        fun `every note kind has a band`() {
-            // Exhaustive when-expression — this is a compile guarantee, but the test
-            // documents the contract and fails loudly if a kind is added without a
-            // band decision.
-            for (kind in NoteKind.entries) {
-                assertTrue(bandOf(kind) in GameBand.entries, "no band for $kind")
-            }
-        }
 
         // ── Run records (A5) ─────────────────────────────────────────────────────
 

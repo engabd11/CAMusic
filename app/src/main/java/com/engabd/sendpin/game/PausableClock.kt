@@ -40,6 +40,12 @@ class PausableClock(private val source: () -> Long) {
     /** The game's time now: real time, less every millisecond spent paused. */
     fun now(): Long = (pausedAtMs ?: source()) - pausedTotalMs
 
+    /** The [source] time a game time [gameMs] corresponds to, so other threads can stamp in real time. */
+    fun toSource(gameMs: Long): Long = gameMs + pausedTotalMs
+
+    /** The game time of a [source] time [sourceMs], for events stamped on another thread. */
+    fun fromSource(sourceMs: Long): Long = sourceMs - pausedTotalMs
+
     /**
      * Stop the clock. Idempotent — the screen pushes playback state in on every
      * change, and a second pause must not restart the count or the accumulated

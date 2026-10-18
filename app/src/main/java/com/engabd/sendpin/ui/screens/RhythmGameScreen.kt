@@ -41,6 +41,8 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.game.GameNote
+import com.engabd.sendpin.game.GameTiming
+import com.engabd.sendpin.game.LANE_RGB
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.Motion
@@ -55,6 +57,7 @@ import com.engabd.sendpin.ui.viewmodel.RhythmGameViewModel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sin
@@ -83,12 +86,11 @@ import kotlin.math.sin
  *
  * ## What the lights do here
  *
- * Nothing, unless the player earns it — see
- * [com.engabd.sendpin.hue.DirectLightSync.setGameMode]. The show goes on running
- * underneath for as long as this screen is open, held down to a dim floor; a struck
- * note opens the gate and the room does exactly what that moment of the music would
- * always have made it do. So the reward for playing well is the real light show,
- * arriving in the pieces the player earns.
+ * The player's taps are the only light. The music show is switched off for as long as
+ * this screen is open (see [com.engabd.sendpin.hue.DirectLightSync.setGameMode]), the
+ * room rests in a soft glow of the album's colour, and each hit flashes the lamps of its
+ * lane in the colour that lane wears on this board. The glass and the room speak the
+ * same colours, so a Perfect on the red lane is a red flash in both places at once.
  *
  * This screen's own effects are free to be as busy as they like; the promise is
  * about the room, not the glass.
@@ -109,24 +111,17 @@ fun RhythmGameScreen(
     // coming back up is not optional, so it is tied to the composable's lifetime
     // rather than to the back button — a process-level navigation that never runs
     // `onBack` still runs this.
+    //
+    // Only stopped when the screen really leaves. A configuration change disposes and
+    // recomposes this, and a visit to calibration is a pause, not an exit: either one
+    // used to end the run.
     DisposableEffect(viewModel) {
         viewModel.start()
-        onDispose { viewModel.stop() }
+        onDispose {
+            val changing = (view.context as? android.app.Activity)?.isChangingConfigurations == true
+            if (!changing) viewModel.onScreenLeft()
+        }
     }
-
-    // Finish (persist the run, publish the results) on the back press, before
-    // the composable leaves — the onDispose path is the emergency exit that
-    // must not lose the score to a process-level navigation.
-    val back = {
-        viewModel.finish()
-        onBack()
-    }
-
-    // Every other screen in the app handles back; this one did not, so the system
-    // gesture popped the NavHost and only `onDispose`'s `stop()` ran. The run was
-    // never finished, which meant the record was discarded and the results sheet
-    // never appeared — a whole game's score lost to leaving the way most people do.
-    BackHandler { back() }
 
     // Timing settings feed the judged clock: offset, difficulty scale, haptics.
     // Collected for the screen's lifetime so a mid-session change applies from
@@ -181,6 +176,9 @@ fun RhythmGameScreen(
         }
     }
 
+    val settings = remember(app) { com.engabd.sendpin.data.AppSettings(app) }
+    val scope = rememberCoroutineScope()
+
     // Deliberately the State, not its value: read inside the draw lambda below so a
     // note appearing invalidates the draw phase rather than recomposing the screen.
     val notesState = viewModel.notes.collectAsStateWithLifecycle()
@@ -198,13 +196,71 @@ fun RhythmGameScreen(
     val paused by viewModel.paused.collectAsStateWithLifecycle()
     LaunchedEffect(playing) { viewModel.setPlaying(playing) }
 
+    // Back finishes a scored run first, so its results card gets seen; a second back
+    // (or the card's own dismiss) leaves. Before this, back popped the screen in the
+    // same breath as publishing the card, and nobody ever saw it.
+    val leave = {
+        viewModel.finish()
+        onBack()
+    }
+    val back = {
+        if (result == null && hud.score > 0) viewModel.finish() else leave()
+    }
+    BackHandler { back() }
+
+    // Calibration is a pause for the run, not the end of it.
+    val openCalibration = {
+        viewModel.holdForCalibration()
+        onOpenCalibration()
+    }
+
+    // A source whose output latency cannot be measured (capture and cast feeds) needs
+    // one timing check before the game can feel right. Offered once, the first time
+    // such a source has found its beat.
+    val leadKnown by viewModel.leadKnown.collectAsStateWithLifecycle()
+    val promptShownBefore by settings.gameLeadPromptShown.collectAsStateWithLifecycle(initialValue = true)
+    var promptDismissed by remember { mutableStateOf(false) }
+    if (!leadKnown && hud.locked && !promptShownBefore && !promptDismissed && result == null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {
+                promptDismissed = true
+                scope.launch { settings.setGameLeadPromptShown() }
+            },
+            title = { Text("Let's line up your timing", fontFamily = AppFont, fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "This source can't tell the game how long its sound takes to reach you. " +
+                        "A quick tap check, about twelve taps, fixes that for good.",
+                    fontFamily = AppFont,
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    promptDismissed = true
+                    scope.launch { settings.setGameLeadPromptShown() }
+                    openCalibration()
+                }) { Text("Check timing", color = accent, fontFamily = AppFont, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    promptDismissed = true
+                    scope.launch { settings.setGameLeadPromptShown() }
+                }) { Text("Not now", color = TextMuted, fontFamily = AppFont) }
+            },
+        )
+    }
+
     // The frame clock. Written every frame and read only inside draw lambdas and the
     // tap handler, so nothing here recomposes at 60 Hz.
     var nowMs by remember { mutableLongStateOf(viewModel.nowMs()) }
+    // Notes are drawn where the music will be when this frame reaches the glass: one
+    // vsync on from the frame's own time.
+    val displayLatencyMs = remember(view) { GameTiming.displayLatencyMs(view.display?.refreshRate ?: 60f) }
     LaunchedEffect(viewModel) {
         while (true) {
-            withFrameMillis {
-                val t = viewModel.nowMs()
+            // The vsync's own stamp, not whenever this coroutine got scheduled.
+            withFrameNanos { frameNanos ->
+                val t = GameTiming.frameGameMs(viewModel.nowMs(), System.nanoTime(), frameNanos)
                 nowMs = t
                 viewModel.tick(t)
             }
@@ -257,9 +313,10 @@ fun RhythmGameScreen(
                         // entry is otherwise indistinguishable from Light Sync having
                         // dropped out.
                         when {
-                            !hud.locked -> "Finding the beat…"
-                            hud.bpm > 0f -> "Room dimmed · hit the notes to light it · ${hud.bpm.toInt()} BPM"
-                            else -> "Room dimmed · hit the notes to light it"
+                            !hud.locked -> "Listening for the beat…"
+                            hud.countIn > 0 -> "Counting in…"
+                            hud.bpm > 0f -> "Your taps light the room · ${hud.bpm.toInt()} BPM"
+                            else -> "Your taps light the room"
                         },
                         color = TextMuted, fontFamily = AppFont,
                         fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
@@ -267,7 +324,7 @@ fun RhythmGameScreen(
                 }
                 // Calibration lives one tap away from the game, not buried in
                 // settings: the moment the game feels off is the moment to fix it.
-                androidx.compose.material3.TextButton(onClick = onOpenCalibration) {
+                androidx.compose.material3.TextButton(onClick = openCalibration) {
                     Text(
                         "Timing",
                         color = accent, fontFamily = AppFont,
@@ -301,9 +358,14 @@ fun RhythmGameScreen(
                                     for (change in event.changes) {
                                         if (!change.pressed || change.isConsumed) continue
                                         if (change.previousPressed) continue
-                                        // One clock read for both, so the pad lights
-                                        // at exactly the instant the tap is judged.
-                                        val at = viewModel.nowMs()
+                                        // The touch's own stamp, not the moment this handler
+                                        // ran. One value for both, so the pad lights at
+                                        // exactly the instant the tap is judged.
+                                        val at = GameTiming.tapGameMs(
+                                            viewModel.nowMs(),
+                                            android.os.SystemClock.uptimeMillis(),
+                                            change.uptimeMillis,
+                                        )
                                         val lane = laneAt(change.position.x, size.width.toFloat())
                                         lanePress[lane] = at
                                         viewModel.tap(lane, at)
@@ -315,6 +377,7 @@ fun RhythmGameScreen(
                 ) {
                     drawHighway(
                         now = nowMs,
+                        noteNow = nowMs + displayLatencyMs,
                         notes = notesState.value,
                         bursts = bursts,
                         lanePress = lanePress,
@@ -340,7 +403,8 @@ fun RhythmGameScreen(
                     ResultsSheet(
                         result = r,
                         accent = accent,
-                        onDismiss = back,
+                        onDismiss = leave,
+                        onApplyOffset = { v -> scope.launch { settings.setGameTimingOffsetMs(v) } },
                     )
                 }
 
@@ -363,29 +427,49 @@ fun RhythmGameScreen(
                             color = TextMuted, fontFamily = AppFont,
                             fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                         )
+                        if (hud.score > 0 && result == null) {
+                            androidx.compose.material3.TextButton(onClick = { viewModel.finish() }) {
+                                Text(
+                                    "Finish run",
+                                    color = accent, fontFamily = AppFont,
+                                    fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                                )
+                            }
+                        }
                     }
                 }
 
-                if (!hud.locked && hud.score == 0) {
-                    Text(
-                        "Play something, then tap the pads as the notes reach the line.",
-                        color = TextFaint, fontFamily = AppFont,
-                        fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 40.dp),
-                    )
+                // Before the beat is found, and through the four-beat count-in, the board
+                // says what it is waiting for rather than showing late notes.
+                if (!paused && result == null && (!hud.locked || hud.countIn > 0)) {
+                    Column(
+                        Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            if (hud.countIn > 0) hud.countIn.toString() else "Listening…",
+                            color = accent, fontFamily = AppFont,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = if (hud.countIn > 0) 64.sp else 26.sp,
+                        )
+                        Text(
+                            if (hud.countIn > 0) "Get ready to tap" else "Play something with a clear beat",
+                            color = TextMuted, fontFamily = AppFont,
+                            fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                        )
+                    }
                 }
 
                 // The backend could not measure an output latency (capture/cast
                 // feeds), so the chart runs in analysis time and the whole game
                 // is shifted by the real latency. Telling the player beats them
                 // guessing whether the game or their speakers are wrong.
-                val leadKnown by viewModel.leadKnown.collectAsStateWithLifecycle()
                 if (!leadKnown && hud.locked) {
                     Text(
-                        "Output latency unknown on this source — timing may feel off",
+                        "This source can't report its delay, so use Timing once to line things up",
                         color = TextFaint, fontFamily = AppFont,
                         fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
                     )
                 }
             }
@@ -527,6 +611,7 @@ private class Burst(val lane: Int, val atMs: Long, val judgement: Judgement)
  */
 private fun DrawScope.drawHighway(
     now: Long,
+    noteNow: Long,
     notes: List<GameNote>,
     bursts: List<Burst>,
     lanePress: LongArray,
@@ -665,7 +750,7 @@ private fun DrawScope.drawHighway(
     // cannot drift away from the notes they are supposed to be measuring.
     for (note in notes) {
         if (!note.downbeat) continue
-        val p = progressOf(note, now, lookAheadMs)
+        val p = progressOf(note, noteNow, lookAheadMs)
         if (p < -0.05f || p > nearP) continue
         val y = yAt(p)
         val persp = perspAt(p)
@@ -682,7 +767,7 @@ private fun DrawScope.drawHighway(
     // Far ones first, so a near note overlaps the one behind it rather than the
     // other way round.
     for (note in notes.sortedByDescending { it.triggerTimeMs }) {
-        val p = progressOf(note, now, lookAheadMs)
+        val p = progressOf(note, noteNow, lookAheadMs)
         if (p < -0.05f || p > nearP) continue
         drawNote(note, p, ::xAt, ::yAt, ::perspAt, w)
     }
@@ -773,7 +858,7 @@ private fun DrawScope.drawHighway(
         val cx = xAt(burst.lane, 1f)
         val colour = when (burst.judgement) {
             Judgement.MISS -> Color(0xFFE05656)
-            Judgement.PERFECT -> accent
+            // The lane's own colour, as the room shows it, for every grade.
             else -> laneColour(burst.lane)
         }
 
@@ -904,6 +989,7 @@ private fun ResultsSheet(
     result: RhythmGameViewModel.RunResult,
     accent: Color,
     onDismiss: () -> Unit,
+    onApplyOffset: (Int) -> Unit,
 ) {
     val hud = result.hud
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -941,6 +1027,7 @@ private fun ResultsSheet(
                 Stat("ACCURACY", hud.accuracy?.let { "${(it * 100).toInt()}%" } ?: "—")
                 Stat("PLAYS", result.record.plays.toString())
             }
+            TimingSummary(result = result, accent = accent, onApplyOffset = onApplyOffset)
             if (result.trackKey == null) {
                 Text(
                     "Scores save when a track is identified",
@@ -948,6 +1035,83 @@ private fun ResultsSheet(
                     fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
                     modifier = Modifier.padding(top = 16.dp),
                 )
+            }
+        }
+    }
+}
+
+/**
+ * How the taps landed: an early to late histogram, what it says about the player's
+ * timing, and a one tap way to apply the offset that would centre it.
+ */
+@Composable
+private fun TimingSummary(
+    result: RhythmGameViewModel.RunResult,
+    accent: Color,
+    onApplyOffset: (Int) -> Unit,
+) {
+    val bins = result.histogram
+    if (bins.isEmpty() || bins.all { it == 0 }) return
+    val peak = bins.max().coerceAtLeast(1)
+    Column(
+        Modifier.fillMaxWidth().padding(top = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().height(48.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            bins.forEachIndexed { i, count ->
+                val centre = i == bins.size / 2
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight((count.toFloat() / peak).coerceIn(0.06f, 1f))
+                        .background(
+                            (if (centre) accent else TextFaint).copy(alpha = if (count == 0) 0.25f else 0.9f),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(3.dp),
+                        ),
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+            Text("Early", color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 9.sp, modifier = Modifier.weight(1f))
+            Text("On the beat", color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 9.sp)
+            Text("Late", color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 9.sp, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+        }
+
+        val median = result.medianErrorMs
+        val suggested = result.suggestedOffsetMs
+        if (median != null && suggested != null) {
+            var applied by remember { mutableStateOf(false) }
+            if (abs(median) < 10L) {
+                Text(
+                    "Your taps are right on the beat",
+                    color = TextMuted, fontFamily = AppFont,
+                    fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+            } else {
+                Text(
+                    "Your taps landed about ${abs(median)} ms ${if (median < 0) "early" else "late"} on average",
+                    color = TextMuted, fontFamily = AppFont,
+                    fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+                androidx.compose.material3.TextButton(
+                    enabled = !applied,
+                    onClick = {
+                        applied = true
+                        onApplyOffset(suggested)
+                    },
+                ) {
+                    Text(
+                        if (applied) "Applied, ${suggested} ms" else "Apply ${suggested} ms offset",
+                        color = accent, fontFamily = AppFont,
+                        fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    )
+                }
             }
         }
     }
@@ -986,12 +1150,8 @@ private fun laneAt(x: Float, width: Float): Int {
     return ((x / width) * LANES).toInt().coerceIn(0, LANES - 1)
 }
 
-private fun laneColour(lane: Int): Color = when (lane) {
-    0 -> Color(0xFFFF3B4E) // kick
-    1 -> Color(0xFF3D8BFF) // snare
-    2 -> Color(0xFFFFC01E) // hat
-    else -> Color(0xFF5BE85B) // melody
-}
+/** The lane's colour: the same one its lamps flash in the room (see `LANE_RGB`). */
+private fun laneColour(lane: Int): Color = Color(0xFF000000L or LANE_RGB[lane.coerceIn(0, LANE_RGB.size - 1)].toLong())
 
 private fun lighten(c: Color, amount: Float) = Color(
     red = c.red + (1f - c.red) * amount,
