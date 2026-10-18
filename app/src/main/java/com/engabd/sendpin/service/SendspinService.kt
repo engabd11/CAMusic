@@ -753,7 +753,7 @@ class SendspinService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(com.engabd.sendpin.R.drawable.ic_stat_camusic)
             .setContentIntent(open)
             .setOngoing(false)   // the media notification is dismissible
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)

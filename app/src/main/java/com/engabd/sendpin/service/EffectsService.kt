@@ -124,7 +124,7 @@ class EffectsService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText("Ambience show running")
-            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setSmallIcon(com.engabd.sendpin.R.drawable.ic_stat_camusic)
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)

@@ -162,7 +162,7 @@ class CarMediaLibraryService : MediaLibraryService() {
             val n = androidx.core.app.NotificationCompat.Builder(this, LocalPlaybackService.CHANNEL_ID)
                 .setContentTitle("CAMusic")
                 .setContentText("Resuming…")
-                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setSmallIcon(com.engabd.sendpin.R.drawable.ic_stat_camusic)
                 .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
                 .setSilent(true)
                 .build()
