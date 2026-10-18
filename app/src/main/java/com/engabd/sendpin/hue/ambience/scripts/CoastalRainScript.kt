@@ -1,6 +1,7 @@
 package com.engabd.sendpin.hue.ambience.scripts
 
 import com.engabd.sendpin.hue.Rgb
+import com.engabd.sendpin.hue.RoomTopology
 import com.engabd.sendpin.hue.ambience.AmbienceBedTrack
 import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.hue.ambience.AmbienceEvent
@@ -9,15 +10,20 @@ import com.engabd.sendpin.hue.ambience.AmbienceScript
 import com.engabd.sendpin.hue.ambience.BedOnset
 import com.engabd.sendpin.hue.ambience.BedSample
 import com.engabd.sendpin.hue.ambience.BrownNoise
+import com.engabd.sendpin.hue.ambience.ComfortProfile
 import com.engabd.sendpin.hue.ambience.Envelope
 import com.engabd.sendpin.hue.ambience.OnePole
 import com.engabd.sendpin.hue.ambience.PinkNoise
 import com.engabd.sendpin.hue.ambience.Rng
 import com.engabd.sendpin.hue.ambience.RoomModel
+import com.engabd.sendpin.hue.ambience.SlowFollower
+import com.engabd.sendpin.hue.ambience.SmoothNoise
 import com.engabd.sendpin.hue.ambience.VoicePool
+import com.engabd.sendpin.hue.ambience.smoothstep
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.sin
 
@@ -50,11 +56,26 @@ class CoastalRainScript : AmbienceScript {
 
     override val effect = AmbienceEffect.COASTAL_RAIN
 
+    /**
+     * The calmest scene after the aurora: a third of a unit a second either way, and the
+     * room mean at a sixth. The lighthouse's beam, the headlights and the distant glows
+     * are all slower than that by construction, so this is a backstop.
+     */
+    override val comfort = ComfortProfile(risePerS = 0.35f, fallPerS = 0.30f, roomSwingPerS = 0.25f)
+
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
 
     /** The scheduler's own stream, advanced only by [schedule], so windows are stable. */
     private val rng = Rng(0x5EED_1101L)
+
+    /** The light tick's own stream; it only seeds the per-lamp cloud, at bind. */
+    private val renderRng = Rng(0x5EED_C10DL)
+    private var lampSeed = IntArray(0)
+
+    /** The recording's level, eased over seconds. Render thread only. */
+    private val moodFollow = SlowFollower(MOOD_TAU_S, 0.5f)
+    private var lastT = Double.NaN
     private var nextSweepS = 8.0
     private var nextStrikeS = 90.0
 
@@ -95,6 +116,7 @@ class CoastalRainScript : AmbienceScript {
         this.room = room
         this.params = params
         acc = FloatArray(room.count * 3)
+        lampSeed = IntArray(room.count) { (renderRng.nextLong() ushr 33).toInt() }
     }
 
     override fun retune(params: AmbienceParams) { this.params = params }
@@ -129,7 +151,7 @@ class CoastalRainScript : AmbienceScript {
                 AmbienceEvent(
                     kind = AmbienceEvent.STRIKE,
                     startS = onset.atS,
-                    env = Envelope(attackS = 0.03f, holdS = 0.08f, decayTauS = 0.35f),
+                    env = STRIKE_GLOW,
                     gain = (0.15f + 0.2f * onset.lowStrength).coerceIn(0.12f, 0.35f),
                     origin = room.centre(),
                     azimuth = reactRng.f01(),
@@ -181,7 +203,7 @@ class CoastalRainScript : AmbienceScript {
                     holdS = 2.0f + 2.5f * rng.f01(),
                     decayTauS = 1.8f,
                 ),
-                gain = (0.10f + 0.08f * rng.f01()) * (0.7f + 0.6f * params.intensity.coerceIn(0f, 1f)),
+                gain = (0.16f + 0.10f * rng.f01()) * (0.7f + 0.6f * params.intensity.coerceIn(0f, 1f)),
                 origin = room.centre(),
                 azimuth = rng.f01(),          // which way the car is going; see renderSweep
                 colour = HEADLIGHTS,
@@ -199,7 +221,7 @@ class CoastalRainScript : AmbienceScript {
             AmbienceEvent(
                 kind = AmbienceEvent.STRIKE,
                 startS = t,
-                env = Envelope(attackS = 0.03f, holdS = 0.08f, decayTauS = 0.35f),
+                env = STRIKE_GLOW,
                 gain = (0.16f + 0.14f * rng.f01()) * (0.7f + 0.6f * params.intensity.coerceIn(0f, 1f)),
                 origin = room.centre(),
                 azimuth = az,
@@ -227,32 +249,34 @@ class CoastalRainScript : AmbienceScript {
         val ids = room.ids
         if (acc.size < ids.size * 3) acc = FloatArray(ids.size * 3)
         java.util.Arrays.fill(acc, 0f)
+        val dt = if (lastT.isNaN()) 0f else (tS - lastT).coerceIn(0.0, 0.25).toFloat()
+        lastT = tS
         val intensity = params.intensity.coerceIn(0f, 1f)
-        val t = tS.toFloat()
 
-        // 1. The base: cool, near-neutral, breathing with the rain. With a recording
-        //    playing, the rain is the one being heard (same read as the fireplace's
-        //    roar); without one, the scripted gusts stand in.
-        val gust = gustAt(tS)
-        val haveBed = recording != null && recording!!.sampleAt(tS, bedNow)
-        val level = if (haveBed) {
-            (0.55f + 0.45f * bedNow.level).coerceIn(0.4f, 1f)
-        } else {
-            0.55f + 0.45f * gust
-        }
+        // 1. The overcast: grey-blue, breathing with the rain over tens of seconds.
+        //    With a recording playing, the rain that is audible lifts and lowers it a
+        //    few percent, eased over seconds and held when the recording has no reading
+        //    (never snapped to a default); without one the scripted gusts stand in.
+        val r = recording
+        val haveBed = r != null && r.sampleAt(tS, bedNow)
+        val mood = moodFollow.step(haveBed || r == null, if (haveBed) bedNow.level else gustAt(tS), dt)
+        val level = 0.85f + 0.30f * mood
+        val base = (BASE_MIN + (BASE_MAX - BASE_MIN) * intensity) * level
 
         for ((i, id) in ids.withIndex()) {
-            val p = room.positions[id] ?: room.centre()
             val h = room.heightOf(id)
-            // Sky through a tall window: higher lamps read slightly brighter, and
-            // the breath keeps the room from being perfectly still.
-            val breath = 0.85f + 0.15f * sin(2f * PI.toFloat() * (t * 0.045f + p.x * 0.7f))
-            val base = (0.085f + 0.10f * intensity) * level * breath * (0.85f + 0.30f * h)
-            // The cool lean is deliberate and ordered: red < green < blue.
-            out[id] = Rgb(base * 0.86f, base * 0.95f, base * 1.00f)
+            // Cloud, slowly: each lamp's patch of sky wanders on its own noise, so the
+            // overcast has depth and is never perfectly even. Sky through a tall window
+            // reads a touch brighter on the higher lamps.
+            val cloud = 0.88f + 0.24f * (0.5f + 0.5f * SmoothNoise.fractal(lampSeed[i], tS, 0.02f, 2))
+            val v = base * cloud * (0.88f + 0.24f * h)
+            out[id] = Rgb(OVERCAST.first * v, OVERCAST.second * v, OVERCAST.third * v)
         }
 
-        // 2. Events on top: sweeps as a travelling warm wash, strikes as a cold flash.
+        // 2. The lighthouse: a beam that crosses the room every 15 to 20 seconds.
+        lighthouse(tS, intensity)
+
+        // 3. Events on top: headlights as a travelling warm wash, strikes as a cold glow.
         var k = 0
         while (k < n) {
             val e = live[k]
@@ -264,7 +288,7 @@ class CoastalRainScript : AmbienceScript {
             }
         }
 
-        // 3. Fold the accumulators in.
+        // 4. Fold the accumulators in.
         for ((i, id) in ids.withIndex()) {
             val c = out.getValue(id)
             out[id] = Rgb(
@@ -276,6 +300,50 @@ class CoastalRainScript : AmbienceScript {
     }
 
     /**
+     * A lighthouse across the water, seen on the wall: a soft warm-white beam that
+     * crosses the room once per rotation, then is gone until the lamp comes round again.
+     *
+     * One rotation takes 20 seconds at the lowest intensity and 15 at the highest. In a line
+     * the beam occupies the first half of each rotation and the rest is the dark side of the
+     * lantern; on a ring it simply goes round. A pure function of the clock, so it needs no events and the
+     * audio (which has nothing to say about it) cannot disagree.
+     *
+     * On a **ring** the beam goes round the room by azimuth, wrapping; in a **line** or a
+     * field it runs end to end along the main axis, entering and leaving beyond the ends
+     * so no lamp ever sees it appear; in a **cluster** there is no length to cross, so
+     * the whole group swells and fades together as the beam passes.
+     */
+    private fun lighthouse(tS: Double, intensity: Float) {
+        val period = LIGHTHOUSE_SLOW_S - (LIGHTHOUSE_SLOW_S - LIGHTHOUSE_FAST_S) * intensity
+        val phase = ((tS / period) % 1.0).toFloat()
+        val amp = LIGHTHOUSE_MIN + (LIGHTHOUSE_MAX - LIGHTHOUSE_MIN) * intensity
+        val ring = room.topology == RoomTopology.RING
+        val cluster = room.topology == RoomTopology.CLUSTER
+        // Progress through the lit part of the rotation, 0..1, or -1 while dark.
+        val lit = if (ring) phase else if (phase < LIGHTHOUSE_LIT) phase / LIGHTHOUSE_LIT else -1f
+        if (lit < 0f) return
+        for ((i, id) in room.ids.withIndex()) {
+            val w = if (cluster) {
+                // A swell across the whole group, peaking mid-sweep.
+                smoothstep(0f, 0.5f, lit) * (1f - smoothstep(0.5f, 1f, lit))
+            } else if (ring) {
+                var d = (room.azimuth[id] ?: 0f) - lit
+                d -= floor(d + 0.5f)                      // shortest way round
+                exp(-(d * d) / (LIGHTHOUSE_WIDTH * LIGHTHOUSE_WIDTH))
+            } else {
+                // Off both ends: every lamp is out of reach at lit = 0 and lit = 1.
+                val head = -LIGHTHOUSE_REACH + lit * (1f + 2f * LIGHTHOUSE_REACH)
+                val d = ((room.axisPos[id] ?: 0.5f) - head) / LIGHTHOUSE_WIDTH
+                exp(-d * d)
+            }
+            val v = amp * w
+            acc[i * 3] += LIGHTHOUSE_COLOUR.first * v
+            acc[i * 3 + 1] += LIGHTHOUSE_COLOUR.second * v
+            acc[i * 3 + 2] += LIGHTHOUSE_COLOUR.third * v
+        }
+    }
+
+    /**
      * A sweep's brightest lamp walks across the room: the wash's centre enters off
      * one side, crosses, and leaves off the other. Distance falloff from the moving
      * centre, warm additive colour.
@@ -283,14 +351,10 @@ class CoastalRainScript : AmbienceScript {
      * The head must **never wrap**. It used to be `(azimuth + travel) % 1f`, which
      * put the bright spot on the opposite wall in a single frame — `positions` is
      * min-max normalised, so there is always a lamp at x=0 and one at x=1 to catch
-     * it, and the step measured 0.14–0.23 on the edge lamp where `FLASH_DELTA` is
-     * 0.10. Neither guard would have caught it: `FieldSafety` keys off whole-field
-     * brightness, and one lamp of six moving that far barely shifts the mean, while
-     * `EffectRateLimiter` only gates *repeated* reversals inside its interval and
-     * lets an isolated step through. So the travel now runs from [SWEEP_REACH]
-     * outside one edge to [SWEEP_REACH] outside the other, where every lamp is
-     * already out of range, and the azimuth picks the direction instead of the
-     * start — which is what a passing car actually varies.
+     * it. So the travel now runs from [SWEEP_REACH] outside one edge to [SWEEP_REACH]
+     * outside the other, where every lamp is already out of range, and the azimuth
+     * picks the direction instead of the start — which is what a passing car actually
+     * varies.
      */
     private fun renderSweep(e: AmbienceEvent, tS: Double, acc: FloatArray) {
         val age = e.ageAt(tS)
@@ -490,7 +554,33 @@ class CoastalRainScript : AmbienceScript {
             (2200f * exp(-distKm.coerceAtLeast(0f) / 1.8f)).coerceAtLeast(70f)
 
         /** The base's cool lean, and the two event colours against it. */
-        val COLD_BOLT = Rgb(0.80f, 0.86f, 1.00f)
+        val COLD_BOLT = Rgb(0.74f, 0.82f, 1.00f)
+
+        /**
+         * A distant strike through cloud: a quarter of a second up and a long ease away.
+         * Sudden enough to notice, slow enough never to be a flash.
+         */
+        val STRIKE_GLOW = Envelope(attackS = 0.25f, holdS = 0.10f, decayTauS = 0.60f, tailCut = 0.03f)
+
+        /** Time constant the recording's level is followed at. */
+        const val MOOD_TAU_S = 3f
+
+        /** Perceived brightness of the overcast, at intensity 0 and 1. */
+        const val BASE_MIN = 0.12f
+        const val BASE_MAX = 0.20f
+
+        /** The lighthouse: seconds per rotation at intensity 0 and 1, and the share of it that is lit. */
+        const val LIGHTHOUSE_SLOW_S = 20f
+        const val LIGHTHOUSE_FAST_S = 15f
+        const val LIGHTHOUSE_LIT = 0.5f
+        const val LIGHTHOUSE_WIDTH = 0.20f
+        const val LIGHTHOUSE_REACH = 0.40f
+        const val LIGHTHOUSE_MIN = 0.14f
+        const val LIGHTHOUSE_MAX = 0.22f
+
+        /** Grey-blue overcast: cool, barely saturated. */
+        val OVERCAST = Rgb(0.66f, 0.76f, 0.90f)
+        val LIGHTHOUSE_COLOUR = Rgb(1.00f, 0.94f, 0.78f)
         val HEADLIGHTS = Rgb(1.00f, 0.72f, 0.45f)
     }
 }

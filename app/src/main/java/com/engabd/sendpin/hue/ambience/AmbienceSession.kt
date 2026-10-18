@@ -97,6 +97,16 @@ class AmbienceSession(
      * storms in it was the whole problem.
      */
     private val analysis: AmbienceAudioAnalysis? = null,
+    /**
+     * What the bundled recording is going to do, analysed ahead of time, or null for a
+     * user's own clip (and for a bed that has not been analysed yet), which is analysed
+     * live and can only react to sound that has already played.
+     *
+     * With a plan the session replays the recording's onsets to the script a few seconds
+     * before they are heard, which is what lets a flash lead its thunder. See
+     * [AmbienceBedTimeline].
+     */
+    private val bedPlan: AmbienceBedTimeline? = null,
 ) {
 
     /**
@@ -116,6 +126,21 @@ class AmbienceSession(
      * Extreme rung already gets, and here the listener has asked for lightning by name.
      */
     val safety = FieldSafety(calmGated = false)
+
+    /**
+     * The scene's own speed limit, standing in for `EffectRateLimiter` on this path.
+     *
+     * Declared by the script (see [AmbienceScript.comfort]) and applied in perceived
+     * brightness, before the conversion to the linear value the encoder expects.
+     */
+    private val shaper = AmbienceFrameShaper(script)
+
+    /**
+     * Master fade, 1 at full and 0 dark. Driven by the sleep timer's last minute so a
+     * show ends by easing out rather than cutting. Applied to perceived brightness, so
+     * the fade looks even rather than seeming to hang and then drop.
+     */
+    @Volatile private var fade = 1f
 
     private val timeline = AmbienceTimeline()
 
@@ -207,6 +232,7 @@ class AmbienceSession(
         // file, so the only clock that can line them up is the file's.
         analysis?.let { a ->
             if (paused) return pausedAtS
+            if (bedPlan != null) return planNowS(a, bedPlan)
             val media = a.heardMediaS()
             if (!media.isNaN()) return media
             // Before the first buffer, and for a moment across a track change. The
@@ -231,6 +257,93 @@ class AmbienceSession(
     private var lastPlayedWall = 0.0
     private var stallWallOffset = 0.0
     private var pausedAtS = 0.0
+
+    // ---- Playing from a plan -----------------------------------------------
+
+    /**
+     * Show time is `media position + [planOffsetS]`.
+     *
+     * The bed loops, so the file's position goes back to zero every pass; the show must
+     * not, because events are already scheduled for the start of the next pass and every
+     * script keeps refractory times that assume the clock only moves forward. So the
+     * session keeps its own monotonic clock and an offset that grows by one loop length
+     * at each wrap. A seek (anything else that jumps) also adjusts the offset, to keep
+     * the clock continuous, and is reported through [planSeeked] so the stale events can
+     * be dropped.
+     */
+    private var planOffsetS = 0.0
+    private var planLastMedia = Double.NaN
+    private var planLastT = 0.0
+    private var planSeeked = false
+
+    /** Show time up to which the plan's onsets have been handed to the script. */
+    private var planCursorU = Double.NaN
+
+    private val planVisitor = AmbienceBedTimeline.OnsetVisitor { i, atMedia -> deliverOnset(i, atMedia) }
+    private val planOnset = BedOnset()
+    private val planSample = BedSample()
+    private val planLevels = BedSample()
+    private var planNowForDelivery = 0.0
+
+    @Synchronized
+    private fun planNowS(a: AmbienceAudioAnalysis, plan: AmbienceBedTimeline): Double {
+        val m = a.heardMediaS()
+        // Before the first buffer, and across a track change: carry on from where the
+        // show was rather than falling back to a wall clock the media never agreed with.
+        if (m.isNaN()) return planLastT
+        val last = planLastMedia
+        if (!last.isNaN()) {
+            val d = m - last
+            val d0 = plan.durationS
+            if (d < -d0 * 0.5 && last > d0 - SEAM_S && m < SEAM_S) {
+                // The loop point. Events for the next pass are already in the timeline.
+                planOffsetS += d0
+            } else if (d < -SEEK_S || d > SEEK_S) {
+                planOffsetS = planLastT - m
+                planSeeked = true
+            }
+        }
+        planLastMedia = m
+        // Never backwards: the heard-position clock can slew back a few milliseconds.
+        val t = maxOf(m + planOffsetS, planLastT)
+        planLastT = t
+        return t
+    }
+
+    /** Hand one onset of the plan to the script, a few seconds before it is heard. */
+    private fun deliverOnset(i: Int, atMedia: Double) {
+        val plan = bedPlan ?: return
+        val atU = atMedia + planOffsetS
+        plan.fill(i, atU, planOnset, planSample)
+        planOnset.aheadS = (atU - planNowForDelivery).coerceAtLeast(0.0).toFloat()
+        script.react(planSample, planOnset) { timeline.append(it) }
+    }
+
+    /**
+     * Once per light tick when a plan is playing: replay the recording's mood into the
+     * bed track and its onsets to the script, [PLAN_AHEAD_S] early.
+     */
+    private fun advancePlan(t: Double, plan: AmbienceBedTimeline) {
+        if (planSeeked || planCursorU.isNaN()) {
+            planSeeked = false
+            timeline.clear()
+            bed.clear()
+            script.onBedReset()
+            planCursorU = t
+        }
+        // The recording's level, with no analysis latency and no gaps. Scripts still
+        // smooth it; this just means there is always something to read.
+        plan.levelsAt(t - planOffsetS, planLevels)
+        planLevels.tS = t
+        bed.append(planLevels)
+
+        val horizon = t + PLAN_AHEAD_S
+        if (horizon > planCursorU) {
+            planNowForDelivery = t
+            plan.forEachOnset(planCursorU - planOffsetS, horizon - planOffsetS, planVisitor)
+            planCursorU = horizon
+        }
+    }
 
     fun start(scope: CoroutineScope): Boolean {
         if (running) return true
@@ -261,6 +374,10 @@ class AmbienceSession(
      */
     private fun onAnalysisFrame(frame: com.engabd.sendpin.audio.AnalysisFrame, atS: Double) {
         if (!running) return
+        // A bundled bed is read from its plan on the render thread, ahead of the
+        // playhead, and the live frames have nothing to add. Also what keeps the
+        // timeline single-writer: the render thread is the only thing that appends.
+        if (bedPlan != null) return
         // The bed looped, or the listener seeked. Everything scheduled describes a part
         // of the file that is no longer playing, and a strike still flashing from before
         // the loop would be a flash with nothing under it.
@@ -300,6 +417,11 @@ class AmbienceSession(
         params = params.copy(brightness = v.coerceIn(0f, 1f))
     }
 
+    /** Ease the whole show towards dark: 1 is untouched, 0 is off. See [fade]. */
+    fun setFade(v: Float) {
+        fade = v.coerceIn(0f, 1f)
+    }
+
     fun pause() {
         if (paused) return
         pausedAtS = nowS()
@@ -330,8 +452,28 @@ class AmbienceSession(
      * anything to say, so the caller can fall through rather than blanking the room.
      */
     fun renderLights(): Map<Int, Rgb>? {
+        val now = System.nanoTime()
+        val dt = if (lastRenderNanos == 0L) 1f / 60f else ((now - lastRenderNanos) / 1e9f)
+        lastRenderNanos = now
+        return renderLights(dt)
+    }
+
+    private var lastRenderNanos = 0L
+
+    /**
+     * [renderLights] for a step of [dtS] seconds, which the comfort limiter needs and
+     * which a test can supply instead of waiting for a wall clock.
+     *
+     * The frame is built in three steps. The script paints in perceived brightness; the
+     * comfort limiter holds every lamp to the scene's speed limit in those same units;
+     * and only then is it converted to the linear value the encoder expects. The master
+     * brightness ceiling is applied last, in linear light, so the slider keeps meaning
+     * what it means everywhere else in the app.
+     */
+    fun renderLights(dtS: Float): Map<Int, Rgb>? {
         if (!running) return null
         val t = nowS()
+        if (bedPlan != null && analysis != null) advancePlan(t, bedPlan)
         // A silent show still needs its events, and with no sink there is no generator
         // coroutine to schedule them. Cheap: the scripts' schedule() is a handful of
         // arithmetic per event, and this only runs when there is no audio thread.
@@ -364,11 +506,7 @@ class AmbienceSession(
         frame.clear()
         script.renderLights(t, lightScratch, n, frame)
         if (frame.isEmpty()) return null
-        val ceiling = params.brightness.coerceIn(0f, 1f)
-        if (ceiling < 1f) {
-            for ((k, v) in frame) frame[k] = Rgb(v.first * ceiling, v.second * ceiling, v.third * ceiling)
-        }
-        return frame
+        return shaper.shape(frame, dtS, fade, params.brightness)
     }
 
     private fun generatorLoop() {
@@ -439,6 +577,21 @@ class AmbienceSession(
          * one stale flash.
          */
         const val DISCONTINUITY_S = 0.5
+
+        /**
+         * How far ahead of the playhead a plan's onsets are handed to the script.
+         *
+         * Longer than the longest lead any script asks for (three seconds, for a strike
+         * at the far end of its range) plus the lead-in of whatever it draws before the
+         * event itself, so a script can always stamp an event in the future.
+         */
+        const val PLAN_AHEAD_S = 4.0
+
+        /** Within this of the file's end and start, a backwards jump is the loop, not a seek. */
+        const val SEAM_S = 1.5
+
+        /** A jump in the heard position bigger than this, other than the loop, is a seek. */
+        const val SEEK_S = 1.5
 
         /** The tap's analysis hop and rate, matching `AudioAnalyzer`. */
         const val ANALYSIS_HOP = 441

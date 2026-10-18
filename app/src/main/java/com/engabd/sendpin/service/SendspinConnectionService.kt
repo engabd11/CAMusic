@@ -343,7 +343,7 @@ class SendspinConnectionService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(com.engabd.sendpin.R.drawable.ic_stat_camusic)
             .setContentIntent(open)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)   // not on lock screen

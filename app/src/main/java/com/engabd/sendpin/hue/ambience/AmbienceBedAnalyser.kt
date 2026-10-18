@@ -56,7 +56,19 @@ class BedOnset {
      */
     @JvmField var atS: Double = 0.0
 
+    /**
+     * How far ahead of the playhead this onset is being reported, in seconds.
+     *
+     * Zero for live analysis, where the sound is already audible. Several seconds for a
+     * bundled bed read from its [AmbienceBedTimeline], which is what lets a script put
+     * the light of a strike that far *before* the thunder the recording will play.
+     * A script must stamp no earlier than `atS - aheadS`, or it would be scheduling
+     * into the past.
+     */
+    @JvmField var aheadS: Float = 0f
+
     fun clear() {
+        aheadS = 0f
         broadband = false; broadbandStrength = 0f
         low = false; lowStrength = 0f
         high = false; highStrength = 0f

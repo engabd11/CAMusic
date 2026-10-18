@@ -319,6 +319,15 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!--
+          Keeps a listening party's local web server alive. LAN only: the server binds to
+          the Wi-Fi address, so no extra permission is needed beyond the foreground one.
+        -->
+        <service
+            android:name=".party.PartyService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
         <service
             android:name=".service.DrivingLocationService"
             android:foregroundServiceType="location"

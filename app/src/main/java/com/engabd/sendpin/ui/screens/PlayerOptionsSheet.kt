@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -105,6 +106,21 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
             }
 
             Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+
+                // Friends on the same Wi-Fi adding songs: the Party screen has the code.
+                val partyManager = (LocalContext.current.applicationContext as com.engabd.sendpin.SendpinApp).partyManager
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                        .clickable { onClose(); partyManager.requestOpenScreen() }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Default.Celebration, null, tint = accent, modifier = Modifier.size(22.dp))
+                    Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                        Text("Listening party", color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("Let friends add songs from their phones", color = TextMuted, fontFamily = AppFont, fontSize = 12.sp)
+                    }
+                }
 
                 // Power — only for players that actually expose a switch.
                 if (st.canPower) {
@@ -475,6 +491,9 @@ private fun libraryGainNote(source: String): String = when {
  */
 private fun appliedGainLine(st: NowPlayingViewModel.State): String? {
     if (st.replayGain == ReplayGain.OFF || !st.hasTrack) return null
+    // This phone's own player knows what it applied, including a gain worked out from
+    // its loudness scan for a file with no tags.
+    st.localChain?.gain?.let { return "%+.1f dB".format(it.db) }
     val source = st.sourceQuality ?: return null
     if (source.activeGain == null) return "no measurement"
     val db = ReplayGain.decibels(source, st.replayGain) ?: return "no measurement"

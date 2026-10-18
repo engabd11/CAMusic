@@ -151,7 +151,7 @@ class PlaybackCaptureService : Service() {
             )
         }
         return Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(com.engabd.sendpin.R.drawable.ic_stat_camusic)
             .setContentTitle("Light Sync is listening")
             .setContentText("Reacting to whatever is playing on this phone.")
             .setContentIntent(com.engabd.sendpin.service.openAppIntent(this, NOTIFICATION_ID))

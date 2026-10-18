@@ -43,6 +43,9 @@ data class AlbumPlayCount(val album: String, val artist: String, val plays: Int)
 /** One calendar month's totals (1 = January), for the year in review. */
 data class MonthTotals(val month: Int, val plays: Int, val listenedMs: Long)
 
+/** A history row cut down to what the rediscover shelves read. */
+data class PlayRow(val timestamp: Long, val title: String, val artist: String, val album: String)
+
 @Dao
 interface PlayHistoryDao {
 
@@ -280,6 +283,10 @@ interface PlayHistoryDao {
             "(SELECT timestamp FROM play_history ORDER BY timestamp DESC LIMIT 1 OFFSET :keep)",
     )
     suspend fun trimTo(keep: Int = com.engabd.sendpin.data.PlayHistoryRetention.KEEP)
+
+    /** Every play, trimmed to the four columns the "Rediscover" shelves read. */
+    @Query("SELECT timestamp, title, artist, album FROM play_history")
+    suspend fun rediscoverRows(): List<PlayRow>
 
     /** Every play, oldest first, for a backup. */
     @Query("SELECT * FROM play_history ORDER BY timestamp ASC")

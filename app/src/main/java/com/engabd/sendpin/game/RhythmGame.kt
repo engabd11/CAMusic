@@ -34,24 +34,19 @@ data class GameChartSource(
     val scan: TrackScan?,
     /** The `tAudio` seconds [grid] describes. */
     val frameTAudioS: Float,
+    /**
+     * The analysis frame [grid] was computed from. Grid and frame travel together so
+     * the game never pairs a grid with a different frame's tempo and energy, which
+     * the conflated frame flow could otherwise hand it.
+     */
+    val frame: AnalysisFrame? = null,
+    /** `elapsedRealtime` when [frame] was analysed; 0 when unknown. The chart is written relative to this, not to when the main thread got round to reading it. */
+    val frameAtMs: Long = 0L,
+    /** How far behind the newest sample [frame] was, for `GameTiming.effectiveLeadMs`. */
+    val frameLagMs: Float = 0f,
 )
 
 enum class NoteKind { KICK, SNARE, HAT, MELODY }
-
-/**
- * Which part of the room a struck note answers in.
- *
- * The old game opened one gate over the whole room, so a kick hit and a hat hit
- * lit it identically. The band is the note's answer: bass frequencies live on
- * the floor and treble at the ceiling the way the engine already stacks them
- * ([heightBandLower]), so a kick lights the low lamps and a hat the high ones,
- * with the rest of the room at a sympathy level rather than dark. [COLOR] is
- * the melody lane's reward — a hue rotation with a gentler brightness lift,
- * because the Hue guide book is explicit that a colour transition may be faster
- * than a brightness one and sudden brightness in peripheral vision is what
- * reads as harsh.
- */
-enum class GameBand { BASS, FULL, TOP, COLOR }
 
 /** Lane indices, named so the chart reads as music rather than as integers. */
 const val LANE_KICK = 0
@@ -225,8 +220,12 @@ class NoteGenerator(
     private var melodyLevel = 0f
     private var energyLevel = 0f
 
-    /** Audible time of the last onset-driven note, for the unlocked fallback. */
-    private var lastFallbackMs = 0L
+    /**
+     * When the count-in ends, on the game clock, or [NOT_COUNTING] until the beat has
+     * locked. Notes earlier than this are not charted.
+     */
+    private var countInEndMs = NOT_COUNTING
+    private var countInPeriodMs = 500f
 
     /**
      * Fold one analysis frame in, and chart whatever it makes possible.
@@ -259,7 +258,8 @@ class NoteGenerator(
             // PLL that never stopped listening.
             engineLocked = true
             trackTempo(frame)
-            trackPhase(frame, audibleNow)
+            trackPhase(frame.beat || frame.bassBeat, audibleNow)
+            startCountIn(audibleNow, engineGrid.periodS * 1000f)
             chartFromEngine(chart, engineGrid, audibleNow)
             return
         }
@@ -275,9 +275,50 @@ class NoteGenerator(
         }
 
         trackTempo(frame)
-        trackPhase(frame, audibleNow)
+        trackPhase(frame.beat || frame.bassBeat, audibleNow)
 
-        if (locked) chartAhead(audibleNow) else chartFallback(frame, audibleNow)
+        // Before the beat is locked nothing is charted at all. A note written from an
+        // onset that has already been heard is late by construction, and a late note
+        // is worse than an empty highway: it teaches the player the game is out of
+        // time. The count-in below covers the wait instead.
+        if (locked) {
+            startCountIn(audibleNow, periodMs)
+            chartAhead(audibleNow)
+        }
+    }
+
+    /**
+     * An onset the analyser flagged, delivered through [GameOnsetBuffer] rather than
+     * on a frame. [audibleMs] is when it is heard, on the game clock.
+     *
+     * Feeds the same two things the frame flags used to: the phase loop that keeps the
+     * fallback grid on the beat, and the hat density. A frame the conflated flow
+     * dropped can no longer take its beat with it.
+     */
+    fun onOnset(beat: Boolean, bass: Boolean, mid: Boolean, midStrength: Float, audibleMs: Long) {
+        if (mid) hatLevel += (midStrength - hatLevel) * 0.05f
+        trackPhase(beat || bass, audibleMs)
+    }
+
+    /**
+     * The first lock starts a four-beat count-in; nothing is charted before it ends.
+     * Idempotent, so it can be called on every locked frame.
+     */
+    private fun startCountIn(audibleNow: Long, periodMsNow: Float) {
+        if (countInEndMs != NOT_COUNTING || periodMsNow <= 0f) return
+        countInPeriodMs = periodMsNow
+        countInEndMs = audibleNow + (COUNT_IN_BEATS * periodMsNow).roundToLong()
+    }
+
+    /**
+     * Beats of the count-in still to come at [nowMs]: [COUNT_IN_BEATS] down to 0
+     * (playing), or -1 while the beat has not been found yet.
+     */
+    fun countInBeatsLeft(nowMs: Long): Int {
+        if (countInEndMs == NOT_COUNTING) return -1
+        val left = countInEndMs - nowMs
+        if (left <= 0L) return 0
+        return kotlin.math.ceil(left / countInPeriodMs).toInt().coerceIn(1, COUNT_IN_BEATS)
     }
 
     /** Every note still in play. */
@@ -317,9 +358,13 @@ class NoteGenerator(
      * Remove and return every note that has fallen past the last window it could
      * have been hit in. These are the misses the player never touched.
      */
-    fun reap(nowMs: Long): List<GameNote> {
+    fun reap(nowMs: Long, windowScale: Float = 1f): List<GameNote> {
         if (notes.isEmpty()) return emptyList()
-        val cutoff = nowMs - Judgement.HIT_WINDOW_MS
+        // The window [take] used, so Easy keeps a note alive for as long as a tap can
+        // still score it and Expert retires it as soon as one cannot. It reaped at the
+        // unscaled Normal window before, which left Expert notes on the board past
+        // their last scoring moment and cut Easy ones off before theirs.
+        val cutoff = nowMs - Judgement.hitWindowMs(windowScale)
         var i = 0
         var missed: ArrayList<GameNote>? = null
         while (i < notes.size) {
@@ -344,7 +389,7 @@ class NoteGenerator(
         hatLevel = 0f
         melodyLevel = 0f
         energyLevel = 0f
-        lastFallbackMs = 0L
+        countInEndMs = NOT_COUNTING
         engineLocked = false
         scanIdentity = null
         nextScanBeat = 0
@@ -384,8 +429,8 @@ class NoteGenerator(
      * different subdivision than the grid expects, and is ignored rather than
      * allowed to drag the phase off a beat it already has right.
      */
-    private fun trackPhase(frame: AnalysisFrame, audibleNow: Long) {
-        if (!frame.beat && !frame.bassBeat) return
+    private fun trackPhase(onset: Boolean, audibleNow: Long) {
+        if (!onset) return
         if (periodMs <= 0f) return
 
         if (!haveAnchor) {
@@ -660,28 +705,9 @@ class NoteGenerator(
         }
     }
 
-    /**
-     * What to do before the tempo has locked, or when it never does.
-     *
-     * Reactive, and so late by exactly the amount described in the class note — but
-     * a game that does nothing at all for the first few seconds of every track is
-     * worse than one that is briefly loose. Rate-limited so a noisy detector cannot
-     * carpet the board.
-     */
-    private fun chartFallback(frame: AnalysisFrame, audibleNow: Long) {
-        if (audibleNow - lastFallbackMs < FALLBACK_MIN_GAP_MS) return
-        val t = audibleNow + lookAheadMs
-        when {
-            frame.bassBeat -> add(LANE_KICK, t, NoteKind.KICK, frame.bassStrength, false)
-            frame.beat -> add(LANE_SNARE, t, NoteKind.SNARE, frame.beatStrength, false)
-            frame.midBeat -> add(LANE_HAT, t, NoteKind.HAT, frame.midStrength, false)
-            else -> return
-        }
-        lastFallbackMs = audibleNow
-    }
-
     private fun add(lane: Int, timeMs: Long, kind: NoteKind, intensity: Float, downbeat: Boolean) {
         if (lane !in 0 until lanes) return
+        if (timeMs < countInEndMs) return
         // Two notes a player cannot tell apart are one note they will miss half of.
         if (notes.any { it.lane == lane && abs(it.triggerTimeMs - timeMs) < MIN_GAP_MS }) return
         notes.add(
@@ -755,12 +781,7 @@ private const val FILL_SECTION_JUMP = 0.2f
  */
 private const val MIN_GAP_MS = 110L
 
-private const val FALLBACK_MIN_GAP_MS = 150L
+/** Beats counted in, after the first lock, before the first note is charted. */
+const val COUNT_IN_BEATS = 4
 
-/** The band of the room each note kind answers in — the hit-to-lamp mapping. */
-internal fun bandOf(kind: NoteKind): GameBand = when (kind) {
-    NoteKind.KICK -> GameBand.BASS
-    NoteKind.SNARE -> GameBand.FULL
-    NoteKind.HAT -> GameBand.TOP
-    NoteKind.MELODY -> GameBand.COLOR
-}
+private const val NOT_COUNTING = Long.MAX_VALUE

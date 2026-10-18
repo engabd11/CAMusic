@@ -79,6 +79,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val appliedEq: kotlinx.coroutines.flow.StateFlow<com.engabd.sendpin.audio.LocalDsp.Config> = _appliedEq
 
+    private val _appliedCrossfeed = kotlinx.coroutines.flow.MutableStateFlow(com.engabd.sendpin.audio.Crossfeed.Preset.OFF)
+
+    /** The crossfeed preset the local player was last given: Off unless the output is headphones. */
+    val appliedCrossfeed: kotlinx.coroutines.flow.StateFlow<com.engabd.sendpin.audio.Crossfeed.Preset> = _appliedCrossfeed
+
     val localPlayer: LocalPlayer by lazy {
         LocalPlayer(this).also { player ->
             // Announce a takeover to the Sendspin side rather than letting the two
@@ -143,6 +148,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val playbackReporter: com.engabd.sendpin.service.PlaybackReporter by lazy {
         com.engabd.sendpin.service.PlaybackReporter(this)
     }
+
+    /** The one listening party this phone can host: its server, guests and requests. See [com.engabd.sendpin.party.PartyManager]. */
+    val partyManager: com.engabd.sendpin.party.PartyManager by lazy { com.engabd.sendpin.party.PartyManager(this) }
 
     val unifiedNowPlaying: com.engabd.sendpin.service.UnifiedNowPlaying by lazy {
         com.engabd.sendpin.service.UnifiedNowPlaying(playback, localPlayer, playbackOwner, maNowPlaying, deviceVolume)
@@ -664,6 +672,20 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * instead means the one place that knows how to end a show is reachable from
      * every place that can ask for one to end.
      */
+    /**
+     * Ease the running show towards dark and silent: 1 is untouched, 0 is off.
+     *
+     * The sleep timer's last minute. Goes through the holder and the light engine rather
+     * than the view model so it works when the Activity is long gone and only the
+     * foreground service is keeping the show alive.
+     */
+    fun setAmbienceFade(fade: Float) {
+        appScope.launch {
+            ambienceAudio.setFade(fade)
+            directLightSync.setAmbienceFade(fade)
+        }
+    }
+
     fun stopAmbienceShow() {
         appScope.launch {
             runCatching { directLightSync.stopAmbience() }
@@ -1091,6 +1113,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
             }.distinctUntilChanged().collect {
                 localPlayer.localDsp.setConfig(it)
                 _appliedEq.value = it
+            }
+        }
+        // Crossfeed follows the same output, and is held to headphones.
+        appScope.launch {
+            val settings = AppSettings(this@SendpinApp)
+            combine(settings.eqProfiles, outputRoute.current) { profiles, output ->
+                com.engabd.sendpin.audio.CrossfeedSelection.effective(profiles, output)
+            }.distinctUntilChanged().collect {
+                localPlayer.localDsp.setCrossfeed(it)
+                _appliedCrossfeed.value = it
             }
         }
 

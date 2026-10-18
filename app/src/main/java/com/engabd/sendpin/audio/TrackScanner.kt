@@ -220,7 +220,7 @@ object TrackScanner {
                     }
                 }
             }
-            return finishScan(ex, fullDurationS)
+            return finishScan(ex, fullDurationS, pump.loudness())
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
@@ -266,6 +266,37 @@ object TrackScanner {
         private val out = FloatArray(OUT_CHUNK)
         private var outCount = 0
 
+        // BS.1770 loudness and true peak, measured on the decoder's own samples in this
+        // same pass, so it costs no second decode. Dropped, not guessed at, if the
+        // stream changes rate or layout part-way: a reading across two formats means
+        // nothing.
+        private var meter: LoudnessMeter? = null
+        private var meterDropped = false
+        private var meterRate = 0
+        private var meterChannels = 0
+
+        /** What the meter heard, or null if there was nothing to measure or it was dropped. */
+        fun loudness(): MeasuredLoudness? {
+            val r = (if (meterDropped) null else meter)?.result() ?: return null
+            return MeasuredLoudness(r.integratedLufs, r.truePeakDb)
+        }
+
+        private fun meterFor(sampleRate: Int, channelCount: Int): LoudnessMeter? {
+            if (meterDropped) return null
+            val m = meter
+            if (m == null) {
+                if (channelCount > MAX_METERED_CHANNELS) { meterDropped = true; return null }
+                meterRate = sampleRate
+                meterChannels = channelCount
+                return LoudnessMeter(sampleRate, channelCount).also { meter = it }
+            }
+            if (sampleRate != meterRate || channelCount != meterChannels) {
+                meterDropped = true
+                return null
+            }
+            return m
+        }
+
         fun feed(buffer: ByteBuffer, format: MediaFormat) {
             val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE, 0)
             val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 0)
@@ -284,6 +315,7 @@ object TrackScanner {
             if (frameBytes <= 0) return
             val frames = buffer.remaining() / frameBytes
             var offset = buffer.position()
+            val lm = meterFor(sampleRate, channelCount)
 
             for (f in 0 until frames) {
                 // (L+R)/2 — the mid downmix, which is exactly what the live tap
@@ -292,7 +324,9 @@ object TrackScanner {
                 // stem estimate below, genuine stereo only.
                 var sum = 0f
                 for (c in 0 until channels) {
-                    sum += pcmEncoding.read(buffer, offset + c * bytesPerSample)
+                    val sample = pcmEncoding.read(buffer, offset + c * bytesPerSample)
+                    sum += sample
+                    lm?.push(sample)
                 }
                 val mono = sum / channels
                 val side = if (channels == 2) {
@@ -337,6 +371,9 @@ object TrackScanner {
         private companion object {
             /** Comfortably more than one decoder buffer's worth of output. */
             const val OUT_CHUNK = 4096
+
+            /** Beyond 7.1 there is no standard channel weighting to measure against. */
+            const val MAX_METERED_CHANNELS = 8
         }
     }
 

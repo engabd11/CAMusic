@@ -649,6 +649,8 @@ private fun Browse(
             // Navidrome only — MA has no equivalent of getAlbumList2(frequent), so
             // the list is empty on that backend and the shelf drops out here.
             ShelfSpec("Played most", shelves.frequent),
+            // Rediscover: built from the play history; each hides itself when empty.
+            *shelves.rediscover.map { ShelfSpec(it.title, it.items) }.toTypedArray(),
             // Then whatever Music Assistant's own Discover rows turned out to be:
             // "Random artists", "Forgotten Albums", "Never / Rarely Played", and any
             // row a provider adds. Named by the server, so nothing here has to know

@@ -373,6 +373,11 @@ dependencies {
     // The speed-limit database ships xz-compressed (20 MB rather than gzip's 38 MB) and
     // is unpacked once on the phone - see SpeedLimitDatabase. Pure Java, public domain.
     implementation(libs.xz)
+    // Listening party: a tiny LAN-only HTTP server for guests' browsers (NanoHTTPD, a
+    // single small jar with no transitive dependencies) and the QR code guests scan
+    // (zxing's core encoder only, no camera or Android module).
+    implementation(libs.nanohttpd)
+    implementation(libs.zxing.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.coil.compose)
@@ -478,6 +483,12 @@ dependencies {
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
+
+    // On-device lyric translation (opt-in, off by default). Lyrics are translated on the
+    // phone; ML Kit downloads models and reports its own usage metrics to Google. LyricsTranslator guards every
+    // call, so a device without Google Play services just loses the toggle.
+    implementation(libs.mlkit.translate)
+    implementation(libs.mlkit.language.id)
 
     // D-pad focus affordance (scale/glow on the focused item) for the "tv" flavor's
     // screens. Stock Compose Foundation's LazyRow/LazyColumn/LazyVerticalGrid (used

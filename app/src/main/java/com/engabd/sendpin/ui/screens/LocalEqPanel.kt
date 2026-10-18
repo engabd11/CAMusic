@@ -26,6 +26,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.audio.AutoEqParser
 import com.engabd.sendpin.audio.Biquad
+import com.engabd.sendpin.audio.Crossfeed
+import com.engabd.sendpin.audio.CrossfeedSelection
 import com.engabd.sendpin.audio.EqPreset
 import com.engabd.sendpin.audio.EqProfiles
 import com.engabd.sendpin.audio.EqSelection
@@ -168,6 +170,46 @@ fun LocalEqBody(accent: Color, modifier: Modifier = Modifier) {
                 "Bluetooth devices are told apart by address when Android shares it " +
                 "(it needs the nearby-devices permission), by name otherwise.",
         ) { on -> scope.launch { settings.updateEqProfiles { it.copy(perOutput = on) } } }
+
+        // Crossfeed: its own stage next to the curve, set per output with it.
+        val headphones = CrossfeedSelection.isHeadphones(output)
+        val crossfeed = CrossfeedSelection.effective(profiles, output)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "Crossfeed",
+                color = TextPrimary,
+                fontFamily = AppFont,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                if (headphones) {
+                    "Blends a little of each side into the other, so headphones sound more like speakers in a room. Now: ${output.label}."
+                } else {
+                    "For headphones. Connect a pair and this lets you make them sound more like speakers."
+                },
+                color = TextMuted,
+                fontFamily = AppFont,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (headphones) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Crossfeed.Preset.entries.forEach { preset ->
+                        EqChip(preset.label, accent, highlighted = preset == crossfeed) {
+                            scope.launch { settings.updateEqProfiles { it.withCrossfeed(output, preset) } }
+                        }
+                    }
+                }
+                if (bypassed && crossfeed != Crossfeed.Preset.OFF) {
+                    Text(
+                        "Resting while the output mode skips this app's audio stages.",
+                        color = WarnAmber,
+                        fontFamily = AppFont,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
 
         // Ten fixed sliders, or a band list with type, frequency and Q.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -19,8 +19,7 @@ The one to use. CAMusic opens its own DTLS entertainment stream to the Hue bridg
   **hand-correct** what the extractor got wrong in a 2 to 6 swatch editor, and the room uses your
   palette from the very next frame.
 - **Five intensity rungs** plus Auto, which picks per track.
-- **Rhythm Lights**, a tap-along game on the Light Sync screen: four falling lanes (kick, snare, hat and melody) charted from the track's own beat grid rather than lagging a beat
-  behind it. A well-timed hit keeps the show intact: it **gates** the lights instead of replacing them with a coloured flash. The room runs exactly the light show that moment of music would always have produced, held down to a floor until a hit opens the gate, and a long combo turns a string of hits into a nearly continuous show.
+- **Rhythm Lights**, a tap-along game on the Light Sync screen: four falling lanes (kick, snare, hat and melody) charted from the track's own beat grid, written ahead of the music so the notes land on the beat. In the game your taps are the only light. The music show rests, the room glows softly in the album's colour, and each hit flashes the lamps of its lane in the lane's colour: stronger for a Perfect, softer for a Good, with a little spill to the lamps next door. A longer combo deepens the colour and lengthens the glow, with a soft bloom across the room at 10, 25 and 50. A missed note leaves a faint red ember. Taps that land early are held so the light and the beat arrive together. A four-beat count-in starts each run, and the results card shows your accuracy, an early and late chart, and a suggested timing offset you can apply in one tap.
 - **Saved shows.** A dinner, a party and a film score each want their own look. Each show stores intensity,
   palette, brightness and every feature toggle as one preset. Tap a chip to apply it, and tie a
   show to a genre so the room picks it up on its own. **Share a show** as a `camusic://show/…`

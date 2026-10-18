@@ -24,7 +24,24 @@ data class EqProfiles(
     val perOutput: Boolean = false,
     val byOutput: Map<String, LocalDsp.Config> = emptyMap(),
     val outputNames: Map<String, String> = emptyMap(),
+    val crossfeed: String = Crossfeed.Preset.OFF.id,
+    val crossfeedByOutput: Map<String, String> = emptyMap(),
 ) {
+    /**
+     * Choose a crossfeed preset for [output] when "a curve for each output" is on,
+     * for everything otherwise. Stored beside the curves because it follows the same
+     * rule: putting on the headphones brings their setting with them.
+     */
+    fun withCrossfeed(output: OutputKey?, preset: Crossfeed.Preset): EqProfiles =
+        if (perOutput && output != null) {
+            copy(
+                crossfeedByOutput = crossfeedByOutput + (output.id to preset.id),
+                outputNames = outputNames + (output.id to output.label),
+            )
+        } else {
+            copy(crossfeed = preset.id)
+        }
+
     /** Save [config] as [name], replacing a curve already saved under that name. */
     fun withSaved(name: String, config: LocalDsp.Config): EqProfiles {
         val clean = name.trim().take(MAX_NAME)
@@ -39,7 +56,8 @@ data class EqProfiles(
         outputNames = outputNames + (output.id to output.label),
     )
 
-    fun withoutOutputCurve(id: String): EqProfiles = copy(byOutput = byOutput - id, outputNames = outputNames - id)
+    fun withoutOutputCurve(id: String): EqProfiles =
+        copy(byOutput = byOutput - id, crossfeedByOutput = crossfeedByOutput - id, outputNames = outputNames - id)
 
     companion object {
         const val MAX_SAVED = 40

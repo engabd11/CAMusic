@@ -251,6 +251,17 @@ class TrackScanStore(private val dir: File) {
                 out.writeByte(quantise(s.bass))
             }
         }
+
+        // -- Format 6 tail ------------------------------------------------
+        // Same append-only reasoning again. A format-5 file predates the loudness
+        // meter and reads back with no measurement, which ReplayGain already treats
+        // as "fall back to the fixed level".
+        val loudness = scan.loudness
+        out.writeBoolean(loudness != null)
+        if (loudness != null) {
+            out.writeFloat(loudness.integratedLufs)
+            out.writeFloat(loudness.truePeakDb)
+        }
     }
 
     /** Tuning in signed half-cents, clamped to what one byte can carry. */
@@ -387,6 +398,20 @@ class TrackScanStore(private val dir: File) {
                 null
             }
 
+            // A format-5 file has no loudness. Read defensively like the stems above:
+            // a short read here costs only the measurement, not the whole scan.
+            val loudness = try {
+                if (format >= 6 && input.readBoolean()) {
+                    val lufs = input.readFloat()
+                    val peak = input.readFloat()
+                    if (lufs.isFinite() && peak.isFinite()) MeasuredLoudness(lufs, peak) else null
+                } else {
+                    null
+                }
+            } catch (e: IOException) {
+                null
+            }
+
             TrackScan(
                 durationS = durationS,
                 bpm = bpm,
@@ -403,6 +428,7 @@ class TrackScanStore(private val dir: File) {
                 beatsPerBar = beatsPerBar,
                 tuningCents = tuningCents,
                 stems = stems,
+                loudness = loudness,
             )
         } catch (e: EOFException) {
             null  // truncated: treat as absent and rescan
@@ -431,8 +457,8 @@ class TrackScanStore(private val dir: File) {
         /** "CAMS" — enough to reject a file that is not one of ours at all. */
         private const val MAGIC = 0x43414D53
 
-        private const val FORMAT = 5
-        private val COMPATIBLE_FORMATS = setOf(1, 2, 3, 4, 5)
+        private const val FORMAT = 6
+        private val COMPATIBLE_FORMATS = setOf(1, 2, 3, 4, 5, 6)
 
         private const val SUFFIX = ".scan"
 

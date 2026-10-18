@@ -193,6 +193,13 @@ data class MaItem(
      * unrated or unknown. See [com.engabd.sendpin.library.Capability.RATING].
      */
     val userRating: Int? = null,
+    /**
+     * When the library first saw this item, as epoch millis, where the source says:
+     * Subsonic's `created`, Jellyfin and Emby's `DateCreated`, Plex's `addedAt`, Music
+     * Assistant's `timestamp_added`, a local file's `DATE_ADDED`. Null where it does
+     * not. The "Never played" shelf is the reader; a source without it is skipped.
+     */
+    val addedAtMs: Long? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -635,10 +642,38 @@ data class MaQueueItem(
     val artist: String? = null,
     val image: String? = null,
     val available: Boolean = true,
+    /** The listening-party guest who added this song, when one did. Display only. */
+    val addedBy: String? = null,
 )
 
-/** One timed line of an LRC lyric. */
-data class LyricLine(val atMs: Long, val text: String)
+/**
+ * One sung word (or syllable) of a line.
+ *
+ * [text] keeps its trailing space, so joining a line's words gives the line back.
+ * [estimated] marks a timing that was worked out from the line's length rather than
+ * read from the source, so the UI can draw it a little softer.
+ */
+@Immutable
+data class LyricWord(
+    val atMs: Long,
+    val endMs: Long,
+    val text: String,
+    val estimated: Boolean = false,
+)
+
+/**
+ * One timed line of an LRC lyric.
+ *
+ * [words] is null for a line-synced source. [background] is a backing vocal (TTML
+ * `x-bg`, or `[bg:]` in enhanced LRC), which the pane draws smaller.
+ */
+@Immutable
+data class LyricLine(
+    val atMs: Long,
+    val text: String,
+    val words: List<LyricWord>? = null,
+    val background: Boolean = false,
+)
 
 /**
  * Lyrics for a track, plain or LRC-timed.
@@ -660,28 +695,11 @@ data class MaLyrics(
      */
     val lines: List<LyricLine> by lazy {
         if (!synced) return@lazy text.lines().map { LyricLine(0, it.trim()) }
-        val out = mutableListOf<LyricLine>()
-        for (raw in text.lines()) {
-            val stamps = LRC_STAMP.findAll(raw).toList()
-            if (stamps.isEmpty()) continue
-            val body = raw.substring(stamps.last().range.last + 1).trim()
-            for (m in stamps) {
-                val (mm, ss, frac) = m.destructured
-                // The fraction is 2 or 3 digits (centi- or milliseconds).
-                val fracMs = when (frac.length) {
-                    0 -> 0L
-                    2 -> frac.toLong() * 10
-                    else -> frac.padEnd(3, '0').take(3).toLong()
-                }
-                out += LyricLine(mm.toLong() * 60_000 + ss.toLong() * 1_000 + fracMs, body)
-            }
-        }
-        out.sortedBy { it.atMs }
+        LrcParser.parse(text)
     }
 
-    private companion object {
-        val LRC_STAMP = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{2,3}))?]""")
-    }
+    /** Whether the source itself carries word timing on any line. */
+    val hasWordTiming: Boolean by lazy { synced && lines.any { it.words != null && it.words.none { w -> w.estimated } } }
 }
 
 /**
@@ -935,6 +953,8 @@ object MaParse {
             audioFormat = audioFormat(o),
             providerDomains = providerDomains(o),
             year = o["year"]?.jsonPrimitive?.intOrNull,
+            addedAtMs = o["timestamp_added"]?.jsonPrimitive?.doubleOrNull
+                ?.takeIf { it > 0 }?.let { (it * 1000).toLong() },
             genres = genreList(o),
             trackNumber = o["track_number"]?.jsonPrimitive?.intOrNull,
             discNumber = o["disc_number"]?.jsonPrimitive?.intOrNull,
@@ -1444,4 +1464,33 @@ object MaParse {
             )
         }
     }
+}
+
+/**
+ * Parses the ISO-8601 timestamps servers send for "when was this added" (Subsonic's
+ * `created`, Jellyfin and Emby's `DateCreated`) into epoch millis, or null when the
+ * text is missing or in a shape nobody expected. Never throws: a date nobody can read
+ * is a missing date, not a broken library.
+ */
+object AddedDates {
+    fun parseIso(text: String?): Long? {
+        if (text.isNullOrBlank()) return null
+        return try {
+            java.time.Instant.parse(text).toEpochMilli()
+        } catch (_: Exception) {
+            try {
+                java.time.OffsetDateTime.parse(text).toInstant().toEpochMilli()
+            } catch (_: Exception) {
+                try {
+                    // No zone at all ("2024-03-01T10:00:00"): the server's clock, taken as UTC.
+                    java.time.LocalDateTime.parse(text).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    /** Plex sends `addedAt` in epoch seconds. */
+    fun fromEpochSeconds(seconds: Long?): Long? = seconds?.takeIf { it > 0 }?.times(1000)
 }

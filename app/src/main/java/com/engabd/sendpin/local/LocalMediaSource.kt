@@ -244,6 +244,9 @@ class LocalMediaSource(
         duration = tracks.sumOf { it.duration ?: 0 }.takeIf { it > 0 },
         year = tracks.firstNotNullOfOrNull { it.year },
         genres = tracks.flatMap { it.genres }.distinct(),
+        // The newest file's arrival: an album is "added" when its last track landed.
+        addedAtMs = dateAdded.let { added -> tracks.maxOfOrNull { added[it.itemId] ?: 0L } }
+            ?.takeIf { it > 0 }?.times(1000),
     )
 
     private fun albumsOf(tracks: List<MaItem>): List<Pair<String, List<MaItem>>> =

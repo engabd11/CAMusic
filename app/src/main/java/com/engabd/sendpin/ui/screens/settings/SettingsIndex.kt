@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Equalizer
@@ -260,6 +261,14 @@ internal sealed interface IndexRow {
         override val subtitle = "Sunrise alarms with lights and music, and a bedtime wind-down"
         override val icon = Icons.Default.Alarm
     }
+
+    /** The listening party, which is a screen of its own rather than a page of settings. */
+    data object Party : IndexRow {
+        override val key = "listening_party"
+        override val title = "Listening party"
+        override val subtitle = "Let friends on your Wi-Fi add songs to your queue from their own phones"
+        override val icon = Icons.Default.Celebration
+    }
 }
 
 /**
@@ -278,7 +287,7 @@ internal sealed interface IndexRow {
  */
 internal val settingsIndex: List<IndexRow> = buildList {
     SettingsSection.entries.forEach { section ->
-        if (section == SettingsSection.SYSTEM_ABOUT) { add(IndexRow.Stats); add(IndexRow.WakeSleep) }
+        if (section == SettingsSection.SYSTEM_ABOUT) { add(IndexRow.Stats); add(IndexRow.WakeSleep); add(IndexRow.Party) }
         add(IndexRow.Category(section))
     }
 }

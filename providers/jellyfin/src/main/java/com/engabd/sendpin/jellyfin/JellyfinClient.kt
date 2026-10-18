@@ -877,8 +877,9 @@ class JellyfinClient(
             lines.any { it["Start"] != null } -> MaLyrics(
                 text = lines.joinToString("\n") { l ->
                     val ms = (l.long("Start") ?: 0L) / 10_000
+                    val text = l.str("Text").orEmpty()
                     "[%02d:%02d.%02d]%s".format(
-                        ms / 60_000, (ms / 1000) % 60, (ms % 1000) / 10, l.str("Text").orEmpty(),
+                        ms / 60_000, (ms / 1000) % 60, (ms % 1000) / 10, cuedText(l, text),
                     )
                 },
                 synced = true,
@@ -887,6 +888,36 @@ class JellyfinClient(
         }
     } catch (_: JellyfinException) {
         null
+    }
+
+    /**
+     * A lyric line's text with enhanced-LRC word stamps, from Jellyfin's `Cues` (newer
+     * servers: each cue has a `Position`/`EndPosition` character range into `Text` and a
+     * `Start`/`End` in ticks). Servers that send no cues, or odd ones, get the plain line.
+     */
+    private fun cuedText(line: JsonObject, text: String): String {
+        val cues = (line["Cues"] as? JsonArray)?.mapNotNull { it as? JsonObject }
+        if (cues.isNullOrEmpty() || text.isEmpty()) return text
+        fun stamp(ticks: Long): String {
+            val ms = ticks / 10_000
+            return "<%d:%02d.%03d>".format(ms / 60_000, (ms / 1000) % 60, ms % 1000)
+        }
+        val sb = StringBuilder()
+        var cursor = 0
+        var endTicks = -1L
+        for (c in cues.sortedBy { it.long("Position") ?: 0L }) {
+            val from = (c.long("Position") ?: return text).toInt()
+            val to = (c.long("EndPosition") ?: return text).toInt()
+            val start = c.long("Start") ?: return text
+            if (from < cursor || to > text.length || from >= to) return text
+            if (from > cursor) sb.append(text, cursor, from)
+            sb.append(stamp(start)).append(text, from, to)
+            cursor = to
+            endTicks = c.long("End") ?: -1L
+        }
+        if (cursor < text.length) sb.append(text, cursor, text.length)
+        if (endTicks >= 0) sb.append(stamp(endTicks))
+        return sb.toString()
     }
 
     // ── Item mapping ──────────────────────────────────────────────────────
@@ -947,6 +978,7 @@ class JellyfinClient(
             album = o.str("Album"),
             entryId = o.str("PlaylistItemId"),
             year = o.int("ProductionYear"),
+            addedAtMs = com.engabd.sendpin.ma.AddedDates.parseIso(o.str("DateCreated")),
             genres = o["Genres"]?.jsonArray.orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull },
         )
     }

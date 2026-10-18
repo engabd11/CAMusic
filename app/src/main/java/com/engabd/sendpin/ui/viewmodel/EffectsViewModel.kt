@@ -10,6 +10,7 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.hue.ambience.AmbienceAssets
 import com.engabd.sendpin.hue.ambience.AmbienceAudioHolder
+import com.engabd.sendpin.hue.ambience.AmbienceBedTimelineStore
 import com.engabd.sendpin.hue.ambience.AmbienceClipPlayer
 import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.hue.ambience.AmbienceParams
@@ -18,10 +19,7 @@ import com.engabd.sendpin.hue.ambience.AudioFocusGate
 import com.engabd.sendpin.hue.ambience.AudioTrackSink
 import com.engabd.sendpin.hue.ambience.SharedOutputGate
 import com.engabd.sendpin.service.EffectsService
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -110,11 +108,14 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val toast: SharedFlow<String> = _toast.asSharedFlow()
 
-    /** Seconds a running show has left before the sleep timer stops it, or null. */
-    private val _remainingS = MutableStateFlow<Int?>(null)
-    val remainingS: StateFlow<Int?> = _remainingS
-
-    private var sleepJob: Job? = null
+    /**
+     * Seconds a running show has left before the sleep timer stops it, or null.
+     *
+     * Counted by [EffectsService], not here: this view model is Activity-scoped and dies
+     * with the Activity, while the service keeps the show running, so a timer that lived
+     * here was silently lost and the show played on until somebody stopped it.
+     */
+    val remainingS: StateFlow<Int?> = EffectsService.remainingS
 
     /**
      * >0 for the whole duration of any [start] or [stop] call this view model is
@@ -143,8 +144,6 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
             var previous = running.value
             running.collect { current ->
                 if (previous != null && current == null && mutatingSelfDepth == 0) {
-                    sleepJob?.cancel(); sleepJob = null
-                    _remainingS.value = null
                     audio.release()
                     EffectsService.onStopRequested = null
                     EffectsService.stop(getApplication())
@@ -275,8 +274,17 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
             sharedGain = if (shareOutput) UNDER_MUSIC_GAIN else 1f
             val vol = settings.effectsVolume.first() / 100f * sharedGain
             liveLevel = vol
+            // A bundled bed has been analysed ahead of time (once, then cached), which is
+            // what lets the lights lead the sound. Loaded before the sound starts so the
+            // two begin together; a first-ever run that takes too long goes without and
+            // reacts live, and the analysis finishes in the background for next time.
+            val bedPlan = if (mode != "off" && mode != "clip") {
+                AmbienceAssets.bedAssetPath(app, effect)?.let { AmbienceBedTimelineStore.load(app, it) }
+            } else null
             val newActive = buildActiveAudio(app, effect, mode, vol)
             audio.install(newActive)
+            // Tell the holder the level this show started at, so a fade applies to it.
+            audio.setVolume(vol)
 
             // Null for a silent show, which has nothing to hold focus for, and null
             // again for one sharing the output, which deliberately asks for none.
@@ -348,6 +356,8 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
                 ),
                 onAudioFailed = { msg -> _toast.tryEmit(msg) },
                 analysis = analysis,
+                // Only meaningful alongside a recording being played.
+                bedPlan = bedPlan.takeIf { analysis != null },
             )
             if (!ok) {
                 audio.release()
@@ -373,8 +383,8 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
             }
             settings.setEffectsLast(effect.wire)
             EffectsService.onStopRequested = { app.stopAmbienceShow() }
-            EffectsService.start(app, effect.title)
-            armSleepTimer()
+            // The service counts the sleep timer down, so it survives the Activity.
+            EffectsService.start(app, effect.title, sleepMinutes.value)
         } finally {
             mutatingSelfDepth--
         }
@@ -389,8 +399,6 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun stopLocked() {
         mutatingSelfDepth++
         try {
-            sleepJob?.cancel(); sleepJob = null
-            _remainingS.value = null
             lights.stopAmbience()
             audio.release()
             val app = getApplication<Application>() as SendpinApp
@@ -482,7 +490,7 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
     fun setSleepMinutes(m: Int) {
         viewModelScope.launch {
             settings.setEffectsSleepMinutes(m)
-            if (running.value != null) armSleepTimer()
+            if (running.value != null) EffectsService.setSleepTimer(getApplication(), m)
         }
     }
 
@@ -509,21 +517,6 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun armSleepTimer() {
-        sleepJob?.cancel()
-        val minutes = sleepMinutes.value
-        if (minutes <= 0) { _remainingS.value = null; return }
-        sleepJob = viewModelScope.launch {
-            var left = minutes * 60
-            while (left > 0) {
-                _remainingS.value = left
-                delay(1_000)
-                left--
-            }
-            _remainingS.value = null
-            stop()
-        }
-    }
 
     override fun onCleared() {
         // Deliberately does *not* stop the show. This view model is Activity-scoped, so

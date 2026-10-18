@@ -148,6 +148,7 @@ class AppSettings(private val context: Context) {
         private val DISCOGRAPHY_LAYOUT = stringPreferencesKey("discography_layout") // list | grid
         private val LIBRARY_TILE_STYLE = stringPreferencesKey("library_tile_style") // classic | gallery
         private val LIBRARY_SPOTLIGHT = booleanPreferencesKey("library_spotlight")
+        private val REDISCOVER_SHELVES = booleanPreferencesKey("rediscover_shelves")
         private val LIBRARY_BACKDROP = booleanPreferencesKey("library_backdrop")
         // The library's category buttons: shape, size, corner, and which of them
         // appear and in what order. Every default is the row exactly as it shipped,
@@ -193,6 +194,9 @@ class AppSettings(private val context: Context) {
         /** The stream cache's size in MB; mirrored to [bootPrefs] for the cache's first open. */
         private val MEDIA_CACHE_MB = intPreferencesKey("media_cache_mb")
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // keep the music going past the queue
+        private val PARTY_IDLE_HOURS = intPreferencesKey("party_idle_hours")
+        private val PARTY_APPROVE_FIRST = booleanPreferencesKey("party_approve_first")
+        private val PARTY_SKIP_MODE = stringPreferencesKey("party_skip_mode")
         private val SEARCH_ALL_LIBRARIES = booleanPreferencesKey("search_all_libraries") // library search asks every server
         // Scrobbling to ListenBrainz / Last.fm (see scrobble/). Tokens are encrypted.
         private val LB_ENABLED = booleanPreferencesKey("listenbrainz_enabled")
@@ -215,6 +219,10 @@ class AppSettings(private val context: Context) {
         private val REPLAY_GAIN_UNTAGGED = stringPreferencesKey("replay_gain_untagged") // dB as text; "0" = leave untagged alone
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val LYRICS_ONLINE = booleanPreferencesKey("lyrics_online")
+        private val LYRICS_WORD_BY_WORD = booleanPreferencesKey("lyrics_word_by_word")
+        private val LYRICS_TRANSLATE = booleanPreferencesKey("lyrics_translate")
+        private val LYRICS_TRANSLATE_LANG = stringPreferencesKey("lyrics_translate_lang") // "" = device language
+        private val LYRICS_TRANSLATE_WIFI_ONLY = booleanPreferencesKey("lyrics_translate_wifi_only")
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
         // Driving mode — a slim always-on-top transport for a phone in a cradle.
@@ -1407,6 +1415,32 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLyricsOnline(on: Boolean) = context.dataStore.edit { it[LYRICS_ONLINE] = on }
 
+    /**
+     * Light up synced lyrics a word at a time. On by default. Where the source has no
+     * word timing the words are spread across the line by length, and drawn softer.
+     */
+    val lyricsWordByWord: Flow<Boolean> = pref { it[LYRICS_WORD_BY_WORD] ?: true }
+
+    suspend fun setLyricsWordByWord(on: Boolean) = context.dataStore.edit { it[LYRICS_WORD_BY_WORD] = on }
+
+    /**
+     * Show an on-device translation under each lyric line. Off by default. The only
+     * network use is a one-off download of the language model.
+     */
+    val lyricsTranslate: Flow<Boolean> = pref { it[LYRICS_TRANSLATE] ?: false }
+
+    suspend fun setLyricsTranslate(on: Boolean) = context.dataStore.edit { it[LYRICS_TRANSLATE] = on }
+
+    /** BCP-47 language to translate into; empty means the device's language. */
+    val lyricsTranslateLang: Flow<String> = pref { it[LYRICS_TRANSLATE_LANG] ?: "" }
+
+    suspend fun setLyricsTranslateLang(tag: String) = context.dataStore.edit { it[LYRICS_TRANSLATE_LANG] = tag }
+
+    /** Fetch translation models on Wi-Fi only. On by default. */
+    val lyricsTranslateWifiOnly: Flow<Boolean> = pref { it[LYRICS_TRANSLATE_WIFI_ONLY] ?: true }
+
+    suspend fun setLyricsTranslateWifiOnly(on: Boolean) = context.dataStore.edit { it[LYRICS_TRANSLATE_WIFI_ONLY] = on }
+
     suspend fun setLyricsOffsetMs(ms: Int) = context.dataStore.edit {
         it[LYRICS_OFFSET_MS] = ms.coerceIn(-MAX_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS).toString()
     }
@@ -1510,6 +1544,19 @@ class AppSettings(private val context: Context) {
      * search always did, and the one a listener expects until they ask for more.
      */
     val searchAllLibraries: Flow<Boolean> = pref { it[SEARCH_ALL_LIBRARIES] ?: false }
+
+    /** Hours a listening party may sit with no guest activity before it ends itself. Default 4. */
+    val partyIdleHours: Flow<Int> = pref { (it[PARTY_IDLE_HOURS] ?: 4).coerceIn(1, 24) }
+
+    /** Whether a listening party holds guests' songs for the host to approve. Off by default. */
+    val partyApproveFirst: Flow<Boolean> = pref { it[PARTY_APPROVE_FIRST] ?: false }
+
+    /** The [com.engabd.sendpin.party.SkipMode] name last used for votes to skip. */
+    val partySkipMode: Flow<String> = pref { it[PARTY_SKIP_MODE] ?: "OFF" }
+
+    suspend fun setPartyIdleHours(hours: Int) { context.dataStore.edit { it[PARTY_IDLE_HOURS] = hours.coerceIn(1, 24) } }
+    suspend fun setPartyApproveFirst(value: Boolean) { context.dataStore.edit { it[PARTY_APPROVE_FIRST] = value } }
+    suspend fun setPartySkipMode(name: String) { context.dataStore.edit { it[PARTY_SKIP_MODE] = name } }
 
     /**
      * Seconds of fade between tracks on the local player. 0 — the default — is
@@ -1659,6 +1706,10 @@ class AppSettings(private val context: Context) {
     /** A featured record at the top of the library, painted in its own colours. Off by default. */
     val librarySpotlight: Flow<Boolean> = pref { it[LIBRARY_SPOTLIGHT] ?: false }
     suspend fun setLibrarySpotlight(on: Boolean) { context.dataStore.edit { it[LIBRARY_SPOTLIGHT] = on } }
+
+    /** The "Rediscover" shelves on the library home. On by default; each hides itself when empty. */
+    val rediscoverShelves: Flow<Boolean> = pref { it[REDISCOVER_SHELVES] ?: true }
+    suspend fun setRediscoverShelves(on: Boolean) { context.dataStore.edit { it[REDISCOVER_SHELVES] = on } }
 
     /** The playing (or spotlit) cover's colours washed behind the library. Off by default. */
     val libraryBackdrop: Flow<Boolean> = pref { it[LIBRARY_BACKDROP] ?: false }
@@ -2943,9 +2994,9 @@ class AppSettings(private val context: Context) {
      * The player's tap-timing offset for the rhythm game, in milliseconds.
      *
      * Positive means the player's taps land late relative to the chart (touch
-     * latency, Bluetooth audio, a slow display), so the chart is judged against
-     * a clock shifted later by this much. Measured by the in-game calibration
-     * flow rather than guessed; 0 until then, which is correct for wired audio.
+     * latency, Bluetooth audio, a slow display), so each tap is judged as if it had
+     * come this much earlier. Measured by the in-game calibration flow rather than
+     * guessed; 0 until then, which is correct for wired audio.
      */
     private val GAME_TIMING_OFFSET = intPreferencesKey("game_timing_offset_ms")
 
@@ -2954,6 +3005,18 @@ class AppSettings(private val context: Context) {
 
     suspend fun setGameTimingOffsetMs(value: Int) {
         context.dataStore.edit { it[GAME_TIMING_OFFSET] = value.coerceIn(-300, 300) }
+    }
+
+    private val GAME_LEAD_PROMPT_SHOWN = booleanPreferencesKey("game_lead_prompt_shown")
+
+    /**
+     * True once the player has been offered the one-time timing check that a source
+     * with no measurable output latency (capture and cast feeds) needs.
+     */
+    val gameLeadPromptShown: Flow<Boolean> = pref { it[GAME_LEAD_PROMPT_SHOWN] ?: false }
+
+    suspend fun setGameLeadPromptShown() {
+        context.dataStore.edit { it[GAME_LEAD_PROMPT_SHOWN] = true }
     }
 
     /**

@@ -37,10 +37,33 @@ class AmbienceAudioHolder {
      */
     val analysis: AmbienceAudioAnalysis? get() = (current as? Backend.Clip)?.player?.analysis
 
+    /**
+     * The volume the listener asked for, and the fade the sleep timer is applying on top.
+     *
+     * Kept apart so a fade-out and a volume slider (or a duck) never overwrite one
+     * another: what reaches the speaker is always `level * fade`.
+     */
+    private var level = 1f
+    private var fade = 1f
+
     /** Replace the backend, releasing whatever it displaces. */
     fun install(next: Backend?) {
         current?.release()
         current = next
+        // A new show starts at full, whatever the last one was fading to.
+        fade = 1f
+    }
+
+    /** Scale the sound by [f] (1 untouched, 0 silent) without losing the chosen level. */
+    fun setFade(f: Float) {
+        fade = f.coerceIn(0f, 1f)
+        apply()
+    }
+
+    private fun apply() = when (val c = current) {
+        is Backend.Synth -> c.sink.setVolume(level * fade)
+        is Backend.Clip -> c.player.setVolume(level * fade)
+        null -> {}
     }
 
     fun release() = install(null)
@@ -50,10 +73,9 @@ class AmbienceAudioHolder {
         if ((current as? Backend.Clip)?.player === player) release()
     }
 
-    fun setVolume(v: Float) = when (val c = current) {
-        is Backend.Synth -> c.sink.setVolume(v)
-        is Backend.Clip -> c.player.setVolume(v)
-        null -> {}
+    fun setVolume(v: Float) {
+        level = v
+        apply()
     }
 
     fun pause() = (current as? Backend.Clip)?.player?.pause() ?: Unit
