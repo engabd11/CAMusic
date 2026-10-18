@@ -58,6 +58,7 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.Crossfeed
 import com.engabd.sendpin.audio.LocalDsp
 import com.engabd.sendpin.audio.QualityTier
 import com.engabd.sendpin.audio.RemoteAudioFormat
@@ -829,7 +830,12 @@ private fun QualityDetailCard(
             // ── Signal Path Inspector (Audiophile Transparency) ────────────
             val sourceLabel = (source ?: playing)?.label ?: "PCM"
             val maSteps = maProcessingSteps(processing, outputProcessing)
-            val localGainDb = if (localSession) source?.let { ReplayGain.decibels(it, gainMode) } else null
+            val localGainDb = when {
+                !localSession -> null
+                // What the player is actually applying, tags or our own measurement.
+                localChain != null -> localChain.gain?.db
+                else -> source?.let { ReplayGain.decibels(it, gainMode) }
+            }
             val localSteps = localChain?.let { localProcessingSteps(it, localGainDb) }.orEmpty()
             val dspLabel = when {
                 // Music Assistant's own report of what it did, when it sends one.
@@ -965,7 +971,14 @@ private fun QualityDetailCard(
             }
 
             // ── Level and origin ──────────────────────────────────────────
-            val gainLine = source?.gainLabel?.let { tag ->
+            val gainLine = localChain?.gain?.let { g ->
+                when (g.origin) {
+                    ReplayGain.Origin.TAGS -> "ReplayGain %+.1f dB applied, from the file's tags".format(g.db)
+                    ReplayGain.Origin.MEASURED ->
+                        "ReplayGain %+.1f dB applied, from this phone's loudness scan".format(g.db)
+                    ReplayGain.Origin.FIXED -> "Untagged level %+.1f dB applied".format(g.db)
+                }
+            } ?: source?.gainLabel?.let { tag ->
                 val applied = if (localSession) ReplayGain.decibels(source, gainMode) else null
                 when {
                     !localSession -> "ReplayGain $tag - applied by Music Assistant"
@@ -1394,6 +1407,7 @@ private fun localProcessingSteps(c: NowPlayingViewModel.LocalChain, gainDb: Floa
     if (s.usb != null && !s.usb.samplesUntouched) add("Volume")
     if (!s.processorsBypassed) {
         if (gainDb != null) add("ReplayGain")
+        if (c.crossfeed != Crossfeed.Preset.OFF) add("Crossfeed")
         if (eqAltersSignal(c.eq)) add("EQ")
         addAll(c.effects.map { it.substringBefore(' ') })
     }
@@ -1430,10 +1444,26 @@ private fun LocalProcessingSteps(c: NowPlayingViewModel.LocalChain, gainDb: Floa
                 s.aaudioBitperfect -> "Direct output: the decoded audio goes straight to the DAC"
                 s.floatEngaged -> "Float output: media3 runs none of this app's processors"
                 else -> "Exclusive output: nothing of this app's between decoder and DAC"
-            } + ", so ReplayGain boost, the equaliser and the effects are out of the chain",
+            } + ", so ReplayGain boost, crossfeed, the equaliser and the effects are out of the chain",
         )
     } else {
-        gainDb?.let { ProcessingStep("ReplayGain", "%+.1f dB".format(it), accent, active = true) }
+        gainDb?.let {
+            val from = when (c.gain?.origin) {
+                ReplayGain.Origin.TAGS -> " • from tags"
+                ReplayGain.Origin.MEASURED -> " • from loudness scan"
+                ReplayGain.Origin.FIXED -> " • untagged level"
+                null -> ""
+            }
+            ProcessingStep("ReplayGain", "%+.1f dB".format(it) + from, accent, active = true)
+        }
+        if (c.crossfeed != Crossfeed.Preset.OFF) {
+            ProcessingStep(
+                "Crossfeed",
+                "${c.crossfeed.label} • ${c.crossfeed.fcutHz} Hz, ${"%.1f".format(c.crossfeed.feedDb)} dB " +
+                    "for ${c.outputLabel}",
+                accent, active = true,
+            )
+        }
         if (eqAltersSignal(c.eq)) {
             val bands = c.eq.activeBands().count { it.altersSignal() }
             val preamp = c.eq.effectivePreampDb()

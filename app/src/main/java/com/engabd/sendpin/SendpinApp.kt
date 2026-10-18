@@ -79,6 +79,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val appliedEq: kotlinx.coroutines.flow.StateFlow<com.engabd.sendpin.audio.LocalDsp.Config> = _appliedEq
 
+    private val _appliedCrossfeed = kotlinx.coroutines.flow.MutableStateFlow(com.engabd.sendpin.audio.Crossfeed.Preset.OFF)
+
+    /** The crossfeed preset the local player was last given: Off unless the output is headphones. */
+    val appliedCrossfeed: kotlinx.coroutines.flow.StateFlow<com.engabd.sendpin.audio.Crossfeed.Preset> = _appliedCrossfeed
+
     val localPlayer: LocalPlayer by lazy {
         LocalPlayer(this).also { player ->
             // Announce a takeover to the Sendspin side rather than letting the two
@@ -1077,6 +1082,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
             }.distinctUntilChanged().collect {
                 localPlayer.localDsp.setConfig(it)
                 _appliedEq.value = it
+            }
+        }
+        // Crossfeed follows the same output, and is held to headphones.
+        appScope.launch {
+            val settings = AppSettings(this@SendpinApp)
+            combine(settings.eqProfiles, outputRoute.current) { profiles, output ->
+                com.engabd.sendpin.audio.CrossfeedSelection.effective(profiles, output)
+            }.distinctUntilChanged().collect {
+                localPlayer.localDsp.setCrossfeed(it)
+                _appliedCrossfeed.value = it
             }
         }
 

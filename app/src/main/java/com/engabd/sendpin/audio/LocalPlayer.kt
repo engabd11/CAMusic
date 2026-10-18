@@ -30,6 +30,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.pow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -470,6 +472,14 @@ class LocalPlayer(private val context: Context) {
                 applyGain()
             }
         }
+        // A scan that finishes while its track plays: level it from the measurement now
+        // rather than at the next play.
+        scope.launch {
+            SendpinApp.instance.trackScans.completed.collect { key ->
+                val playing = _current.value ?: return@collect
+                if (TrackScanRepository.keyFor(playing) == key) applyGain()
+            }
+        }
         // Sound modes: vinyl noise and lo-fi. Both are off by default and
         // take effect on the next buffer, so the listener can toggle them
         // mid-track without a skip or a gap.
@@ -597,6 +607,7 @@ class LocalPlayer(private val context: Context) {
             // tick catches up is heard as a click.
             fadeFactor = if (fadeInFor != null) 0f else 1f
             applyGain()
+            warmLoudness(track)
             // A whole track's notice for the two scans the next transition needs.
             prefetchScans(track)
             track?.let { _started.tryEmit(it) }
@@ -2137,18 +2148,54 @@ class LocalPlayer(private val context: Context) {
         return bytes to mime
     }
 
+    private val _appliedGain = MutableStateFlow<ReplayGain.Applied?>(null)
+
+    /**
+     * The ReplayGain being applied to what is playing, and whether it came from the
+     * file's tags, from our own loudness measurement or from the fixed level for
+     * untagged files. Null when none is. Read by the signal path card.
+     */
+    val appliedGain: StateFlow<ReplayGain.Applied?> = _appliedGain.asStateFlow()
+
+    /**
+     * The measured loudness of [track], from memory only: this runs on the main
+     * thread, and [warmLoudness] is what gets a scan into memory.
+     */
+    private fun measuredFor(track: LocalTrack?): MeasuredLoudness? =
+        track?.let { SendpinApp.instance.trackScans.peek(it)?.loudness }
+
+    /**
+     * Pull [track]'s scan off the disk if it is not in memory, and re-level once it
+     * has a measurement. A scan finished this session announces itself instead; see
+     * the collector of `completed`.
+     */
+    private fun warmLoudness(track: LocalTrack?) {
+        if (track == null || replayGainMode == ReplayGain.OFF) return
+        val scans = SendpinApp.instance.trackScans
+        if (scans.peek(track) != null) return
+        scope.launch {
+            val loaded = runCatching { scans.cached(track) }.getOrNull()
+            if (loaded?.loudness != null && _current.value?.id == track.id) applyGain()
+        }
+    }
+
     private fun applyGain() {
         if (airPlayMuted) {
             player.volume = 0f
             localDsp.setBoost(1f)
+            _appliedGain.value = null
             return
         }
         if (exclusiveOutput) {
             player.volume = 1f
             localDsp.setBoost(1f)
+            _appliedGain.value = null
             return
         }
-        val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode, untaggedGainDb)
+        val track = _current.value
+        val applied = ReplayGain.resolve(track?.sourceQuality, replayGainMode, untaggedGainDb, measuredFor(track))
+        _appliedGain.value = applied
+        val factor = applied?.let { 10f.toDouble().pow(it.db / 20.0).toFloat() } ?: 1f
         // A cut rides the player's volume, as it always has; a rise cannot — that
         // volume stops at 1.0 — so it goes to the DSP's limited boost instead.
         localDsp.setBoost(factor.coerceAtLeast(1f))
@@ -2470,7 +2517,7 @@ class LocalPlayer(private val context: Context) {
             crossfadeFor = track.id
             mixPlan = plan
             // Capped at unity: the deck is its own output with no boost stage.
-            deckReplayGain = ReplayGain.factor(track.sourceQuality, replayGainMode, untaggedGainDb).coerceAtMost(1f)
+            deckReplayGain = ReplayGain.factor(track.sourceQuality, replayGainMode, untaggedGainDb, measuredFor(track)).coerceAtMost(1f)
             val gain = (userVolume * deckReplayGain * speedGainFactor).coerceIn(0f, 1f)
             crossfadeArmed = deck.start(source, positionMs, gain, preferredOutput, _speed.value)
             if (!crossfadeArmed) mixPlan = null

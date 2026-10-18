@@ -1447,7 +1447,11 @@ private fun subtractRollingMean(x: DoubleArray, win: Int): DoubleArray {
  * was truncated, and a silent "track" must stay unanalysable rather than become
  * an all-dark scan that the show then faithfully reproduces.
  */
-internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanResult {
+internal fun finishScan(
+    ex: OfflineExtractor,
+    fullDurationS: Float = 0f,
+    loudness: MeasuredLoudness? = null,
+): ScanResult {
     val n = ex.frames
     if (n < MIN_ANALYSIS_FRAMES) return ScanResult.Failed(ScanFailure.TOO_SHORT)
     val rmsD = ex.rms.toDoubleArray()
@@ -1556,6 +1560,7 @@ internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanRe
             beatsPerBar = beatsPerBar,
             tuningCents = ex.tuningCents,
             stems = stems,
+            loudness = loudness,
         )
     )
 }

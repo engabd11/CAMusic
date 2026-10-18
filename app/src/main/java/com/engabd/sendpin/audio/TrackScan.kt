@@ -101,6 +101,13 @@ data class TrackScan(
      * null [stems] unchanged either way. See [StemProfile].
      */
     val stems: StemProfile? = null,
+    /**
+     * Integrated loudness (LUFS) and true peak (dBTP) to BS.1770-4 / EBU R128, measured
+     * in the same decode as everything above. Null on a scan from before it existed
+     * (analyser version &lt; 5), and for a track where nothing rose above the -70 LUFS
+     * gate. ReplayGain levels an untagged track from it; see [ReplayGain.resolve].
+     */
+    val loudness: MeasuredLoudness? = null,
 ) {
     /** The scan covers the whole track, rather than stopping at the analysis cap. */
     val complete: Boolean get() = analysedS >= durationS - 1f
@@ -282,8 +289,12 @@ data class TrackScan(
          * frequency-band proxy already handles that unchanged, so this is a "would
          * be nice to have" bump rather than the correctness fixes above — the
          * analysis card's re-read offer is what actually gets it filled in.
+         *
+         * 5 - adds [loudness], measured to BS.1770-4 in the same decode so ReplayGain
+         * can level files that carry no tags. A version-4 scan has no measurement;
+         * the re-read offer is what fills it in.
          */
-        const val ANALYSER_VERSION = 4
+        const val ANALYSER_VERSION = 5
 
         /**
          * Below this the grid is not served. Matches syncoV2's
