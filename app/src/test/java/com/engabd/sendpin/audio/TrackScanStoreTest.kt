@@ -86,12 +86,13 @@ class TrackScanStoreTest {
      * Bytes written after the key: the format-4 tail (metre, tuning, one label
      * per section) plus the format-5 tail's leading "has stems" flag, which is
      * the only byte format-5 contributes here since [scan] never sets [stems] —
-     * the `if (stems != null)` block writes nothing more when it's false. The key
+     * the `if (stems != null)` block writes nothing more when it's false, and the
+     * format-6 tail's "has loudness" flag likewise. The key
      * used to be the end of the file and the tests that bend it counted back from
      * there; naming the offset is what stops the next tail from silently making
      * them bend the wrong byte and pass for the wrong reason.
      */
-    private val tailAfterKey = 2 + 2 + 1  // beatsPerBar + tuning + two sections' labels + no-stems flag
+    private val tailAfterKey = 2 + 2 + 1 + 1  // beatsPerBar + tuning + two sections' labels + no-stems flag + no-loudness flag
 
     @Test
     fun `a corrupt key byte costs the key, not the whole scan`() {
@@ -289,6 +290,93 @@ class TrackScanStoreTest {
             out.writeBoolean(false)    // no intensity profile
             out.writeInt(0)            // no melbank reference
             // and nothing after it: the two format-2 fields did not exist.
+        }
+    }
+
+    @Test
+    fun `a format-5 file written before loudness still loads, with no measurement`() {
+        writeFormat5(File(dir.apply { mkdirs() }, fileNameFor("pre-loudness")))
+
+        val loaded = TrackScanStore(dir).load("pre-loudness")
+
+        assertNotNull(loaded, "the previous format must keep reading, never fall back to a wipe")
+        assertEquals(200f, loaded.durationS)
+        assertEquals(128f, loaded.bpm)
+        assertEquals(null, loaded.loudness)
+        // Flagged for the re-read that would measure it.
+        assertTrue(loaded.outdated)
+    }
+
+    @Test
+    fun `a measured loudness survives the trip to disk and back`() {
+        TrackScanStore(dir).save("loud", scan().copy(loudness = MeasuredLoudness(-9.4f, -0.3f)))
+
+        val loaded = TrackScanStore(dir).load("loud")
+
+        assertNotNull(loaded)
+        assertEquals(MeasuredLoudness(-9.4f, -0.3f), loaded.loudness)
+        assertEquals(128f, loaded.bpm)
+    }
+
+    @Test
+    fun `a scan with no measurement stays without one`() {
+        TrackScanStore(dir).save("quiet", scan())
+
+        assertEquals(null, TrackScanStore(dir).load("quiet")?.loudness)
+    }
+
+    @Test
+    fun `a format-6 file cut off inside the loudness keeps the scan`() {
+        val file = File(dir.apply { mkdirs() }, fileNameFor("cut"))
+        writeFormat5(file, format = 6, loudnessTail = { out ->
+            out.writeBoolean(true)
+            out.writeFloat(-14f) // the peak never arrives
+        })
+
+        val loaded = TrackScanStore(dir).load("cut")
+
+        assertNotNull(loaded, "a short read of the tail must cost the measurement, not the grid")
+        assertEquals(null, loaded.loudness)
+        assertEquals(128f, loaded.bpm)
+    }
+
+    /** A hand-written format-5 file, optionally dressed as a later format with [loudnessTail]. */
+    private fun writeFormat5(
+        file: File,
+        format: Int = 5,
+        loudnessTail: ((DataOutputStream) -> Unit)? = null,
+    ) {
+        DataOutputStream(file.outputStream().buffered()).use { out ->
+            out.writeInt(0x43414D53)   // "CAMS"
+            out.writeInt(format)
+
+            out.writeFloat(200f)       // durationS
+            out.writeFloat(128f)       // bpm
+            out.writeFloat(0.75f)      // confidence
+            out.writeInt(2)            // downbeat
+
+            out.writeInt(2)            // beats
+            out.writeFloat(0f); out.writeFloat(0.46875f)
+            out.writeInt(2)            // accents
+            out.writeByte(255); out.writeByte(255)
+
+            out.writeInt(1)            // sections
+            out.writeFloat(0f); out.writeFloat(200f); out.writeByte(255)
+
+            out.writeBoolean(false)    // no intensity profile
+            out.writeInt(0)            // no melbank reference
+
+            out.writeInt(4)            // analyserVersion - pre-loudness
+            out.writeFloat(200f)       // analysedS
+
+            out.writeBoolean(false)    // no key
+
+            out.writeByte(4)           // beatsPerBar
+            out.writeByte(0)           // tuning, half-cents
+            out.writeByte(0)           // one section's label
+
+            out.writeBoolean(false)    // no stems
+            loudnessTail?.invoke(out)
         }
     }
 
