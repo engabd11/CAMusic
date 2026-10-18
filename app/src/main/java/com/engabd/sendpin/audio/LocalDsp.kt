@@ -148,8 +148,25 @@ class LocalDsp : BaseAudioProcessor() {
         boost.target = linear
     }
 
+    /**
+     * Headphone crossfeed. Safe to call from any thread; [Crossfeed.Preset.OFF] for none.
+     * Applies only to two-channel audio, and takes effect at the start of the next
+     * buffer for the same reason [setConfig] does.
+     */
+    fun setCrossfeed(preset: Crossfeed.Preset) {
+        pendingCrossfeed = preset
+    }
+
     private val boost = BoostLimiter()
     private var frame = FloatArray(2)
+
+    @Volatile
+    private var pendingCrossfeed: Crossfeed.Preset? = Crossfeed.Preset.OFF
+    private var crossfeedPreset = Crossfeed.Preset.OFF
+    private val crossfeed = Crossfeed()
+
+    /** Crossfeed is running: a preset is chosen and the stream is stereo. */
+    private var crossfeedOn = false
 
     /** What is currently applied, for anything that wants to draw the curve. */
     fun currentConfig(): Config = active
@@ -193,6 +210,7 @@ class LocalDsp : BaseAudioProcessor() {
             if (frame.size < channelCount) frame = FloatArray(channelCount)
             // Force a rebuild: the coefficients depend on the sample rate.
             pending = active
+            pendingCrossfeed = crossfeedPreset
             inputAudioFormat
         }
         else -> AudioProcessor.AudioFormat.NOT_SET
@@ -200,12 +218,13 @@ class LocalDsp : BaseAudioProcessor() {
 
     override fun queueInput(inputBuffer: ByteBuffer) {
         pending?.let { rebuild(it); pending = null }
+        pendingCrossfeed?.let { rebuildCrossfeed(it); pendingCrossfeed = null }
 
         val remaining = inputBuffer.remaining()
         if (remaining == 0) return
 
         val out = replaceOutputBuffer(remaining)
-        if (active.isTransparent() && !boost.active) {
+        if (active.isTransparent() && !boost.active && !crossfeedOn) {
             out.put(inputBuffer).flip()
             return
         }
@@ -226,7 +245,9 @@ class LocalDsp : BaseAudioProcessor() {
         val n = channelCount
         val eq = !active.isTransparent()
         while (input.remaining() >= 4 * n) {
-            for (c in 0 until n) frame[c] = input.float.let { if (eq) runChannel(c, it) else it }
+            for (c in 0 until n) frame[c] = input.float
+            if (crossfeedOn) crossfeed.process(frame)
+            if (eq) for (c in 0 until n) frame[c] = runChannel(c, frame[c])
             if (boost.active) boost.processFrame(frame, n)
             // Float output is not implicitly bounded the way 16-bit is, and a
             // boosted band on already-hot material will exceed 1.0. Clamping is
@@ -242,7 +263,9 @@ class LocalDsp : BaseAudioProcessor() {
         val n = channelCount
         val eq = !active.isTransparent()
         while (input.remaining() >= 2 * n) {
-            for (c in 0 until n) frame[c] = (input.short / 32_768f).let { if (eq) runChannel(c, it) else it }
+            for (c in 0 until n) frame[c] = input.short / 32_768f
+            if (crossfeedOn) crossfeed.process(frame)
+            if (eq) for (c in 0 until n) frame[c] = runChannel(c, frame[c])
             if (boost.active) boost.processFrame(frame, n)
             for (c in 0 until n) out.putShort((frame[c].coerceIn(-1f, 1f) * 32_767f).toInt().toShort())
         }
@@ -255,6 +278,14 @@ class LocalDsp : BaseAudioProcessor() {
         val cascade = sections.getOrNull(channel) ?: return y
         for (section in cascade) y = section.process(y)
         return y
+    }
+
+    /** Rebuild the crossfeed for [preset] at the current rate. Runs on the audio thread. */
+    private fun rebuildCrossfeed(preset: Crossfeed.Preset) {
+        crossfeedPreset = preset
+        crossfeed.configure(sampleRate, preset)
+        // Stereo only: a mono or surround stream has no pair of ears to blend.
+        crossfeedOn = preset != Crossfeed.Preset.OFF && channelCount == 2
     }
 
     /** Rebuild every cascade from [config]. Runs on the audio thread. */
@@ -287,6 +318,7 @@ class LocalDsp : BaseAudioProcessor() {
     override fun onFlush() {
         for (cascade in sections) for (section in cascade) section.reset()
         boost.reset()
+        crossfeed.reset()
     }
 
     override fun onReset() {
