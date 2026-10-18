@@ -475,6 +475,9 @@ private fun libraryGainNote(source: String): String = when {
  */
 private fun appliedGainLine(st: NowPlayingViewModel.State): String? {
     if (st.replayGain == ReplayGain.OFF || !st.hasTrack) return null
+    // This phone's own player knows what it applied, including a gain worked out from
+    // its loudness scan for a file with no tags.
+    st.localChain?.gain?.let { return "%+.1f dB".format(it.db) }
     val source = st.sourceQuality ?: return null
     if (source.activeGain == null) return "no measurement"
     val db = ReplayGain.decibels(source, st.replayGain) ?: return "no measurement"

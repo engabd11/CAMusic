@@ -6,6 +6,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
+import com.engabd.sendpin.audio.Crossfeed
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LoFiProcessor
 import com.engabd.sendpin.audio.LocalDsp
@@ -75,6 +76,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         /** The sound effects switched on, named with their strength: "Vinyl 50%". */
         val effects: List<String> = emptyList(),
         val speed: Float = 1f,
+        /** Headphone crossfeed in the chain; Off when none, or when the output is not headphones. */
+        val crossfeed: Crossfeed.Preset = Crossfeed.Preset.OFF,
+        /** The ReplayGain being applied and where it came from, or null for none. */
+        val gain: ReplayGain.Applied? = null,
     )
 
     /** One player a Music Assistant stream is fed to, and the format it gets. */
@@ -433,7 +438,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         SignalPath.state,
         (app as SendpinApp).appliedEq,
         (app as SendpinApp).outputRoute.current,
-    ) { signal, eq, output -> LocalChain(signal = signal, eq = eq, outputLabel = output.label) }
+        (app as SendpinApp).appliedCrossfeed,
+        local.appliedGain,
+    ) { signal, eq, output, crossfeed, gain ->
+        LocalChain(signal = signal, eq = eq, outputLabel = output.label, crossfeed = crossfeed, gain = gain)
+    }
         .stateIn(viewModelScope, SharingStarted.Eagerly, LocalChain())
 
     private val localSnap: StateFlow<LocalSnap> = combine(

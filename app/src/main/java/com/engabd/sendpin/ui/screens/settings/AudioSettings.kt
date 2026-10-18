@@ -586,7 +586,9 @@ internal fun LoudnessCard(settings: AppSettings, accent: Color, scope: Coroutine
             ) { i -> scope.launch { settings.setReplayGainUntaggedDb(ReplayGain.UNTAGGED_CHOICES[i]) } }
             Note(
                 "Levelled tracks usually come down 6 to 9 dB, so a file with no tag can sound " +
-                    "much louder beside them. This turns those down to match.",
+                    "much louder beside them. Once the background scan has measured a track, it is " +
+                    "levelled to match from its own loudness instead; this level covers the " +
+                    "tracks not scanned yet.",
             )
         }
         Note(
