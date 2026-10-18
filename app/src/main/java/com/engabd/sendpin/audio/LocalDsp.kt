@@ -208,9 +208,11 @@ class LocalDsp : BaseAudioProcessor() {
             encoding = inputAudioFormat.encoding
             boost.configure(sampleRate)
             if (frame.size < channelCount) frame = FloatArray(channelCount)
-            // Force a rebuild: the coefficients depend on the sample rate.
-            pending = active
-            pendingCrossfeed = crossfeedPreset
+            // Force a rebuild: the coefficients depend on the sample rate. A change
+            // that arrived since the last buffer wins over what is applied now,
+            // or a setting made while the track changes would be dropped.
+            pending = pending ?: active
+            pendingCrossfeed = pendingCrossfeed ?: crossfeedPreset
             inputAudioFormat
         }
         else -> AudioProcessor.AudioFormat.NOT_SET
