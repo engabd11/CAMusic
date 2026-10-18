@@ -479,6 +479,12 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
+    // On-device lyric translation (opt-in, off by default). The model download is the
+    // only network use; translation runs on the phone. LyricsTranslator guards every
+    // call, so a device without Google Play services just loses the toggle.
+    implementation(libs.mlkit.translate)
+    implementation(libs.mlkit.language.id)
+
     // D-pad focus affordance (scale/glow on the focused item) for the "tv" flavor's
     // screens. Stock Compose Foundation's LazyRow/LazyColumn/LazyVerticalGrid (used
     // throughout the phone UI already, e.g. LibraryScreen.kt) already handle D-pad

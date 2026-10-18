@@ -30,6 +30,8 @@ import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.lyrics.LocalLyrics
 import com.engabd.sendpin.lyrics.Lrclib
 import com.engabd.sendpin.lyrics.LyricsOffsets
+import com.engabd.sendpin.lyrics.LyricsTranslation
+import com.engabd.sendpin.lyrics.LyricsTranslator
 import com.engabd.sendpin.ma.MaNowPlaying
 import com.engabd.sendpin.ma.MaParse
 import com.engabd.sendpin.ma.MaPlayer
@@ -1053,6 +1055,19 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     /** Whether LRCLIB is asked without asking — the Settings switch. */
     val lyricsOnline: StateFlow<Boolean> = settings.lyricsOnline
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Word-by-word highlight, the Settings switch. */
+    val lyricsWordByWord: StateFlow<Boolean> = settings.lyricsWordByWord
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    /**
+     * The translation of the lyrics on screen, or why there isn't one. Driven by the
+     * Settings switch and the lyrics themselves; see [LyricsTranslator].
+     */
+    private val _lyricsTranslation = MutableStateFlow<LyricsTranslation>(LyricsTranslation.Off)
+    val lyricsTranslation: StateFlow<LyricsTranslation> = _lyricsTranslation
+
+    private data class TranslateRequest(val lyrics: MaLyrics?, val on: Boolean, val lang: String, val wifiOnly: Boolean)
 
     /** The listener asked for an online search for this song, once. Cleared per song. */
     private var searchOnlineOnce = false
@@ -2258,6 +2273,37 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                     // Idle-guarded so closing and reopening the pane on the same track
                     // shows what was already fetched instead of asking again.
                     if (open && _lyrics.value is Load.Idle) loadLyrics()
+                }
+        }
+        // Translation follows the lyrics and the settings. collectLatest, so a new
+        // track or a changed language abandons the one in flight.
+        viewModelScope.launch {
+            combine(
+                _lyrics, settings.lyricsTranslate, settings.lyricsTranslateLang,
+                settings.lyricsTranslateWifiOnly,
+            ) { load, on, lang, wifi -> TranslateRequest((load as? Load.Ready)?.value, on, lang, wifi) }
+                .distinctUntilChanged()
+                .collectLatest { req ->
+                    val lyrics = req.lyrics
+                    if (!req.on || lyrics == null) {
+                        _lyricsTranslation.value = LyricsTranslation.Off
+                        return@collectLatest
+                    }
+                    _lyricsTranslation.value = LyricsTranslation.Working
+                    _lyricsTranslation.value = when (
+                        val r = LyricsTranslator.translate(
+                            getApplication(), lyrics.lines.map { it.text }, req.lang, req.wifiOnly,
+                            songKey() ?: lyrics.text.hashCode().toString(),
+                        )
+                    ) {
+                        is LyricsTranslator.Result.Done -> LyricsTranslation.Ready(r.lines)
+                        LyricsTranslator.Result.SameLanguage -> LyricsTranslation.Off
+                        LyricsTranslator.Result.NeedsWifi -> LyricsTranslation.Note(
+                            "Connect to Wi-Fi to fetch the translation language, or allow mobile data in Settings.",
+                        )
+                        is LyricsTranslator.Result.Unavailable -> LyricsTranslation.Note(r.reason)
+                        is LyricsTranslator.Result.Failed -> LyricsTranslation.Note(r.reason)
+                    }
                 }
         }
         // The local queue lives in memory and can change under an open panel — a

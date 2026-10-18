@@ -214,6 +214,10 @@ class AppSettings(private val context: Context) {
         private val REPLAY_GAIN_UNTAGGED = stringPreferencesKey("replay_gain_untagged") // dB as text; "0" = leave untagged alone
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val LYRICS_ONLINE = booleanPreferencesKey("lyrics_online")
+        private val LYRICS_WORD_BY_WORD = booleanPreferencesKey("lyrics_word_by_word")
+        private val LYRICS_TRANSLATE = booleanPreferencesKey("lyrics_translate")
+        private val LYRICS_TRANSLATE_LANG = stringPreferencesKey("lyrics_translate_lang") // "" = device language
+        private val LYRICS_TRANSLATE_WIFI_ONLY = booleanPreferencesKey("lyrics_translate_wifi_only")
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
         // Driving mode — a slim always-on-top transport for a phone in a cradle.
@@ -1399,6 +1403,32 @@ class AppSettings(private val context: Context) {
     val lyricsOnline: Flow<Boolean> = pref { it[LYRICS_ONLINE] ?: false }
 
     suspend fun setLyricsOnline(on: Boolean) = context.dataStore.edit { it[LYRICS_ONLINE] = on }
+
+    /**
+     * Light up synced lyrics a word at a time. On by default. Where the source has no
+     * word timing the words are spread across the line by length, and drawn softer.
+     */
+    val lyricsWordByWord: Flow<Boolean> = pref { it[LYRICS_WORD_BY_WORD] ?: true }
+
+    suspend fun setLyricsWordByWord(on: Boolean) = context.dataStore.edit { it[LYRICS_WORD_BY_WORD] = on }
+
+    /**
+     * Show an on-device translation under each lyric line. Off by default. The only
+     * network use is a one-off download of the language model.
+     */
+    val lyricsTranslate: Flow<Boolean> = pref { it[LYRICS_TRANSLATE] ?: false }
+
+    suspend fun setLyricsTranslate(on: Boolean) = context.dataStore.edit { it[LYRICS_TRANSLATE] = on }
+
+    /** BCP-47 language to translate into; empty means the device's language. */
+    val lyricsTranslateLang: Flow<String> = pref { it[LYRICS_TRANSLATE_LANG] ?: "" }
+
+    suspend fun setLyricsTranslateLang(tag: String) = context.dataStore.edit { it[LYRICS_TRANSLATE_LANG] = tag }
+
+    /** Fetch translation models on Wi-Fi only. On by default. */
+    val lyricsTranslateWifiOnly: Flow<Boolean> = pref { it[LYRICS_TRANSLATE_WIFI_ONLY] ?: true }
+
+    suspend fun setLyricsTranslateWifiOnly(on: Boolean) = context.dataStore.edit { it[LYRICS_TRANSLATE_WIFI_ONLY] = on }
 
     suspend fun setLyricsOffsetMs(ms: Int) = context.dataStore.edit {
         it[LYRICS_OFFSET_MS] = ms.coerceIn(-MAX_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS).toString()
