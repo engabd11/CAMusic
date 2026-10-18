@@ -75,8 +75,14 @@ class AmbienceSchedulerTest {
 
     @Test
     fun `intensity drives the event rate`() {
-        // Aurora is deliberately eventless, so it is the one exception.
-        for (effect in AmbienceEffect.entries - AmbienceEffect.AURORA) {
+        // Aurora and golden hour are deliberately eventless. A candle's draught is on its
+        // own clock whatever the setting, and the tin roof's lightning is gated by the
+        // synthesised rain, which in a two minute window may not be heavy.
+        val exceptions = setOf(
+            AmbienceEffect.AURORA, AmbienceEffect.GOLDEN_HOUR,
+            AmbienceEffect.CANDLELIGHT, AmbienceEffect.TIN_ROOF_RAIN,
+        )
+        for (effect in AmbienceEffect.entries - exceptions) {
             val calm = scriptFor(effect).also {
                 it.bind(RoomModel(linearRoom()), AmbienceParams(intensity = 0.05f))
             }

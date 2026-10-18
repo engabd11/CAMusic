@@ -84,6 +84,22 @@ enum class AmbienceEffect(
     COASTAL_RAIN(
         "coastal_rain", "Coastal rain",
         "Cool grey rain on the glass, headlights sweeping the wall now and then.",
+    ),
+    CANDLELIGHT(
+        "candlelight", "Candlelight",
+        "One to three candles in a quiet room, with the odd breath of draught.",
+    ),
+    FOREST_DAWN(
+        "forest_dawn", "Forest dawn",
+        "Blue hour to gold over twenty minutes, light dappled through leaves.",
+    ),
+    TIN_ROOF_RAIN(
+        "tin_roof_rain", "Rain on a tin roof",
+        "A warm reading lamp in a night cabin, rain shimmering on the cool window.",
+    ),
+    GOLDEN_HOUR(
+        "golden_hour", "Golden hour",
+        "The last sun crosses the room, then rose, violet and a dim dusk to wind down by.",
     );
 
     companion object {
