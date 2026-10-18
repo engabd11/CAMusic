@@ -72,6 +72,13 @@ class AmbienceComfortTest {
      * - light train: windows pass at 0.5 a second at most. Clacks are sound, not named
      *   light events, so they are not counted; trains are counted in the next test.
      * - coastal rain: 0.35. Headlights and distant glows are rare (at most 3 a minute).
+     * - candlelight: a flame moves 0.25 a second at most; a draught comes once every one to
+     *   four minutes, so 1.2 a minute is a generous ceiling.
+     * - forest dawn: 0.15 a second (shade drifting plus a bird's lift), a bird every 14 to
+     *   60 s, so at most 6 a minute and at least a few in ten minutes.
+     * - tin roof rain: 0.2; at the default intensity there is no lightning at all.
+     * - golden hour: 0.085; no events. The scene's own ceiling is 0.08 a second, reached only
+     *   while it fades up from dark over its first dozen seconds.
      */
     private val LIMITS = mapOf(
         AmbienceEffect.FIREPLACE to Limits(0.50f, 0.20f, 24f, 4f),
@@ -83,6 +90,10 @@ class AmbienceComfortTest {
         AmbienceEffect.AURORA to Limits(0.15f, 0.085f, 0f, 0f),
         AmbienceEffect.LIGHT_TRAIN to Limits(0.65f, 0.65f, 1000f, 0f),
         AmbienceEffect.COASTAL_RAIN to Limits(0.35f, 0.25f, 3f, 0f),
+        AmbienceEffect.CANDLELIGHT to Limits(0.25f, 0.10f, 1.2f, 0f),
+        AmbienceEffect.FOREST_DAWN to Limits(0.15f, 0.06f, 6f, 0.3f),
+        AmbienceEffect.TIN_ROOF_RAIN to Limits(0.20f, 0.10f, 1f, 0f),
+        AmbienceEffect.GOLDEN_HOUR to Limits(0.085f, 0.05f, 0f, 0f),
     )
 
     private class Result(
@@ -120,6 +131,8 @@ class AmbienceComfortTest {
         AmbienceEffect.FIREWORKS, AmbienceEffect.FIREWORKS_2 -> e.kind == AmbienceEvent.BURST
         AmbienceEffect.UNDERWATER -> e.kind == AmbienceEvent.SWELL || e.kind == AmbienceEvent.SWEEP
         AmbienceEffect.COASTAL_RAIN -> e.kind == AmbienceEvent.SWEEP || e.kind == AmbienceEvent.STRIKE
+        AmbienceEffect.CANDLELIGHT, AmbienceEffect.FOREST_DAWN -> e.kind == AmbienceEvent.SWELL
+        AmbienceEffect.TIN_ROOF_RAIN -> e.kind == AmbienceEvent.STRIKE
         else -> false
     }
 
