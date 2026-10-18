@@ -12,6 +12,24 @@
     <!-- Downloads run under a dataSync foreground service; see download/DownloadService. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      Wake & Sleep (sunrise alarms). An alarm has to sound at its minute, so it is armed
+      with AlarmManager.setAlarmClock plus an exact stage alarm for the lights and the
+      music fade-in.
+
+      USE_EXACT_ALARM is the right grant for this: it is for apps whose core function is
+      an alarm clock, it cannot be revoked, and it needs no settings visit. It exists from
+      API 33. On API 31 and 32 that permission does not exist, so SCHEDULE_EXACT_ALARM
+      covers those two releases (granted by default there; setAlarmClock itself needs no
+      grant at all). RECEIVE_BOOT_COMPLETED re-arms after a restart, since AlarmManager
+      forgets everything at reboot. USE_FULL_SCREEN_INTENT lets the ringing notification
+      take the screen where the system allows it.
+    -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!--
       Rhythm Lights' haptic feedback: a tap's confirmation reaches the hand before
@@ -476,5 +494,26 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/usb_audio_devices" />
         </activity>
+
+        <!--
+          Wake & Sleep. The service runs the sunrise stages and rings the alarm; the receiver
+          takes the alarm triggers and re-arms after boot, a clock or zone change and an app
+          update. Neither is exported: the system's broadcasts reach a non-exported receiver
+          and our own triggers name the component.
+        -->
+        <service
+            android:name=".wake.WakeService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+        <receiver
+            android:name=".wake.WakeReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

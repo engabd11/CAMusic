@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui.screens.settings
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.GridView
@@ -253,6 +254,14 @@ internal sealed interface IndexRow {
         override val icon = Icons.Default.BarChart
     }
 
+    /** Sunrise alarms and the bedtime wind-down, which is a screen of its own. */
+    data object WakeSleep : IndexRow {
+        override val key = "wake_sleep"
+        override val title = "Wake & Sleep"
+        override val subtitle = "Sunrise alarms with lights and music, and a bedtime wind-down"
+        override val icon = Icons.Default.Alarm
+    }
+
     /** The listening party, which is a screen of its own rather than a page of settings. */
     data object Party : IndexRow {
         override val key = "listening_party"
@@ -278,7 +287,7 @@ internal sealed interface IndexRow {
  */
 internal val settingsIndex: List<IndexRow> = buildList {
     SettingsSection.entries.forEach { section ->
-        if (section == SettingsSection.SYSTEM_ABOUT) { add(IndexRow.Stats); add(IndexRow.Party) }
+        if (section == SettingsSection.SYSTEM_ABOUT) { add(IndexRow.Stats); add(IndexRow.WakeSleep); add(IndexRow.Party) }
         add(IndexRow.Category(section))
     }
 }

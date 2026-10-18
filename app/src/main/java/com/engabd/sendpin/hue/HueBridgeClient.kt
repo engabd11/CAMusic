@@ -125,6 +125,9 @@ class HueBridgeClient(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** Room and zone calls for Wake & Sleep; shares this client's pinned TLS. */
+    val lights: HueLightsApi by lazy { HueLightsApi({ http }) }
+
     // ── Discovery ─────────────────────────────────────────────────────────
 
     private val _discovered = MutableStateFlow<List<DiscoveredBridge>>(emptyList())

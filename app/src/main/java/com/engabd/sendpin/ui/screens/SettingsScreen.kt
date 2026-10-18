@@ -180,6 +180,8 @@ fun SettingsScreen(
     onOpenDownloads: () -> Unit = {},
     /** Stats gets a screen of its own for the same reason. */
     onOpenStats: () -> Unit = {},
+    /** Wake & Sleep is a screen of its own too. */
+    onOpenWakeSleep: () -> Unit = {},
     onOpenParty: () -> Unit = {},
 ) {
     // Back unwinds one level at a time, so a server's page returns to the server list
@@ -352,6 +354,8 @@ fun SettingsScreen(
                             }
                             // A screen, not a section — so it leaves Settings entirely
                             // rather than opening a page underneath this one.
+                            IndexRow.WakeSleep ->
+                                NavRow(row.icon, row.title, row.subtitle, tint, onClick = onOpenWakeSleep)
                             IndexRow.Stats ->
                                 NavRow(row.icon, row.title, row.subtitle, tint, onClick = onOpenStats)
                             IndexRow.Party ->

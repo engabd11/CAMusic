@@ -155,6 +155,22 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    init {
+        // Wake & Sleep asks for a scene when the sleep timer's music ends (and for an
+        // ambience alarm). This is the only door in, because the show's audio and
+        // lights are owned here; see wake/WakeAmbience.
+        com.engabd.sendpin.wake.WakeAmbience.takePending()?.let { wire ->
+            AmbienceEffect.fromWire(wire)?.let { start(it) }
+        }
+        viewModelScope.launch {
+            com.engabd.sendpin.wake.WakeAmbience.requests.collect {
+                com.engabd.sendpin.wake.WakeAmbience.takePending()?.let { wire ->
+                    AmbienceEffect.fromWire(wire)?.let { start(it) }
+                }
+            }
+        }
+    }
+
     fun intensityOf(effect: AmbienceEffect): Float =
         intensities.value[effect.wire] ?: 0.5f
 

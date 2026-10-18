@@ -129,7 +129,12 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val playbackOwner: PlaybackOwner by lazy { PlaybackOwner(localPlayer, playback) }
 
     /** The sleep timer — process-scoped so it fires with no screen open. See the class. */
-    val sleepTimer: com.engabd.sendpin.service.SleepTimer by lazy { com.engabd.sendpin.service.SleepTimer(this) }
+    val sleepTimer: com.engabd.sendpin.service.SleepTimer by lazy {
+        com.engabd.sendpin.service.SleepTimer(this).also {
+            // Wind-down: the timer can dim a room and hand over to a scene. See wake/WindDown.
+            it.listener = com.engabd.sendpin.wake.WindDownController.forApp(this, appScope)
+        }
+    }
 
     /**
      * What's playing right now, as one snapshot spanning [localPlayer], the Sendspin
@@ -631,6 +636,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
             }.onFailure { android.util.Log.w("SendpinApp", "Couldn't publish shortcuts", it) }
         }
     }
+
+    /**
+     * Wake & Sleep: play a library item picked by [searchLibrary]. The same path Android
+     * Auto and the voice assistant use, so it works against whichever library is active.
+     */
+    suspend fun playLibraryItem(mediaId: String) = voiceBridge.play(mediaId)
+
+    /** Playable hits across the connected libraries, for the alarm's source picker. */
+    suspend fun searchLibrary(query: String): List<androidx.media3.common.MediaItem> = voiceBridge.search(query)
 
     fun playFromVoice(query: String?) {
         appScope.launch {
