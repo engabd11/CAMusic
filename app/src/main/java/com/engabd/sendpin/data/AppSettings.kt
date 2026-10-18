@@ -2927,9 +2927,9 @@ class AppSettings(private val context: Context) {
      * The player's tap-timing offset for the rhythm game, in milliseconds.
      *
      * Positive means the player's taps land late relative to the chart (touch
-     * latency, Bluetooth audio, a slow display), so the chart is judged against
-     * a clock shifted later by this much. Measured by the in-game calibration
-     * flow rather than guessed; 0 until then, which is correct for wired audio.
+     * latency, Bluetooth audio, a slow display), so each tap is judged as if it had
+     * come this much earlier. Measured by the in-game calibration flow rather than
+     * guessed; 0 until then, which is correct for wired audio.
      */
     private val GAME_TIMING_OFFSET = intPreferencesKey("game_timing_offset_ms")
 
@@ -2938,6 +2938,18 @@ class AppSettings(private val context: Context) {
 
     suspend fun setGameTimingOffsetMs(value: Int) {
         context.dataStore.edit { it[GAME_TIMING_OFFSET] = value.coerceIn(-300, 300) }
+    }
+
+    private val GAME_LEAD_PROMPT_SHOWN = booleanPreferencesKey("game_lead_prompt_shown")
+
+    /**
+     * True once the player has been offered the one-time timing check that a source
+     * with no measurable output latency (capture and cast feeds) needs.
+     */
+    val gameLeadPromptShown: Flow<Boolean> = pref { it[GAME_LEAD_PROMPT_SHOWN] ?: false }
+
+    suspend fun setGameLeadPromptShown() {
+        context.dataStore.edit { it[GAME_LEAD_PROMPT_SHOWN] = true }
     }
 
     /**

@@ -6,7 +6,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AnalysisFrame
+import com.engabd.sendpin.game.GameTiming
+import com.engabd.sendpin.game.PausableClock
 import kotlin.math.abs
+import kotlin.math.roundToLong
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,11 +40,11 @@ data class CalibrationState(
  * [com.engabd.sendpin.hue.DirectLightSync.gameChartSource] — and the median of
  * twelve deltas becomes the timing offset.
  *
- * The offset is judged-clock-only: the game applies it as `now + offset` inside
+ * The offset is judged-clock-only: the game applies it as `now - offset` inside
  * [RhythmGameViewModel.tap], so the chart, the lights and the bar lines all stay
  * exactly where the music put them. A positive median means the player taps late
- * (touch/display/audio latency) and the judged clock waits for them; a negative
- * one means they tap ahead of the beat.
+ * (touch/display/audio latency) and the judged clock comes back to meet them; a
+ * negative one means they tap ahead of the beat.
  */
 class RhythmCalibrationViewModel(app: Application) : AndroidViewModel(app) {
     private val directLightSync = (app as SendpinApp).directLightSync
@@ -50,13 +53,20 @@ class RhythmCalibrationViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(CalibrationState())
     val state: StateFlow<CalibrationState> = _state.asStateFlow()
 
-    /** The game's clock. Same one the game screen judges taps on. */
-    fun nowMs(): Long = SystemClock.elapsedRealtime()
+    /**
+     * The game's clock: the same pausable millisecond clock the game screen judges taps
+     * on, so a tap here and a tap there are timed the same way.
+     */
+    private val clock = PausableClock { SystemClock.elapsedRealtime() }
+
+    fun nowMs(): Long = clock.now()
 
     fun start() {
         if (running) return
         running = true
+        clock.reset()
         taps.clear()
+        beatAtMs = null
         _state.value = CalibrationState()
     }
 
@@ -73,6 +83,12 @@ class RhythmCalibrationViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Fold one analysis frame in: publish lock state, and remember where the
      * audible beat is so a tap between frames can still be placed.
+     *
+     * Timed from the engine snapshot, exactly as the game charts it: the beat is heard
+     * at the moment the frame was analysed, plus the grid's time to the next beat, plus
+     * the output lead less the frame's lag. The lead used to be subtracted, which put
+     * the pulse a full lead (twice a Bluetooth speaker's delay) away from the audible
+     * beat the game then judged against.
      */
     fun onFrame(frame: AnalysisFrame, leadMs: Long, leadKnown: Boolean) {
         if (!running) return
@@ -83,39 +99,36 @@ class RhythmCalibrationViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(locked = true)
         }
         if (_state.value.locked) {
-            // Where the audible beat is right now. The grid's timeToNextBeat is on
-            // the tAudio clock of the frame it was computed from; folding the
-            // audible lead in lands the pulse on what the player hears, which is
-            // the only thing this screen measures against.
             val periodMs = (grid.periodS * 1000f).coerceAtLeast(1f)
-            val toNext = (grid.timeToNextBeat * 1000f - leadMs).mod(periodMs)
-            lastPeriodMs = periodMs
-            lastPhase = 1f - toNext / periodMs // 0 at the beat, rising to ~1 just before the next
-            lastPhaseAtMs = nowMs()
-            _state.value = _state.value.copy(beatPhase = lastPhase.coerceIn(0f, 1f))
+            val frameMs = if (chart.frameAtMs > 0L) clock.fromSource(chart.frameAtMs) else clock.now()
+            val beat = GameTiming.audibleBeatMs(frameMs, grid.timeToNextBeat, leadMs, chart.frameLagMs)
+            beatAtMs = beat
+            beatPeriodMs = periodMs
+            // 0 at the beat, rising to ~1 just before the next.
+            val phase = (clock.now() - beat).toFloat().mod(periodMs) / periodMs
+            _state.value = _state.value.copy(beatPhase = phase.coerceIn(0f, 1f))
         }
     }
 
     /**
-     * A tap at [nowMs]. Its delta is the remembered beat phase advanced by real
-     * time to the tap's instant — signed distance to the nearest beat, in ms.
+     * A tap at game time [tapMs] (see [GameTiming.tapGameMs]). Its delta is the signed
+     * distance to the nearest audible beat, in ms; positive means the player was late.
      *
      * Taps landing more than 45% of a period from any beat are warm-up, discarded
      * silently: they say "I hadn't found the pulse yet" rather than "the beat is
      * here and I missed it". After twelve usable taps the median is persisted.
      */
-    fun tap(nowMs: Long) {
+    fun tap(tapMs: Long) {
         if (!running || !_state.value.locked || _state.value.done) return
-        val phaseAt = lastPhaseAtMs ?: return
-        if (lastPeriodMs <= 0f) return
-        val advanced = lastPhase + (nowMs - phaseAt) / lastPeriodMs
-        val frac = advanced.mod(1f)
-        val signed = if (frac <= 0.5f) frac * lastPeriodMs else (frac - 1f) * lastPeriodMs
-        if (abs(signed) > lastPeriodMs * 0.45f) return // warm-up; discard
+        val beat = beatAtMs ?: return
+        if (beatPeriodMs <= 0f) return
+        val signed = GameTiming.beatDeltaMs(tapMs, beat, beatPeriodMs)
+        if (abs(signed) > beatPeriodMs * 0.45f) return // warm-up; discard
 
-        taps.add(signed.toLong())
+        taps.add(signed.roundToLong())
         if (taps.size >= TAPS_NEEDED) {
-            val applied = medianOf(taps).coerceIn(-300, 300).toInt()
+            val limit = GameTiming.OFFSET_LIMIT_MS.toLong()
+            val applied = GameTiming.median(taps).coerceIn(-limit, limit).toInt()
             _state.value = _state.value.copy(taps = taps.size, done = true, appliedOffsetMs = applied)
             viewModelScope.launch { settings.setGameTimingOffsetMs(applied) }
         } else {
@@ -123,20 +136,12 @@ class RhythmCalibrationViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** The phase (0..1) of the most recent grid frame, and the wall time it was read. */
-    private var lastPhase = 0f
-    private var lastPeriodMs = 0f
-    private var lastPhaseAtMs: Long? = null
+    /** When an audible beat falls on the game clock, and the grid's period. */
+    private var beatAtMs: Long? = null
+    private var beatPeriodMs = 0f
 
     private val taps = ArrayList<Long>(TAPS_NEEDED + 4)
     private var running = false
-
-    /** Median of the collected deltas, in ms — even counts average the middle pair. */
-    private fun medianOf(values: List<Long>): Long {
-        val sorted = values.sorted()
-        val n = sorted.size
-        return if (n % 2 == 1) sorted[n / 2] else (sorted[n / 2 - 1] + sorted[n / 2]) / 2
-    }
 
     private companion object {
         /** Twelve usable taps: the median of fewer wobbles, more is patience. */

@@ -7,11 +7,11 @@ import com.engabd.sendpin.game.GameRecords
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.game.GameNote
-import com.engabd.sendpin.game.GameBand
+import com.engabd.sendpin.game.GameChartSource
+import com.engabd.sendpin.game.GameTiming
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.NoteGenerator
 import com.engabd.sendpin.game.PausableClock
-import com.engabd.sendpin.game.bandOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,6 +41,11 @@ data class RhythmHud(
     /** Whether the tempo grid has locked, which is what the chart is written against. */
     val locked: Boolean = false,
     val bpm: Float = 0f,
+    /**
+     * The count-in: 4 down to 1 while it runs, 0 once notes are flowing, and -1
+     * while the beat is still being found ("listening").
+     */
+    val countIn: Int = -1,
 )
 
 /**
@@ -70,35 +75,30 @@ internal fun mergeRecord(old: GameRecord?, score: Int, combo: Int, accuracy: Flo
  *
  * ## The one rule this model exists to enforce
  *
- * In this mode the room does not react to the music on its own. The light show still
- * *runs* in full — the beat grid, the track scan, the per-instrument reactions — but
- * [com.engabd.sendpin.hue.DirectLightSync.setGameMode] holds its output down to a dim
- * floor, and the only thing that ever lets it through is a note struck inside its
- * window. That is what makes the game a game: a room that reacted on every beat
- * regardless would look identical whether the player was there or not, and every hit
- * would be invisible inside a show that was already moving.
+ * In this mode the room does not react to the music at all. The music show is switched
+ * off in [com.engabd.sendpin.hue.DirectLightSync.setGameMode], the analysis keeps
+ * running only because the chart is written from its beat grid, and the lamps show a
+ * dim album-colour glow until the player does something. A struck note flashes its
+ * lane's lamps, a missed one leaves a faint ember, and that is every light there is.
+ * That is what makes the game a game: a room that moved on its own would look the same
+ * whether the player was there or not.
  *
- * The reward is the show itself, not a substitute for it. Hitting the kick plays what
- * the room does on a kick, because what is gated is the engine's own frame rather
- * than a flash invented here.
+ * So there are exactly three calls into the light engine, all from a judgement the
+ * player earned or lost ([flashRoom], and the miss and combo-break calls in [tick]),
+ * and no path from an analysis frame to a light anywhere in this file.
  *
- * So there is exactly one call into the light engine — from a [Judgement] that scored
- * points — and no path from an analysis frame to a light anywhere in this file.
+ * ## Clocks
  *
- * ## Clock
+ * The game clock is [SystemClock.elapsedRealtime] less every pause ([PausableClock]):
+ * monotonic, unaffected by the wall clock, and the same clock for the frame collector,
+ * the tap handler and the light render loop (which is handed real time through
+ * [PausableClock.toSource]). Pausing the song freezes it, so the notes hold their place
+ * relative to the line and the run resumes rather than restarting from a board already
+ * past it.
  *
- * [SystemClock.elapsedRealtime]: monotonic, unaffected by the wall clock, and — the
- * point — the same clock for the frame collector and the tap handler. The previous
- * version scheduled notes against the *player's* position when it had one and the
- * wall clock when it did not, which meant a seek, a track change or simply a backend
- * without a position moved every pending note by an arbitrary amount.
- *
- * Wrapped in a [PausableClock], which is the one thing a wall clock cannot do by
- * itself: stop when the music does. Pausing the song used to leave the frame loop
- * advancing over a board nobody could play, and everything on it was retired as a
- * miss. Freezing the clock is deliberately not the same as skipping the scoring —
- * the notes hold their place relative to the line, so the run resumes rather than
- * restarting from a board already past it.
+ * Nothing is stamped on the main thread's arrival time: the chart is written relative to
+ * when the analyser saw each frame, with the lead corrected for the frame's lag, and a
+ * tap is timed from the touch event's own stamp. See [GameTiming].
  */
 class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private val generator = NoteGenerator()
@@ -132,6 +132,14 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         val record: GameRecord,
         val newRecord: Boolean,
         val trackKey: String?,
+        /** Signed tap errors in 50 ms buckets from early (left) to late (right). */
+        val histogram: IntArray = IntArray(0),
+        /** Median signed tap error as judged, in ms; positive is late. Null with too few taps. */
+        val medianErrorMs: Long? = null,
+        /** The offset in use for this run. */
+        val offsetMs: Int = 0,
+        /** The offset that would centre the player's taps, or null when the run was too short to say. */
+        val suggestedOffsetMs: Int? = null,
     )
 
     private val _result = MutableStateFlow<RunResult?>(null)
@@ -148,7 +156,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * The tap-timing offset, in ms, and the difficulty scale — both read from
      * settings and applied at once, so a change lands on the very next frame
      * rather than the next session. Positive offset = the player's taps arrive
-     * late, so the judged clock runs that much later.
+     * late, so the judged clock comes back by that much.
      */
     private var timingOffsetMs = 0
     private var difficultyScale = 1f
@@ -159,6 +167,17 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private var notesReached = 0
     private var notesStruck = 0
     private var running = false
+
+    /** True while the player is on the calibration screen: the run is held, not ended. */
+    private var calibrating = false
+
+    /** Signed tap errors as judged (tap less note, ms), for the results card. */
+    private val tapErrors = ArrayList<Long>()
+
+    private var lastTrackCheckMs = 0L
+
+    /** The chart snapshot last folded in, so one analysis frame is never charted twice. */
+    private var lastChart: GameChartSource? = null
 
     /**
      * The game's clock. Everything here — frames, notes, taps — is on it.
@@ -201,8 +220,15 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * configuration change runs that twice.
      */
     fun start() {
-        if (running) return
+        if (running) {
+            if (calibrating) resumeFromCalibration()
+            return
+        }
         running = true
+        calibrating = false
+        tapErrors.clear()
+        lastTrackCheckMs = 0L
+        lastChart = null
         clock.reset()
         _paused.value = false
         generator.reset()
@@ -220,6 +246,39 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Hold the run while the player visits calibration.
+     *
+     * Leaving the screen for calibration used to end the run, because the screen's
+     * dispose called [stop]. The clock is frozen and game mode stays up instead; the
+     * board is cleared on return (the music kept playing meanwhile, so the old notes no
+     * longer describe it) but the score, combo and accuracy are kept.
+     */
+    fun holdForCalibration() {
+        if (!running) return
+        calibrating = true
+        clock.pause()
+        if (!_paused.value) _paused.value = true
+    }
+
+    private fun resumeFromCalibration() {
+        calibrating = false
+        generator.reset()
+        lastChart = null
+        publishedRevision = -1
+        publish()
+        // The clock is let go again by the screen's next `setPlaying`.
+    }
+
+    /**
+     * The screen left composition. Ends the run unless it is only stepping aside for
+     * calibration, which [holdForCalibration] has already said.
+     */
+    fun onScreenLeft() {
+        if (calibrating) return
+        stop()
+    }
+
+    /**
      * End the run and publish its result for the results sheet.
      *
      * Separate from [stop]: the screen calls this when the player backs out or
@@ -229,12 +288,25 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     fun finish() {
         if (!running) return
         val hud = _hud.value
-        if (hud.score > 0 && currentTrackKey != null) {
+        if (hud.score > 0) {
+            val key = currentTrackKey
             val previousBest = currentRecord?.bestScore ?: 0
             val merged = mergeRecord(currentRecord, hud.score, hud.bestCombo, hud.accuracy)
-            records = records + (currentTrackKey!! to merged)
-            persistRecords()
-            _result.value = RunResult(hud, merged, hud.score > previousBest, currentTrackKey)
+            if (key != null) {
+                records = records + (key to merged)
+                persistRecords()
+            }
+            val enough = tapErrors.size >= MIN_TAPS_FOR_SUGGESTION
+            _result.value = RunResult(
+                hud = hud,
+                record = merged,
+                newRecord = key != null && hud.score > previousBest,
+                trackKey = key,
+                histogram = GameTiming.histogram(tapErrors),
+                medianErrorMs = if (enough) GameTiming.median(tapErrors) else null,
+                offsetMs = timingOffsetMs,
+                suggestedOffsetMs = if (enough) GameTiming.suggestedOffsetMs(timingOffsetMs, tapErrors) else null,
+            )
         }
         stop()
     }
@@ -258,8 +330,13 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Fold in one analysis frame.
      *
-     * [leadMs] is how long until this frame's audio is audible — see [NoteGenerator]
-     * for why the chart is written in audible time rather than analysis time.
+     * [leadMs] is how long until the newest audio the backend has handed over is
+     * audible; the chart is written in audible time, not analysis time (see
+     * [NoteGenerator]). It is corrected here for how far behind that audio the
+     * frame ran, and the chart is placed relative to when the analyser saw the frame
+     * rather than when this thread got round to it. The frame, grid and lag come from
+     * one engine snapshot (`gameChartSource`), not from whatever the conflated frame
+     * flow happened to deliver alongside it.
      *
      * [leadKnown] is false when the backend could not measure an output latency at
      * all (capture/cast feeds report a null AudioLead), in which case the chart
@@ -268,12 +345,37 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * explanation.
      */
     fun onFrame(frame: AnalysisFrame, leadMs: Long, leadKnown: Boolean = leadMs != 0L) {
+        if (!running) return
+        // Drained even when held, so a long pause cannot leave a backlog of stale beats.
+        val onsets = directLightSync.drainGameOnsets()
         // A held run charts nothing. The tap normally goes quiet on its own when the
         // music stops, but the scan-driven and capture feeds can keep delivering, and
         // a note charted against a frozen clock lands on top of the hit line.
-        if (!running || clock.paused) return
+        if (clock.paused) return
         if (leadKnown != _leadKnown.value) _leadKnown.value = leadKnown
-        generator.onFrame(frame, nowMs(), leadMs, directLightSync.gameChartSource())
+
+        val realNow = SystemClock.elapsedRealtime()
+        // A chart that stopped updating (a feed that bypasses the analysis callback)
+        // is no chart: the game then runs on its own loop from the flow's frames.
+        val chart = directLightSync.gameChartSource()
+            ?.takeIf { it.frameAtMs > 0L && realNow - it.frameAtMs <= CHART_STALE_MS }
+
+        for (o in onsets) {
+            val audible = clock.fromSource(o.atMs) + GameTiming.effectiveLeadMs(leadMs, o.lagMs)
+            generator.onOnset(o.beat, o.bass, o.mid, o.midStrength, audible)
+        }
+
+        if (chart != null && chart === lastChart) {
+            publish()
+            return
+        }
+        lastChart = chart
+        // Beat flags come from the onset buffer; stripping them here stops a frame
+        // that is in both from steering the phase loop twice.
+        val source = (chart?.frame ?: frame).copy(beat = false, bassBeat = false, midBeat = false)
+        val frameMs = clock.fromSource(chart?.frameAtMs ?: realNow)
+        val lead = GameTiming.effectiveLeadMs(leadMs, chart?.frameLagMs ?: 0f)
+        generator.onFrame(source, frameMs, lead, chart)
         publish()
     }
 
@@ -322,13 +424,35 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         // Reaping here while the song is paused is what turned a pause into a screen
         // full of misses.
         if (!running || clock.paused) return
-        val missed = generator.reap(now)
+        // A new track means the run is over: show its results rather than carrying a
+        // score from one song into the next. Checked about once a second.
+        if (now - lastTrackCheckMs >= TRACK_CHECK_MS) {
+            lastTrackCheckMs = now
+            val key = runCatching { directLightSync.currentGameTrackKey() }.getOrNull()
+            if (key != null && currentTrackKey != null && key != currentTrackKey && _hud.value.score > 0) {
+                finish()
+                return
+            }
+        }
+        // Reaped on the judged clock and the difficulty's own window: the same pair
+        // `take` searches with, so a note is retired exactly when no tap could still
+        // score it. (It was reaped at the unscaled Normal window, so Expert notes
+        // lingered past their last scoring moment and Easy ones were cut short.)
+        val missed = generator.reap(GameTiming.judgedMs(now, timingOffsetMs), difficultyScale)
         if (missed.isEmpty()) {
             publish()
             return
         }
         notesReached += missed.size
         var hud = _hud.value
+        val hadCombo = hud.combo > 0
+        // Embers on the lanes that were missed, and the colour fading back if a
+        // combo just broke. Nothing flashes: a miss is quiet.
+        val realNow = clock.toSource(now)
+        runCatching {
+            for (lane in missed.map { it.lane }.distinct()) directLightSync.receiveGameMiss(lane, realNow)
+            if (hadCombo) directLightSync.receiveGameComboBreak(realNow)
+        }
         hud = hud.copy(combo = 0, multiplier = 1, missed = hud.missed + missed.size)
         _hud.value = hud.withAccuracy()
         // One event for the run, not one per note: four notes expiring on the same
@@ -353,18 +477,20 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * [NoteGenerator.take] searches is the widest scoring window. A note the player
      * was too late for is not taken here at all — it is reaped by [tick] as a miss.
      *
-     * The tap is judged against `now + timingOffsetMs`: the calibration offset is
-     * the player's own measured touch/output latency, and shifting the *judged*
-     * clock by it centres every window on how the player actually experiences the
-     * beat. The chart itself is untouched — a shifted chart would misplace notes
-     * relative to the lights as well.
+     * The tap is judged against `now - timingOffsetMs`: the calibration offset is how
+     * late the player's taps run (their measured touch and output latency), and
+     * bringing the *judged* clock back by it centres every window on how the player
+     * actually experiences the beat. The chart itself is untouched, because a shifted
+     * chart would misplace notes relative to the music.
      */
     fun tap(lane: Int, now: Long): Judgement? {
         if (!running || clock.paused) return null
-        val judgedNow = now + timingOffsetMs
+        val judgedNow = GameTiming.judgedMs(now, timingOffsetMs)
         val note = generator.take(lane, judgedNow, difficultyScale) ?: return null
-        val delta = kotlin.math.abs(note.triggerTimeMs - judgedNow)
+        val signed = judgedNow - note.triggerTimeMs
+        val delta = kotlin.math.abs(signed)
         val judgement = Judgement.forDelta(delta, difficultyScale)
+        tapErrors.add(signed)
         notesReached++
         notesStruck++
 
@@ -384,7 +510,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         _hud.value = hud.withAccuracy()
         emit(judgement, lane, combo, now)
         if (hapticsOn) haptics(judgement, steppedUp)
-        flashRoom(note, judgement, combo)
+        flashRoom(note, judgement, combo, now, earlyByMs = note.triggerTimeMs - now)
         publish()
         return judgement
     }
@@ -412,33 +538,24 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The one place a light is ever asked to do anything in this mode.
+     * The light a hit earns: its lane's lamps flash.
      *
-     * This does not *paint* anything — it opens the gate that lets the real light
-     * show through for a moment. Which lamps move, and how, is the engine's answer
-     * to what the music is doing at that instant: a kick reads as a kick, a hi-hat
-     * as a hi-hat, with the track scan behind it. Hitting the note buys the
-     * reaction; it does not replace it. See DirectLightSync.setGameMode.
+     * [judgement] sets the peak (a Perfect is full, a Good less than half) and [combo]
+     * deepens the colour and lengthens the glow. A tap that lands before its note is
+     * audible ([earlyByMs] above zero) is held back so the lamp, which takes about
+     * [GameTiming.LIGHT_PIPELINE_MS] to show a command, lights as the beat is heard
+     * rather than ahead of it. A tap on or after the beat goes out at once, because
+     * it can no longer be early.
      *
-     * How *well* it was hit sets how far the gate opens, so a Perfect plays the show
-     * at full and a scrappy Good plays it at rather less. The note's own intensity
-     * moves that a little as well: a note the music barely made was never going to
-     * pay out much.
-     *
-     * The note's band decides *where* in the room the answer lands — bass on the
-     * floor, hats at the ceiling, the melody lane as a colour sweep — so the room
-     * answers in the shape of the music rather than as one undifferentiated flash.
-     *
-     * Best-effort by design: the game is playable with no bridge paired at all, and
-     * a light that cannot be reached must not cost the player a note.
+     * Stamped in real time ([PausableClock.toSource]) because the light render loop is
+     * on another thread and knows nothing of the game clock. Best-effort by design: the
+     * game is playable with no bridge paired at all, and a light that cannot be reached
+     * must not cost the player a note.
      */
-    private fun flashRoom(note: GameNote, judgement: Judgement, combo: Int) {
+    private fun flashRoom(note: GameNote, judgement: Judgement, combo: Int, tapGameMs: Long, earlyByMs: Long) {
         runCatching {
-            directLightSync.receiveGameHit(
-                strength = (judgement.points / 100f) * (0.7f + note.intensity * 0.3f),
-                combo = combo,
-                band = bandOf(note.kind),
-            )
+            val startMs = clock.toSource(tapGameMs) + GameTiming.flashDelayMs(earlyByMs)
+            directLightSync.receiveGameHit(note.lane, judgement, combo, startMs)
         }
     }
 
@@ -458,8 +575,9 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         // Quantised: the raw estimate wanders by fractions of a BPM every frame, and
         // the HUD only ever shows it as a whole number.
         val bpm = generator.bpm
-        if (hud.locked != generator.locked || hud.bpm.toInt() != bpm.toInt()) {
-            _hud.value = hud.copy(locked = generator.locked, bpm = bpm)
+        val countIn = generator.countInBeatsLeft(nowMs())
+        if (hud.locked != generator.locked || hud.bpm.toInt() != bpm.toInt() || hud.countIn != countIn) {
+            _hud.value = hud.copy(locked = generator.locked, bpm = bpm, countIn = countIn)
         }
     }
 
@@ -478,3 +596,12 @@ private fun multiplierFor(combo: Int): Int = when {
     combo >= 10 -> 2
     else -> 1
 }
+
+/** Fewest scored taps before the results card dares suggest a timing offset. */
+private const val MIN_TAPS_FOR_SUGGESTION = 8
+
+/** How often, in game ms, the current track is compared with the one the run started on. */
+private const val TRACK_CHECK_MS = 1000L
+
+/** How old a chart snapshot may be, in ms, before the game stops trusting it. */
+private const val CHART_STALE_MS = 400L
