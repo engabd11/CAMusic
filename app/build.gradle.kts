@@ -373,6 +373,11 @@ dependencies {
     // The speed-limit database ships xz-compressed (20 MB rather than gzip's 38 MB) and
     // is unpacked once on the phone - see SpeedLimitDatabase. Pure Java, public domain.
     implementation(libs.xz)
+    // Listening party: a tiny LAN-only HTTP server for guests' browsers (NanoHTTPD, a
+    // single small jar with no transitive dependencies) and the QR code guests scan
+    // (zxing's core encoder only, no camera or Android module).
+    implementation(libs.nanohttpd)
+    implementation(libs.zxing.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.coil.compose)

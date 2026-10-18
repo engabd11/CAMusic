@@ -139,6 +139,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
         com.engabd.sendpin.service.PlaybackReporter(this)
     }
 
+    /** The one listening party this phone can host: its server, guests and requests. See [com.engabd.sendpin.party.PartyManager]. */
+    val partyManager: com.engabd.sendpin.party.PartyManager by lazy { com.engabd.sendpin.party.PartyManager(this) }
+
     val unifiedNowPlaying: com.engabd.sendpin.service.UnifiedNowPlaying by lazy {
         com.engabd.sendpin.service.UnifiedNowPlaying(playback, localPlayer, playbackOwner, maNowPlaying, deviceVolume)
     }

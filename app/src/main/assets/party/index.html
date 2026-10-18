@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <title>CAMusic listening party</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main id="app">
+    <header class="top">
+      <h1>Listening party</h1>
+      <p id="who" class="muted" hidden></p>
+    </header>
+
+    <section id="join" class="card" hidden aria-labelledby="join-title">
+      <h2 id="join-title">Join in</h2>
+      <p class="muted">Pick a name so everyone can see who added what. It stays on this phone.</p>
+      <form id="join-form" autocomplete="off">
+        <label for="name">Your name</label>
+        <input id="name" name="name" type="text" maxlength="24" placeholder="e.g. Sam" required>
+        <button type="submit" class="primary">Join the party</button>
+      </form>
+    </section>
+
+    <div id="party" hidden>
+      <section class="card now" aria-labelledby="now-title">
+        <h2 id="now-title" class="eyebrow">Now playing</h2>
+        <div class="row">
+          <img id="now-art" class="art" alt="" width="72" height="72" hidden>
+          <div class="art placeholder" id="now-art-empty" aria-hidden="true">&#9835;</div>
+          <div class="grow">
+            <p id="now-title-text" class="title">Nothing playing yet</p>
+            <p id="now-artist" class="muted"></p>
+          </div>
+        </div>
+        <progress id="now-progress" max="100" value="0" aria-label="Song progress" hidden></progress>
+        <div class="row skip-row">
+          <button id="skip" type="button" class="secondary" hidden>Vote to skip</button>
+          <p id="skip-note" class="muted" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="next-title">
+        <h2 id="next-title" class="eyebrow">Up next</h2>
+        <ul id="next" class="list"></ul>
+        <p id="next-empty" class="muted">The queue is empty. Add something!</p>
+      </section>
+
+      <section class="card" aria-labelledby="search-title">
+        <h2 id="search-title" class="eyebrow">Add a song</h2>
+        <form id="search-form" role="search" autocomplete="off">
+          <label for="q" class="sr">Search songs</label>
+          <input id="q" type="search" maxlength="80" placeholder="Search songs, artists or albums" enterkeyhint="search">
+        </form>
+        <ul id="results" class="list"></ul>
+        <p id="results-note" class="muted" role="status" aria-live="polite"></p>
+      </section>
+    </div>
+
+    <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -192,6 +192,9 @@ class AppSettings(private val context: Context) {
         /** The stream cache's size in MB; mirrored to [bootPrefs] for the cache's first open. */
         private val MEDIA_CACHE_MB = intPreferencesKey("media_cache_mb")
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // keep the music going past the queue
+        private val PARTY_IDLE_HOURS = intPreferencesKey("party_idle_hours")
+        private val PARTY_APPROVE_FIRST = booleanPreferencesKey("party_approve_first")
+        private val PARTY_SKIP_MODE = stringPreferencesKey("party_skip_mode")
         private val SEARCH_ALL_LIBRARIES = booleanPreferencesKey("search_all_libraries") // library search asks every server
         // Scrobbling to ListenBrainz / Last.fm (see scrobble/). Tokens are encrypted.
         private val LB_ENABLED = booleanPreferencesKey("listenbrainz_enabled")
@@ -1503,6 +1506,19 @@ class AppSettings(private val context: Context) {
      * search always did, and the one a listener expects until they ask for more.
      */
     val searchAllLibraries: Flow<Boolean> = pref { it[SEARCH_ALL_LIBRARIES] ?: false }
+
+    /** Hours a listening party may sit with no guest activity before it ends itself. Default 4. */
+    val partyIdleHours: Flow<Int> = pref { (it[PARTY_IDLE_HOURS] ?: 4).coerceIn(1, 24) }
+
+    /** Whether a listening party holds guests' songs for the host to approve. Off by default. */
+    val partyApproveFirst: Flow<Boolean> = pref { it[PARTY_APPROVE_FIRST] ?: false }
+
+    /** The [com.engabd.sendpin.party.SkipMode] name last used for votes to skip. */
+    val partySkipMode: Flow<String> = pref { it[PARTY_SKIP_MODE] ?: "OFF" }
+
+    suspend fun setPartyIdleHours(hours: Int) { context.dataStore.edit { it[PARTY_IDLE_HOURS] = hours.coerceIn(1, 24) } }
+    suspend fun setPartyApproveFirst(value: Boolean) { context.dataStore.edit { it[PARTY_APPROVE_FIRST] = value } }
+    suspend fun setPartySkipMode(name: String) { context.dataStore.edit { it[PARTY_SKIP_MODE] = name } }
 
     /**
      * Seconds of fade between tracks on the local player. 0 — the default — is
