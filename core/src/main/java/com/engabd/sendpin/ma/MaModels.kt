@@ -637,8 +637,34 @@ data class MaQueueItem(
     val available: Boolean = true,
 )
 
-/** One timed line of an LRC lyric. */
-data class LyricLine(val atMs: Long, val text: String)
+/**
+ * One sung word (or syllable) of a line.
+ *
+ * [text] keeps its trailing space, so joining a line's words gives the line back.
+ * [estimated] marks a timing that was worked out from the line's length rather than
+ * read from the source, so the UI can draw it a little softer.
+ */
+@Immutable
+data class LyricWord(
+    val atMs: Long,
+    val endMs: Long,
+    val text: String,
+    val estimated: Boolean = false,
+)
+
+/**
+ * One timed line of an LRC lyric.
+ *
+ * [words] is null for a line-synced source. [background] is a backing vocal (TTML
+ * `x-bg`, or `[bg:]` in enhanced LRC), which the pane draws smaller.
+ */
+@Immutable
+data class LyricLine(
+    val atMs: Long,
+    val text: String,
+    val words: List<LyricWord>? = null,
+    val background: Boolean = false,
+)
 
 /**
  * Lyrics for a track, plain or LRC-timed.
@@ -660,28 +686,11 @@ data class MaLyrics(
      */
     val lines: List<LyricLine> by lazy {
         if (!synced) return@lazy text.lines().map { LyricLine(0, it.trim()) }
-        val out = mutableListOf<LyricLine>()
-        for (raw in text.lines()) {
-            val stamps = LRC_STAMP.findAll(raw).toList()
-            if (stamps.isEmpty()) continue
-            val body = raw.substring(stamps.last().range.last + 1).trim()
-            for (m in stamps) {
-                val (mm, ss, frac) = m.destructured
-                // The fraction is 2 or 3 digits (centi- or milliseconds).
-                val fracMs = when (frac.length) {
-                    0 -> 0L
-                    2 -> frac.toLong() * 10
-                    else -> frac.padEnd(3, '0').take(3).toLong()
-                }
-                out += LyricLine(mm.toLong() * 60_000 + ss.toLong() * 1_000 + fracMs, body)
-            }
-        }
-        out.sortedBy { it.atMs }
+        LrcParser.parse(text)
     }
 
-    private companion object {
-        val LRC_STAMP = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{2,3}))?]""")
-    }
+    /** Whether the source itself carries word timing on any line. */
+    val hasWordTiming: Boolean by lazy { synced && lines.any { it.words != null && it.words.none { w -> w.estimated } } }
 }
 
 /**

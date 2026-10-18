@@ -32,6 +32,42 @@ class StructuredLyricsTest {
         assertEquals("first", r.lines.first().text)
     }
 
+    /** Word cues, where a server sends them, become enhanced-LRC word stamps. */
+    @Test
+    fun `cue entries become word stamps`() {
+        val r = StructuredLyrics.parse(
+            arr(
+                """[{"synced":true,"line":[
+                     {"start":1000,"value":"Hello world","cue":[
+                        {"start":1000,"end":1500,"value":"Hello "},
+                        {"start":1500,"end":2200,"value":"world"}]}]}]"""
+            )
+        )!!
+        val line = r.lines.single()
+        assertEquals("Hello world", line.text)
+        assertEquals(listOf(1_000L, 1_500L), line.words!!.map { it.atMs })
+        assertEquals(2_200L, line.words!!.last().endMs)
+    }
+
+    @Test
+    fun `cues with byte ranges slice the line text`() {
+        val r = StructuredLyrics.parse(
+            arr(
+                """[{"synced":true,"line":[
+                     {"start":0,"value":"ab cd","cue":[
+                        {"start":0,"end":400,"byteStart":0,"byteEnd":3},
+                        {"start":400,"end":900,"byteStart":3,"byteEnd":5}]}]}]"""
+            )
+        )!!
+        assertEquals(listOf("ab ", "cd"), r.lines.single().words!!.map { it.text })
+    }
+
+    @Test
+    fun `lines without cues stay line level`() {
+        val r = StructuredLyrics.parse(arr("""[{"synced":true,"line":[{"start":0,"value":"x"}]}]"""))!!
+        assertNull(r.lines.single().words)
+    }
+
     /**
      * A server that lists a plain set before the synced one used to win, because the
      * first entry was taken unconditionally.

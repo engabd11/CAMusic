@@ -52,12 +52,47 @@ internal object StructuredLyrics {
                 // that line bare, and MaLyrics drops unstamped lines out of a synced
                 // set, so the first line silently disappeared.
                 if (synced && start >= 0) append(lrcStamp(start))
-                append(value)
+                // Word cues, where the server sends them (OpenSubsonic `cue` / `cueLine`
+                // entries with their own start and end), become enhanced-LRC word stamps.
+                val cued = if (synced) cuedBody(line, value, offset) else null
+                append(cued ?: value)
                 append('\n')
             }
         }
         return MaLyrics(text.trimEnd(), synced = synced)
     }
+
+    /**
+     * The line's body with `<m:ss.mmm>` stamps before each cue, or null if it has no
+     * usable cues. A cue's text is its `value`, or else the slice of the line named by
+     * `byteStart`/`byteEnd` (UTF-8 byte offsets). Cues without a start are ignored, and
+     * anything odd falls back to the plain line rather than failing the whole set.
+     */
+    private fun cuedBody(line: JsonObject, value: String, offset: Long): String? {
+        val cues = ((line["cue"] ?: line["cueLine"]) as? JsonArray)?.mapNotNull { it as? JsonObject }
+        if (cues.isNullOrEmpty()) return null
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        val sb = StringBuilder()
+        var lastEnd = -1L
+        for (cue in cues) {
+            val start = cue.longOf("start")?.plus(offset)?.coerceAtLeast(0L) ?: continue
+            val text = cue["value"]?.jsonPrimitive?.contentOrNull
+                ?: run {
+                    val b0 = cue.longOf("byteStart")?.toInt() ?: return@run null
+                    val b1 = cue.longOf("byteEnd")?.toInt() ?: return@run null
+                    if (b0 < 0 || b1 > bytes.size || b0 >= b1) null else String(bytes, b0, b1 - b0, Charsets.UTF_8)
+                }
+                ?: continue
+            sb.append(wordStamp(start)).append(text)
+            lastEnd = cue.longOf("end")?.plus(offset) ?: -1L
+        }
+        if (sb.isEmpty()) return null
+        if (lastEnd >= 0) sb.append(wordStamp(lastEnd.coerceAtLeast(0L)))
+        return sb.toString()
+    }
+
+    private fun wordStamp(ms: Long): String =
+        "<${ms / 60_000}:${((ms % 60_000) / 1_000).toString().padStart(2, '0')}.${(ms % 1_000).toString().padStart(3, '0')}>"
 
     /** `[m:ss.cc]`, the shape MaLyrics' own parser accepts. */
     private fun lrcStamp(ms: Long): String {
