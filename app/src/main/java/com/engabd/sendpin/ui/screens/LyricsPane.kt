@@ -76,6 +76,7 @@ import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.theme.AppFont
 import com.engabd.sendpin.ui.theme.TextFaint
 import com.engabd.sendpin.ui.theme.TextMuted
+import com.engabd.sendpin.ui.theme.TextPrimary
 import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
@@ -556,8 +557,22 @@ private val FILL_FEATHER = 14.dp
 /** The softer wipe for word times that were estimated, not read from the source. */
 private val FILL_FEATHER_ESTIMATED = 26.dp
 
-/** An estimated fill is a little less saturated, so it never claims to be exact. */
-private const val ESTIMATED_FILL_ALPHA = 0.82f
+/** An estimated fill is a touch lighter, so it never claims to be exact, but still reads at a glance. */
+private const val ESTIMATED_FILL_ALPHA = 0.92f
+
+/**
+ * The words of the live line still to come: the theme's primary text at this opacity.
+ * TextMuted was used first, and an accent taken from album art often sits at nearly the
+ * same brightness as it, so the wipe was barely visible. Primary text dimmed this far
+ * reads as "not yet" on both themes and leaves a wide step up to the fill.
+ */
+private const val UNSUNG_ALPHA = 0.35f
+
+/**
+ * How far the fill leans from the accent toward primary text. A dark or muted accent
+ * still lands bright against [UNSUNG_ALPHA], and a bright one keeps most of its colour.
+ */
+private const val FILL_TOWARD_TEXT = 0.35f
 
 private val TranslationTextStyle = TextStyle(
     fontFamily = AppFont,
@@ -606,7 +621,8 @@ private fun LyricRow(
     // "still to come" colour and the accent is painted over it. A line without word
     // timing lights up whole, as it always did.
     val wordFill = live && line.words != null
-    val baseColor = if (wordFill) TextMuted else lerp(resting, accent, activeness)
+    val baseColor = if (wordFill) TextPrimary.copy(alpha = UNSUNG_ALPHA) else lerp(resting, accent, activeness)
+    val fillColor = lerp(accent, TextPrimary, FILL_TOWARD_TEXT)
     val background = line.background
 
     Column(
@@ -665,7 +681,7 @@ private fun LyricRow(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         if (wordFill) {
-            WordFillText(line, headMs, baseColor, accent, reducedMotion, Modifier.fillMaxWidth())
+            WordFillText(line, headMs, baseColor, fillColor, reducedMotion, Modifier.fillMaxWidth())
         } else {
             Text(line.text, style = LyricTextStyle, color = baseColor, modifier = Modifier.fillMaxWidth())
         }

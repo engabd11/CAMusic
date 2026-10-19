@@ -74,3 +74,14 @@
 -keepclassmembers class * extends androidx.work.InputMerger {
     public <init>();
 }
+
+# ML Kit (lyric translation) finds its parts through Firebase's component discovery,
+# which builds each ComponentRegistrar named in the manifest by reflection through its
+# no-argument constructor. ML Kit's bundled rules keep the class names but not that
+# constructor, R8's full mode strips it, and every registrar then failed at startup
+# ("Could not instantiate ...NaturalLanguageTranslateRegistrar", NoSuchMethodException
+# <init> []), so translation said "isn't working on this phone" in every release build
+# of 0.17.0. The same trap as the InputMerger rule above.
+-keep class * implements com.google.firebase.components.ComponentRegistrar {
+    public <init>();
+}
