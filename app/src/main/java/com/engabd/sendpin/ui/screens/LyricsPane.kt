@@ -27,6 +27,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -42,6 +44,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
@@ -106,6 +110,7 @@ fun LyricsPane(
     val online by viewModel.lyricsOnline.collectAsStateWithLifecycle()
     val wordByWord by viewModel.lyricsWordByWord.collectAsStateWithLifecycle()
     val translation by viewModel.lyricsTranslation.collectAsStateWithLifecycle()
+    val aboutOn by viewModel.lyricsAbout.collectAsStateWithLifecycle()
     // The two nudges add: the Settings one for a provider, this song's for itself.
     val offsetMs = globalOffsetMs + songOffsetMs
 
@@ -152,6 +157,7 @@ fun LyricsPane(
                 } else {
                     Column(Modifier.fillMaxSize()) {
                         (translation as? LyricsTranslation.Working)?.let { TranslationStatus(it.message, accent) }
+                        (translation as? LyricsTranslation.Ready)?.about?.takeIf { aboutOn }?.let { AboutSong(it) }
                         SyncedLyrics(
                             lyrics, positionMs, accent, offsetMs, wordByWord,
                             when (val t = translation) {
@@ -328,9 +334,12 @@ private fun LyricsFooter(
     translation: LyricsTranslation,
 ) {
     // Why there is no translation, said once and quietly. A working one needs no words.
-    (translation as? LyricsTranslation.Note)?.let {
+    // A finished one can still have something to say: which translator really did it.
+    val quiet = (translation as? LyricsTranslation.Note)?.message
+        ?: (translation as? LyricsTranslation.Ready)?.notice
+    quiet?.let { message ->
         Text(
-            it.message,
+            message,
             color = TextFaint, fontFamily = AppFont, fontSize = 10.sp, lineHeight = 14.sp,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
         )
@@ -356,6 +365,41 @@ private fun LyricsFooter(
                     .padding(horizontal = 8.dp, vertical = 10.dp),
             )
             FooterButton("Later", "Show these lyrics later") { viewModel.nudgeLyrics(-com.engabd.sendpin.lyrics.LyricsOffsets.STEP_MS) }
+        }
+    }
+}
+
+/**
+ * The AI's note on what the song is about: one quiet line until tapped, then the few
+ * sentences. Collapsed per song, so a long note never pushes the first lyric down by default.
+ */
+@Composable
+private fun AboutSong(about: String) {
+    var open by remember(about) { mutableStateOf(false) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clickable(
+                onClickLabel = if (open) "Hide what this song is about" else "Show what this song is about",
+                role = androidx.compose.ui.semantics.Role.Button,
+            ) { open = !open }
+            .semantics { stateDescription = if (open) "Expanded" else "Collapsed" }
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+            Text("About this song", color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp)
+            Icon(
+                if (open) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = null, tint = TextSecondary, modifier = Modifier.size(16.dp),
+            )
+        }
+        if (open) {
+            Text(
+                about,
+                color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp, lineHeight = 17.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            )
         }
     }
 }

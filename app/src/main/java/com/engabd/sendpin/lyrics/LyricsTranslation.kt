@@ -12,8 +12,16 @@ sealed interface LyricsTranslation {
      */
     data class Working(val message: String, val partial: List<String?>? = null) : LyricsTranslation
 
-    /** One entry per lyric line, same order as `MaLyrics.lines`. */
-    data class Ready(val lines: List<String?>) : LyricsTranslation
+    /**
+     * One entry per lyric line, same order as `MaLyrics.lines`. [about] is the AI's short
+     * note on what the song is about, when there is one. [notice] is a quiet line to show
+     * with the lines, e.g. that this is the fallback translator rather than the chosen one.
+     */
+    data class Ready(
+        val lines: List<String?>,
+        val about: String? = null,
+        val notice: String? = null,
+    ) : LyricsTranslation
 
     /** Why there is no translation, in words for the listener. */
     data class Note(val message: String) : LyricsTranslation

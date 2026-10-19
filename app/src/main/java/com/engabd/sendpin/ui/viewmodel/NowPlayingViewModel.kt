@@ -32,6 +32,7 @@ import com.engabd.sendpin.lyrics.LocalLyrics
 import com.engabd.sendpin.lyrics.Lrclib
 import com.engabd.sendpin.lyrics.LyricsOffsets
 import com.engabd.sendpin.lyrics.LyricsTranslation
+import com.engabd.sendpin.lyrics.AiLyricsTranslator
 import com.engabd.sendpin.lyrics.LyricsTranslator
 import com.engabd.sendpin.ma.MaNowPlaying
 import com.engabd.sendpin.ma.MaParse
@@ -1076,7 +1077,17 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val _lyricsTranslation = MutableStateFlow<LyricsTranslation>(LyricsTranslation.Off)
     val lyricsTranslation: StateFlow<LyricsTranslation> = _lyricsTranslation
 
-    private data class TranslateRequest(val lyrics: MaLyrics?, val on: Boolean, val lang: String, val wifiOnly: Boolean)
+    private data class AiSettings(val useAi: Boolean, val url: String, val model: String, val key: String)
+
+    private data class TranslateRequest(
+        val lyrics: MaLyrics?, val on: Boolean, val lang: String, val wifiOnly: Boolean, val ai: AiSettings,
+    )
+
+    private val aiTranslator = AiLyricsTranslator()
+
+    /** Show the AI's "About this song" note, the Settings switch. */
+    val lyricsAbout: StateFlow<Boolean> = settings.lyricsAbout
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     /** The listener asked for an online search for this song, once. Cleared per song. */
     private var searchOnlineOnce = false
@@ -2292,10 +2303,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // Translation follows the lyrics and the settings. collectLatest, so a new
         // track or a changed language abandons the one in flight.
         viewModelScope.launch {
+            val ai = combine(
+                settings.lyricsTranslator, settings.lyricsAiUrl, settings.lyricsAiModel, settings.lyricsAiKey,
+            ) { which, url, model, key -> AiSettings(which == "ai", url, model, key) }
             combine(
                 _lyrics, settings.lyricsTranslate, settings.lyricsTranslateLang,
-                settings.lyricsTranslateWifiOnly,
-            ) { load, on, lang, wifi -> TranslateRequest((load as? Load.Ready)?.value, on, lang, wifi) }
+                settings.lyricsTranslateWifiOnly, ai,
+            ) { load, on, lang, wifi, aiSettings ->
+                TranslateRequest((load as? Load.Ready)?.value, on, lang, wifi, aiSettings)
+            }
                 .distinctUntilChanged()
                 .collectLatest { req ->
                     val lyrics = req.lyrics
@@ -2303,14 +2319,46 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                         _lyricsTranslation.value = LyricsTranslation.Off
                         return@collectLatest
                     }
+                    val texts = lyrics.lines.map { it.text }
+                    val key = songKey() ?: lyrics.text.hashCode().toString()
+                    var notice: String? = null
+                    if (req.ai.useAi) {
+                        val config = AiLyricsTranslator.Config(req.ai.url, req.ai.model, req.ai.key)
+                        if (!config.usable) {
+                            notice = "Add your AI's address and model in Settings to translate with it."
+                        } else {
+                            _lyricsTranslation.value = LyricsTranslation.Working("Asking ${config.model} to translate...")
+                            when (
+                                val r = aiTranslator.translate(
+                                    config, texts, AiLyricsTranslator.targetName(req.lang), getApplication<Application>().cacheDir, key,
+                                ) { _lyricsTranslation.value = LyricsTranslation.Working(it) }
+                            ) {
+                                is AiLyricsTranslator.Result.Done -> {
+                                    _lyricsTranslation.value = LyricsTranslation.Ready(r.lines, r.about)
+                                    return@collectLatest
+                                }
+                                AiLyricsTranslator.Result.SameLanguage -> {
+                                    _lyricsTranslation.value = LyricsTranslation.Off
+                                    return@collectLatest
+                                }
+                                is AiLyricsTranslator.Result.Failed -> notice = r.reason
+                            }
+                        }
+                        // The chosen translator could not do it. Fall back to the phone's own
+                        // only when there is one, and say so rather than mixing silently.
+                        if (!LyricsTranslator.isAvailable(getApplication())) {
+                            _lyricsTranslation.value = LyricsTranslation.Note(notice ?: "Translation isn't available.")
+                            return@collectLatest
+                        }
+                        notice = "$notice This is Google's on-phone translation instead."
+                    }
                     _lyricsTranslation.value = LyricsTranslation.Working("Translating on this phone...")
                     _lyricsTranslation.value = when (
                         val r = LyricsTranslator.translate(
-                            getApplication(), lyrics.lines.map { it.text }, req.lang, req.wifiOnly,
-                            songKey() ?: lyrics.text.hashCode().toString(),
+                            getApplication(), texts, req.lang, req.wifiOnly, key,
                         ) { _lyricsTranslation.value = it }
                     ) {
-                        is LyricsTranslator.Result.Done -> LyricsTranslation.Ready(r.lines)
+                        is LyricsTranslator.Result.Done -> LyricsTranslation.Ready(r.lines, notice = notice)
                         LyricsTranslator.Result.SameLanguage -> LyricsTranslation.Off
                         LyricsTranslator.Result.NeedsWifi -> LyricsTranslation.Note(
                             "Connect to Wi-Fi to fetch the translation language, or allow mobile data in Settings.",

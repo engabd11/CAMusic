@@ -225,6 +225,11 @@ class AppSettings(private val context: Context) {
         private val LYRICS_TRANSLATE = booleanPreferencesKey("lyrics_translate")
         private val LYRICS_TRANSLATE_LANG = stringPreferencesKey("lyrics_translate_lang") // "" = device language
         private val LYRICS_TRANSLATE_WIFI_ONLY = booleanPreferencesKey("lyrics_translate_wifi_only")
+        private val LYRICS_TRANSLATOR = stringPreferencesKey("lyrics_translator") // "mlkit" | "ai"
+        private val LYRICS_AI_URL = stringPreferencesKey("lyrics_ai_url")
+        private val LYRICS_AI_MODEL = stringPreferencesKey("lyrics_ai_model")
+        private val LYRICS_AI_KEY = stringPreferencesKey("lyrics_ai_key")         // encrypted
+        private val LYRICS_ABOUT = booleanPreferencesKey("lyrics_about")
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
         // Driving mode — a slim always-on-top transport for a phone in a cradle.
@@ -564,6 +569,7 @@ class AppSettings(private val context: Context) {
             MA_PASSWORD.name, NAV_PASSWORD.name, HA_TOKEN.name,
             HUE_APP_KEY.name, HUE_CLIENT_KEY.name,
             LB_TOKEN.name, LASTFM_SESSION.name, LASTFM_API_SECRET.name,
+            LYRICS_AI_KEY.name,
         )
 
         /** Not a real preference key — [SERVERS]' decrypted export lives under this in the JSON. */
@@ -1442,6 +1448,30 @@ class AppSettings(private val context: Context) {
     val lyricsTranslateWifiOnly: Flow<Boolean> = pref { it[LYRICS_TRANSLATE_WIFI_ONLY] ?: true }
 
     suspend fun setLyricsTranslateWifiOnly(on: Boolean) = context.dataStore.edit { it[LYRICS_TRANSLATE_WIFI_ONLY] = on }
+
+    /** Which translator: "mlkit" (on this phone, the default) or "ai" (the listener's own AI). */
+    val lyricsTranslator: Flow<String> = pref { it[LYRICS_TRANSLATOR]?.takeIf { v -> v == "ai" } ?: "mlkit" }
+
+    suspend fun setLyricsTranslator(value: String) = context.dataStore.edit { it[LYRICS_TRANSLATOR] = value }
+
+    /** The AI's address, e.g. http://192.168.1.10:11434/v1. Empty until set. */
+    val lyricsAiUrl: Flow<String> = pref { it[LYRICS_AI_URL] ?: "" }
+
+    val lyricsAiModel: Flow<String> = pref { it[LYRICS_AI_MODEL] ?: "" }
+
+    /** The AI's API key, if it wants one. Encrypted at rest, and in the passphrase-encrypted backup. */
+    val lyricsAiKey: Flow<String> = pref { Crypto.decrypt(it[LYRICS_AI_KEY] ?: "") }
+
+    suspend fun setLyricsAi(url: String, model: String, key: String) = context.dataStore.edit {
+        it[LYRICS_AI_URL] = url.trim()
+        it[LYRICS_AI_MODEL] = model.trim()
+        it[LYRICS_AI_KEY] = Crypto.encrypt(key.trim())
+    }
+
+    /** Show the short "About this song" note above translated lyrics. On by default. */
+    val lyricsAbout: Flow<Boolean> = pref { it[LYRICS_ABOUT] ?: true }
+
+    suspend fun setLyricsAbout(on: Boolean) = context.dataStore.edit { it[LYRICS_ABOUT] = on }
 
     suspend fun setLyricsOffsetMs(ms: Int) = context.dataStore.edit {
         it[LYRICS_OFFSET_MS] = ms.coerceIn(-MAX_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS).toString()
