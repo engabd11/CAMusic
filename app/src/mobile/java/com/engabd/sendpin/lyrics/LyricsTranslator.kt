@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.util.Log
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.tasks.Task
@@ -59,6 +60,7 @@ object LyricsTranslator {
         data class Failed(val reason: String) : Result
     }
 
+    private const val TAG = "LyricsTranslator"
     private const val DOWNLOAD_TIMEOUT_MS = 180_000L
     private val json = Json { ignoreUnknownKeys = true }
     private val listSerializer = ListSerializer(String.serializer().nullable)
@@ -147,6 +149,9 @@ object LyricsTranslator {
             throw e
         } catch (t: Throwable) {
             // NoClassDefFoundError / ApiException from a phone with no usable service land here.
+            // Logged in full: the listener's message is deliberately plain, so this line is
+            // the only place the real cause shows up.
+            Log.w(TAG, "Lyric translation failed", t)
             Result.Failed("Translation isn't working on this phone right now.")
         }
     }
