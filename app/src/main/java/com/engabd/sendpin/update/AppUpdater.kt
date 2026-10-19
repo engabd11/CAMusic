@@ -33,8 +33,9 @@ import java.security.MessageDigest
  * releases page, picking the right file and sideloading it. This does those steps in
  * place: ask GitHub for the latest release, download the APK for this build's flavour,
  * check it, and hand it to Android's installer, which shows its own confirmation.
- * Nothing runs unless the user taps Check — no background polling, no network call on
- * launch — because the app talks to nobody it was not asked to.
+ * Checking is the user's tap, plus one quiet version-number lookup a day that only
+ * raises a notification ([UpdateCheckWorker]) and can be switched off. It never
+ * downloads or installs anything by itself.
  *
  * A singleton with its own scope, not a ViewModel: a 70 MB download should outlive
  * the user leaving the page, and coming back should show where it got to.
@@ -154,6 +155,18 @@ object AppUpdater {
     fun permissionIntent(context: Context): Intent =
         Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
 
+    /**
+     * The background check found [release]: show it on the About page when it is next
+     * opened. Only over a state that has nothing in flight, so a download under way, or
+     * an install the user is part way through, is never replaced by a fresh offer.
+     */
+    internal fun offer(release: ReleaseInfo) {
+        val s = _state.value
+        if (s is State.Idle || s is State.UpToDate || s is State.Available || (s is State.Failed && s.release == null)) {
+            _state.value = State.Available(release)
+        }
+    }
+
     /** Back to the start, from a result the user has read. */
     fun reset() {
         if (job?.isActive == true) return
@@ -162,7 +175,8 @@ object AppUpdater {
 
     // ── Steps ─────────────────────────────────────────────────────────────
 
-    private suspend fun fetchLatest(): ReleaseInfo? = withContext(Dispatchers.IO) {
+    /** Also the background check's one network call; see [UpdateCheckWorker]. */
+    internal suspend fun fetchLatest(): ReleaseInfo? = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(LATEST_URL)
             .header("Accept", "application/vnd.github+json")

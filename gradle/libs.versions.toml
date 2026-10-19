@@ -31,6 +31,9 @@ coil = "2.7.0"
 profileinstaller = "1.4.1"
 datastore = "1.2.1"
 glance = "1.1.1"
+# Already on the classpath through Glance; named here at the version Gradle resolves so the
+# update check owns its dependency and a Glance bump cannot silently move it.
+work = "2.7.1"
 media3 = "1.11.1"
 librespot = "1.6.5"
 slf4j-android = "2.0.20-0"
@@ -77,6 +80,7 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coil" }
 profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version.ref = "profileinstaller" }
 datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 glance-appwidget = { module = "androidx.glance:glance-appwidget", version.ref = "glance" }
 media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
 media3-session = { module = "androidx.media3:media3-session", version.ref = "media3" }

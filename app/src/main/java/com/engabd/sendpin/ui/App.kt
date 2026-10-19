@@ -567,7 +567,15 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
             app.appRoute.collect { route ->
                 if (route != null) {
                     app.appRoute.value = null
-                    goLatest(route)
+                    if (route == com.engabd.sendpin.MainActivity.APP_ROUTE_UPDATE) {
+                        // The update notification: Settings, About. Section last, as
+                        // going to "settings" from the tab itself unwinds it.
+                        goLatest("settings")
+                        settingsSection = SettingsSection.SYSTEM_ABOUT
+                        settingsDetail = com.engabd.sendpin.ui.screens.settings.SYS_ABOUT_ROUTE
+                    } else {
+                        goLatest(route)
+                    }
                 }
             }
         }

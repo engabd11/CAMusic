@@ -792,6 +792,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // it runs off the main thread rather than blocking onCreate on a DataStore read.
             appScope.launch { if (AppSettings(this@SendpinApp).pauseForCalls.first()) callPauseObserver.start() }
             speedMonitor.start()
+            // Keeps the daily "new version" check scheduled (or cancelled) to match the setting.
+            appScope.launch(Dispatchers.IO) {
+                com.engabd.sendpin.update.UpdateCheckWorker.sync(this@SendpinApp, AppSettings(this@SendpinApp).updateNotify.first())
+            }
             appScope.launch { if (AppSettings(this@SendpinApp).sensorGestures.first()) playbackGestureMonitor.start() }
         }
         // The storage cap evicts oldest-first, and the one file it must never take is

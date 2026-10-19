@@ -418,6 +418,8 @@ dependencies {
     // own Ink/accent tokens like every other surface, and pulling in a second theme
     // system to restate them would be the only thing it was used for.
     implementation(libs.glance.appwidget)
+    // The once-a-day "a new version is out" check; see update/UpdateCheckWorker.
+    implementation(libs.work.runtime.ktx)
     // The Navidrome/offline player. MediaPlayer could not do gapless reliably
     // (setNextMediaPlayer is OEM-dependent), reported nothing about the format it
     // was decoding, and had no stage to apply ReplayGain in.

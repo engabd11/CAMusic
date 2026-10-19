@@ -15,6 +15,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -26,9 +28,12 @@ import com.engabd.sendpin.BuildConfig
 import com.engabd.sendpin.ui.theme.AppFont
 import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.theme.inkOn
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.update.AppUpdater
 import com.engabd.sendpin.update.AppUpdater.State
 import com.engabd.sendpin.update.ReleaseInfo
+import com.engabd.sendpin.update.UpdateCheckWorker
+import kotlinx.coroutines.launch
 
 /**
  * "Check for updates", on the About page: the whole of [AppUpdater] as one status
@@ -123,6 +128,21 @@ internal fun UpdateSection(accent: Color) {
                 } else {
                     OledButton("Check again", accent, outline = true) { AppUpdater.check(context) }
                 }
+            }
+        }
+        val settings = remember { AppSettings(context.applicationContext) }
+        val scope = rememberCoroutineScope()
+        val notify by settings.updateNotify.collectAsStateWithLifecycle(initialValue = true)
+        ToggleRow(
+            title = "Tell me when an update is out",
+            subtitle = "Once a day CAMusic asks GitHub for the latest version number, and nothing else " +
+                "is sent",
+            checked = notify,
+            accent = accent,
+        ) { on ->
+            scope.launch {
+                settings.setUpdateNotify(on)
+                UpdateCheckWorker.sync(context.applicationContext, on)
             }
         }
     }

@@ -177,6 +177,7 @@ class MainActivity : ComponentActivity() {
             ACTION_RESUME -> app.playFromVoice(null)
             ACTION_OPEN_LIBRARY -> app.appRoute.value = "library"
             ACTION_OPEN_LIGHTS -> app.appRoute.value = "light_sync"
+            ACTION_OPEN_UPDATE -> app.appRoute.value = APP_ROUTE_UPDATE
         }
     }
 
@@ -280,6 +281,10 @@ class MainActivity : ComponentActivity() {
         const val ACTION_RESUME = "com.engabd.sendpin.action.RESUME"
         const val ACTION_OPEN_LIBRARY = "com.engabd.sendpin.action.OPEN_LIBRARY"
         const val ACTION_OPEN_LIGHTS = "com.engabd.sendpin.action.OPEN_LIGHTS"
+        const val ACTION_OPEN_UPDATE = "com.engabd.sendpin.action.OPEN_UPDATE"
+
+        /** Settings, About: where "Check for updates" lives. Handled in App. */
+        const val APP_ROUTE_UPDATE = "settings/about"
     }
 
     override fun onDestroy() {
