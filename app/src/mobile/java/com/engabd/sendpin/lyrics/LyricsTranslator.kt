@@ -61,6 +61,13 @@ object LyricsTranslator {
     }
 
     private const val TAG = "LyricsTranslator"
+
+    /** Hand partial results over every few lines, not every line, so the pane is not redrawn for each. */
+    private const val PROGRESS_EVERY = 4
+
+    private fun nameOf(code: String): String =
+        Locale.forLanguageTag(code).getDisplayLanguage(Locale.getDefault())
+            .replaceFirstChar { it.titlecase(Locale.getDefault()) }
     private const val DOWNLOAD_TIMEOUT_MS = 180_000L
     private val json = Json { ignoreUnknownKeys = true }
     private val listSerializer = ListSerializer(String.serializer().nullable)
@@ -110,6 +117,7 @@ object LyricsTranslator {
         targetTag: String,
         wifiOnly: Boolean,
         cacheKey: String,
+        onProgress: (LyricsTranslation.Working) -> Unit = {},
     ): Result = withContext(Dispatchers.IO) {
         try {
             if (!isAvailable(context)) return@withContext Result.Unavailable(UNAVAILABLE_COPY)
@@ -130,13 +138,27 @@ object LyricsTranslator {
                 TranslatorOptions.Builder().setSourceLanguage(source).setTargetLanguage(target).build(),
             )
             try {
-                if (!modelsReady(source, target) && wifiOnly && !onUnmeteredNetwork(context)) {
+                val ready = modelsReady(source, target)
+                if (!ready && wifiOnly && !onUnmeteredNetwork(context)) {
                     return@withContext Result.NeedsWifi
                 }
+                // The first song in a language waits on its download (about 30 MB), which
+                // is most of the wait; say so, or the pane just looks stuck.
+                if (!ready) onProgress(LyricsTranslation.Working("Getting ${nameOf(source)} ready to translate (one time, about 30 MB)..."))
                 val conditions = DownloadConditions.Builder().apply { if (wifiOnly) requireWifi() }.build()
                 withTimeout(DOWNLOAD_TIMEOUT_MS) { translator.downloadModelIfNeeded(conditions).await() }
-                val out = lines.map { line ->
-                    if (line.isBlank()) null else translator.translate(line).await().takeIf { it.isNotBlank() }
+                // Line by line, handing over what is done so far: the opening lines can
+                // show while the rest of the song is still being translated.
+                val total = lines.count { it.isNotBlank() }
+                var done = 0
+                val out = ArrayList<String?>(lines.size)
+                for (line in lines) {
+                    if (line.isBlank()) { out += null; continue }
+                    out += translator.translate(line).await().takeIf { it.isNotBlank() }
+                    done++
+                    if (done % PROGRESS_EVERY == 0 || done == total) {
+                        onProgress(LyricsTranslation.Working("Translating line $done of $total...", out + List(lines.size - out.size) { null }))
+                    }
                 }
                 writeCache(cache, out)
                 Result.Done(out)

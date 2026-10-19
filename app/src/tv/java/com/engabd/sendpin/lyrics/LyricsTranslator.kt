@@ -38,5 +38,6 @@ object LyricsTranslator {
         targetTag: String,
         wifiOnly: Boolean,
         cacheKey: String,
+        onProgress: (LyricsTranslation.Working) -> Unit = {},
     ): Result = Result.Unavailable(UNAVAILABLE_COPY)
 }
