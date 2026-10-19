@@ -1,8 +1,14 @@
 package com.engabd.sendpin.ui.screens.settings
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import com.engabd.sendpin.lyrics.AiLyricsTranslator
 import com.engabd.sendpin.lyrics.LyricsTranslator
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.SendpinApp
@@ -136,6 +142,8 @@ internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
     val translate by settings.lyricsTranslate.collectAsStateWithLifecycle(initialValue = false)
     val targetLang by settings.lyricsTranslateLang.collectAsStateWithLifecycle(initialValue = "")
     val translateWifiOnly by settings.lyricsTranslateWifiOnly.collectAsStateWithLifecycle(initialValue = true)
+    val translator by settings.lyricsTranslator.collectAsStateWithLifecycle(initialValue = "mlkit")
+    val about by settings.lyricsAbout.collectAsStateWithLifecycle(initialValue = true)
     SettingsCard(
         title = "Lyrics",
         lead = "Where lyrics come from, and nudging synced ones against the vocal.",
@@ -168,23 +176,37 @@ internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
         ) { on -> scope.launch { settings.setLyricsWordByWord(on) } }
         CardDivider()
         val context = androidx.compose.ui.platform.LocalContext.current
-        val translateAvailable = remember { LyricsTranslator.isAvailable(context) }
+        val mlKitAvailable = remember { LyricsTranslator.isAvailable(context) }
+        val useAi = translator == "ai"
+        // Your own AI needs neither ML Kit nor Play services, so it keeps the switch usable.
+        val translateAvailable = mlKitAvailable || useAi
         ToggleRow(
             title = "Translate lyrics",
-            subtitle = if (translateAvailable) "Show a translation under each line" else "Not available on this phone",
+            subtitle = when {
+                translateAvailable -> "Show a translation under each line"
+                else -> "Choose your own AI below to translate here"
+            },
             checked = translate && translateAvailable,
             accent = com.engabd.sendpin.ui.design.LocalAccent.current,
-            enabled = translateAvailable,
-            info = "Translation runs on this phone with Google's on-device ML Kit. Each " +
-                "language is downloaded once, about 30 MB, the first time you need it. " +
-                "Lyrics stay on the phone to be translated. While this is on, ML Kit also " +
-                "sends Google usage statistics about the translator and may fetch updates " +
-                "for it. Finished translations are kept for next time.",
+            info = "Pick who translates. On this phone uses Google's on-device ML Kit: each " +
+                "language is downloaded once, about 30 MB, and lyrics stay on the phone. " +
+                "While it is on, ML Kit also sends Google usage statistics about the " +
+                "translator and may fetch updates for it.\n\nYour own AI sends the whole song " +
+                "to an AI you choose, which translates for meaning instead of line by line. " +
+                "Finished translations are kept for next time.",
         ) { on -> scope.launch { settings.setLyricsTranslate(on) } }
-        if (!translateAvailable) {
+        if (translate || !mlKitAvailable) {
+            FieldLabel("Translator")
+            DropdownPicker(
+                options = listOf("On this phone (Google ML Kit)", "Your own AI"),
+                selectedIndex = if (useAi) 1 else 0,
+                accent = com.engabd.sendpin.ui.design.LocalAccent.current,
+            ) { i -> scope.launch { settings.setLyricsTranslator(if (i == 1) "ai" else "mlkit") } }
+        }
+        if (!mlKitAvailable && !useAi) {
             Note(LyricsTranslator.UNAVAILABLE_COPY)
         } else if (translate) {
-            val languages = remember { LyricsTranslator.languages() }
+            val languages = remember { LyricsTranslator.languages().ifEmpty { AiLyricsTranslator.COMMON_LANGUAGES } }
             val phoneLanguage = remember {
                 java.util.Locale.getDefault().getDisplayLanguage(java.util.Locale.getDefault())
                     .replaceFirstChar { it.titlecase(java.util.Locale.getDefault()) }
@@ -196,15 +218,19 @@ internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
                 selectedIndex = languages.indexOfFirst { it.first == targetLang }.let { if (it < 0) 0 else it + 1 },
                 accent = com.engabd.sendpin.ui.design.LocalAccent.current,
             ) { i -> scope.launch { settings.setLyricsTranslateLang(if (i == 0) "" else languages[i - 1].first) } }
-            ToggleRow(
-                title = "Download languages on Wi-Fi only",
-                checked = translateWifiOnly,
-                accent = com.engabd.sendpin.ui.design.LocalAccent.current,
-            ) { on -> scope.launch { settings.setLyricsTranslateWifiOnly(on) } }
-            Note(
-                "Once a language is on the phone, translating happens here. ML Kit's own " +
-                    "usage statistics go to Google.",
-            )
+            if (useAi) {
+                LyricsAiCard(settings, scope, about)
+            } else {
+                ToggleRow(
+                    title = "Download languages on Wi-Fi only",
+                    checked = translateWifiOnly,
+                    accent = com.engabd.sendpin.ui.design.LocalAccent.current,
+                ) { on -> scope.launch { settings.setLyricsTranslateWifiOnly(on) } }
+                Note(
+                    "Once a language is on the phone, translating happens here. ML Kit's own " +
+                        "usage statistics go to Google.",
+                )
+            }
         }
         CardDivider()
         FieldLabel("Timing, every song")
@@ -220,4 +246,64 @@ internal fun BehaviorLyricsCard(settings: AppSettings, scope: CoroutineScope) {
         )
         Note("Later ← → earlier")
     }
+}
+
+/**
+ * The "Your own AI" half of the lyrics card: address, model, key, a Test button, and the
+ * switch for the "About this song" note. Edits are held here until Save or Test, so a
+ * half-typed address never fires a translation of the song that is playing.
+ */
+@Composable
+private fun LyricsAiCard(settings: AppSettings, scope: CoroutineScope, about: Boolean) {
+    val accent = com.engabd.sendpin.ui.design.LocalAccent.current
+    val savedUrl by settings.lyricsAiUrl.collectAsStateWithLifecycle(initialValue = "")
+    val savedModel by settings.lyricsAiModel.collectAsStateWithLifecycle(initialValue = "")
+    val savedKey by settings.lyricsAiKey.collectAsStateWithLifecycle(initialValue = "")
+    var url by remember(savedUrl) { mutableStateOf(savedUrl) }
+    var model by remember(savedModel) { mutableStateOf(savedModel) }
+    var key by remember(savedKey) { mutableStateOf(savedKey) }
+    var showKey by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<Pair<String, Health>?>(null) }
+    val dirty = url.trim() != savedUrl || model.trim() != savedModel || key.trim() != savedKey
+
+    Note(
+        "Works with any OpenAI-style address: Ollama or LM Studio on your own server, a free " +
+            "Google Gemini key, or OpenRouter. Pick one to fill it in.",
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        AiLyricsTranslator.PRESETS.forEach { (label, presetUrl, presetModel) ->
+            com.engabd.sendpin.ui.design.ToggleChip(label, selected = url.trim() == presetUrl) {
+                url = presetUrl
+                model = presetModel
+                status = null
+            }
+        }
+    }
+    OledField(url, { url = it }, "Address", "http://192.168.1.10:11434/v1", accent)
+    OledField(model, { model = it }, "Model name", "e.g. gemma3:12b", accent)
+    SecretField(
+        value = key, onChange = { key = it }, label = "API key (optional)", accent = accent,
+        visible = showKey, onVisibilityChange = { showKey = it },
+    )
+    Note(AiLyricsTranslator.privacyNote(url))
+    status?.let { (text, health) -> StatusLine(text, health, accent) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OledButton("Save", accent = accent, enabled = dirty) {
+            scope.launch { settings.setLyricsAi(url, model, key); status = "Saved" to Health.GOOD }
+        }
+        OledButton("Test", accent = accent, outline = true, enabled = url.isNotBlank() && model.isNotBlank()) {
+            status = "Asking ${model.trim()}..." to Health.WORKING
+            scope.launch {
+                settings.setLyricsAi(url, model, key)
+                val r = AiLyricsTranslator().test(AiLyricsTranslator.Config(url, model.trim(), key))
+                status = r.message to if (r.ok) Health.GOOD else Health.BAD
+            }
+        }
+    }
+    ToggleRow(
+        title = "Explain what the song is about",
+        subtitle = "A short note above the lyrics, collapsed until you tap it",
+        checked = about,
+        accent = accent,
+    ) { on -> scope.launch { settings.setLyricsAbout(on) } }
 }
