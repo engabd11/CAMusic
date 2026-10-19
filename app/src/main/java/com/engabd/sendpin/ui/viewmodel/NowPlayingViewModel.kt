@@ -2303,12 +2303,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                         _lyricsTranslation.value = LyricsTranslation.Off
                         return@collectLatest
                     }
-                    _lyricsTranslation.value = LyricsTranslation.Working
+                    _lyricsTranslation.value = LyricsTranslation.Working("Translating on this phone...")
                     _lyricsTranslation.value = when (
                         val r = LyricsTranslator.translate(
                             getApplication(), lyrics.lines.map { it.text }, req.lang, req.wifiOnly,
                             songKey() ?: lyrics.text.hashCode().toString(),
-                        )
+                        ) { _lyricsTranslation.value = it }
                     ) {
                         is LyricsTranslator.Result.Done -> LyricsTranslation.Ready(r.lines)
                         LyricsTranslator.Result.SameLanguage -> LyricsTranslation.Off

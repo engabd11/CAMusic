@@ -34,6 +34,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.withFrameMillis
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -149,9 +151,14 @@ fun LyricsPane(
                     )
                 } else {
                     Column(Modifier.fillMaxSize()) {
+                        (translation as? LyricsTranslation.Working)?.let { TranslationStatus(it.message, accent) }
                         SyncedLyrics(
                             lyrics, positionMs, accent, offsetMs, wordByWord,
-                            (translation as? LyricsTranslation.Ready)?.lines,
+                            when (val t = translation) {
+                                is LyricsTranslation.Ready -> t.lines
+                                is LyricsTranslation.Working -> t.partial
+                                else -> null
+                            },
                             // Tap a line to go there: seek to where it lights up.
                             onLine = { atMs -> viewModel.seekTo((atMs - offsetMs).coerceAtLeast(0)) },
                             modifier = Modifier.weight(1f),
@@ -328,13 +335,6 @@ private fun LyricsFooter(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
         )
     }
-    if (translation is LyricsTranslation.Working) {
-        Text(
-            "Translating on this phone...",
-            color = TextFaint, fontFamily = AppFont, fontSize = 10.sp,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-        )
-    }
     if (!lyrics.synced && lyrics.source == null) return
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
@@ -357,6 +357,27 @@ private fun LyricsFooter(
             )
             FooterButton("Later", "Show these lyrics later") { viewModel.nudgeLyrics(-com.engabd.sendpin.lyrics.LyricsOffsets.STEP_MS) }
         }
+    }
+}
+
+/**
+ * What translation is doing, at the top of the pane where it is seen. It used to be a
+ * 10 sp line in the footer, and the first song in a new language waits most of a
+ * minute on the language download, so it looked as if nothing was happening.
+ */
+@Composable
+private fun TranslationStatus(message: String, accent: Color) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = accent)
+        Text(
+            message,
+            color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp,
+            modifier = Modifier.padding(start = 8.dp),
+        )
     }
 }
 
@@ -396,6 +417,25 @@ private fun SyncedLyrics(
     // the future so the scroll starts before the vocal rather than chasing it. The
     // user offset is signed — a negative value means "these lyrics run early".
     val head = positionMs + LEAD_MS + offsetMs
+
+    // The word fill needs the playhead every frame, but [positionMs] moves in 250 ms
+    // steps, which made the fill jump and trail the voice. It is carried forward on the
+    // frame clock between steps, and read only while drawing the live line, so nothing
+    // recomposes per frame. No [LEAD_MS] here: that lead is for the scroll to arrive
+    // before the vocal, and on the fill it put words ahead of the singer.
+    val playhead = remember { SmoothPlayhead() }
+    LaunchedEffect(positionMs) { playhead.onTick(positionMs, android.os.SystemClock.uptimeMillis()) }
+    val frame = remember { mutableLongStateOf(0L) }
+    val hasWords = remember(lines) { lines.any { it.words != null } }
+    if (hasWords) {
+        LaunchedEffect(Unit) { while (true) withFrameMillis { frame.longValue = it } }
+    }
+    val fillHead: () -> Long = remember(offsetMs) {
+        {
+            frame.longValue // Read so the live line redraws every frame.
+            playhead.valueAt(android.os.SystemClock.uptimeMillis()) + offsetMs
+        }
+    }
     val active = if (!lyrics.synced) -1 else {
         // Backing vocals sit beside the main line and never take the focus from it.
         val i = lines.indexOfLast { it.atMs <= head && !it.background }.coerceAtLeast(0)
@@ -532,7 +572,7 @@ private fun SyncedLyrics(
                     live = live,
                     // Only a live line is handed the moving playhead; every other row gets a
                     // constant, so it is skipped on every tick instead of being redrawn.
-                    headMs = if (live) head else 0L,
+                    head = if (live) fillHead else NoHead,
                     synced = lyrics.synced,
                     accent = accent,
                     reducedMotion = reducedMotion,
@@ -547,6 +587,52 @@ private fun SyncedLyrics(
 
 /** How long after its last word a backing vocal stays lit. */
 private const val BG_LINGER_MS = 600L
+
+/** The playhead every row that is not being sung gets: one shared constant, so they skip. */
+private val NoHead: () -> Long = { 0L }
+
+/**
+ * The playhead for the word fill, carried forward between the 250 ms position steps.
+ *
+ * Each step re-anchors it. A step that disagrees by less than [SNAP_MS] is blended in
+ * over a few steps rather than jumped to, so the fill never twitches backwards on
+ * ordinary jitter; a bigger difference is a seek and is taken at once. When steps stop
+ * coming (paused, buffering) it stops [HOLD_MS] past the last one instead of running on.
+ */
+internal class SmoothPlayhead {
+    private var anchorPos = 0L
+    private var anchorAt = 0L
+    private var advancing = false
+    private var last = 0L
+
+    fun onTick(pos: Long, now: Long) {
+        val predicted = valueAt(now)
+        val moved = pos - anchorPos
+        val wasAdvancing = advancing
+        advancing = moved in 1 until SNAP_MS * 8
+        // Only blend once it is already moving: on the first moving step the
+        // prediction is still the paused position, and blending from there trails.
+        anchorPos = if (wasAdvancing && advancing && kotlin.math.abs(pos - predicted) < SNAP_MS) {
+            predicted + (pos - predicted) / 2
+        } else {
+            last = pos
+            pos
+        }
+        anchorAt = now
+    }
+
+    fun valueAt(now: Long): Long {
+        val v = if (advancing) anchorPos + (now - anchorAt).coerceIn(0L, HOLD_MS) else anchorPos
+        // Forwards only, except across a seek (which re-anchors through the else above).
+        if (v > last || last - v > SNAP_MS) last = v
+        return last
+    }
+
+    private companion object {
+        const val SNAP_MS = 300L
+        const val HOLD_MS = 400L
+    }
+}
 
 /** A backing vocal is drawn at this fraction of a main line's size. */
 private const val BACKGROUND_SCALE = 0.8f
@@ -588,8 +674,8 @@ private val TranslationTextStyle = TextStyle(
  * focus-driven scale, fade and blur.
  *
  * Its own function so Compose can skip it. Every parameter is a value or an instance
- * that does not change between playhead ticks, except [headMs], which is 0 for every
- * row that is not being sung: only the live line is redrawn as the song moves.
+ * that does not change between playhead ticks, except [head], which is the shared
+ * [NoHead] for every row that is not being sung: only the live line is redrawn as the song moves.
  */
 @Composable
 private fun LyricRow(
@@ -598,7 +684,7 @@ private fun LyricRow(
     sungBefore: Boolean,
     isActive: Boolean,
     live: Boolean,
-    headMs: Long,
+    head: () -> Long,
     synced: Boolean,
     accent: Color,
     reducedMotion: Boolean,
@@ -681,7 +767,7 @@ private fun LyricRow(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         if (wordFill) {
-            WordFillText(line, headMs, baseColor, fillColor, reducedMotion, Modifier.fillMaxWidth())
+            WordFillText(line, head, baseColor, fillColor, reducedMotion, Modifier.fillMaxWidth())
         } else {
             Text(line.text, style = LyricTextStyle, color = baseColor, modifier = Modifier.fillMaxWidth())
         }
@@ -708,7 +794,7 @@ private fun LyricRow(
 @Composable
 private fun WordFillText(
     line: LyricLine,
-    headMs: Long,
+    head: () -> Long,
     base: Color,
     accent: Color,
     reducedMotion: Boolean,
@@ -726,7 +812,7 @@ private fun WordFillText(
             val l = layout ?: return@drawWithContent
             val feather = if (reducedMotion) 0f else (if (estimated) FILL_FEATHER_ESTIMATED else FILL_FEATHER).toPx()
             val colour = if (estimated) accent.copy(alpha = accent.alpha * ESTIMATED_FILL_ALPHA) else accent
-            drawSungFill(l, LyricTiming.sungChars(line, headMs, stepByWord = reducedMotion), colour, feather)
+            drawSungFill(l, LyricTiming.sungChars(line, head(), stepByWord = reducedMotion), colour, feather)
         },
     )
 }
