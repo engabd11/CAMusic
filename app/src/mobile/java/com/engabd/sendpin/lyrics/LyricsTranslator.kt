@@ -3,6 +3,7 @@ package com.engabd.sendpin.lyrics
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.tasks.Task
@@ -62,15 +63,24 @@ object LyricsTranslator {
     private val json = Json { ignoreUnknownKeys = true }
     private val listSerializer = ListSerializer(String.serializer().nullable)
 
-    /** Whether Google Play services is present and usable. Cheap; safe to call from the UI. */
+    /**
+     * Whether translation can run here: a 64-bit ARM phone with Google Play services.
+     * Cheap; safe to call from the UI.
+     *
+     * The translator's native library is about 16 MB for each processor type and is
+     * stored uncompressed, so the APK carries only the arm64 copy (see the packaging
+     * block in app/build.gradle.kts). Anything else, 32-bit phones, emulators and
+     * Chromebooks, gets a disabled toggle rather than a missing library.
+     */
     fun isAvailable(context: Context): Boolean = runCatching {
-        GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context.applicationContext) ==
+        Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a" &&
+            GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context.applicationContext) ==
             ConnectionResult.SUCCESS
     }.getOrDefault(false)
 
     /** The explanation shown where the toggle is disabled. */
     const val UNAVAILABLE_COPY =
-        "Translation needs Google Play services on this phone, and it isn't available here. " +
+        "Translation needs a 64-bit phone with Google Play services, and it isn't available here. " +
             "Everything else in lyrics works as normal."
 
     /** ML Kit's code for [tag] ("" means the device language), or null if it has no model. */
