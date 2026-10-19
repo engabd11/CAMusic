@@ -32,6 +32,9 @@ object LyricsTranslator {
     fun languages(): List<Pair<String, String>> = emptyList()
 
     @Suppress("UNUSED_PARAMETER")
+    fun cacheFileFor(context: Context, key: String, targetTag: String, lines: List<String>): java.io.File? = null
+
+    @Suppress("UNUSED_PARAMETER")
     suspend fun translate(
         context: Context,
         lines: List<String>,

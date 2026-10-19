@@ -98,11 +98,11 @@ class AiLyricsTranslator(
         config: Config,
         lines: List<String>,
         targetName: String,
-        cacheDir: File,
+        storeDir: File,
         cacheKey: String,
         onProgress: (String) -> Unit = {},
     ): Result = withContext(Dispatchers.IO) {
-        val cache = cacheFile(cacheDir, cacheKey, targetName, config, lines)
+        val cache = cacheFile(storeDir, cacheKey, targetName, config, lines)
         readCache(cache, lines.size)?.let { return@withContext Result.Done(it.first, it.second) }
 
         // Blank lines are not sent: they are the gaps in the song, and a model told to keep
@@ -276,7 +276,7 @@ class AiLyricsTranslator(
         val digest = MessageDigest.getInstance("SHA-1")
             .digest("ai|$key|$target|${config.model}|${config.endpoint()}|${lines.joinToString("\n").hashCode()}".toByteArray())
             .joinToString("") { "%02x".format(it) }
-        return File(File(dir, "lyric-translations"), "$digest.json")
+        return File(dir, "$digest.json")
     }
 
     private fun readCache(file: File, expected: Int): Pair<List<String?>, String?>? = runCatching {
@@ -284,6 +284,7 @@ class AiLyricsTranslator(
         val o = Json.parseToJsonElement(file.readText()) as JsonObject
         val lines = (o["lines"] as JsonArray).map { (it as? JsonPrimitive)?.contentOrNull }
         (lines to (o["about"] as? JsonPrimitive)?.contentOrNull).takeIf { lines.size == expected }
+            ?.also { LyricTranslationStore.touch(file) }
     }.getOrNull()
 
     private fun writeCache(file: File, lines: List<String?>, about: String?) {
@@ -295,6 +296,7 @@ class AiLyricsTranslator(
                     if (about != null) put("about", about)
                 }.toString(),
             )
+            file.parentFile?.let { LyricTranslationStore.prune(it) }
         }
     }
 

@@ -27,6 +27,15 @@ object LyricsOffsets {
     fun get(context: Context, key: String): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(key, 0)
 
+    /** How many songs have a nudge of their own. */
+    fun count(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).all.values.count { it is Int && it != 0 }
+
+    /** Forgets every song's nudge; the global offset in Settings is not touched. */
+    fun clearAll(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+    }
+
     fun set(context: Context, key: String, ms: Int) {
         val v = ms.coerceIn(-MAX_MS, MAX_MS)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply {

@@ -194,22 +194,28 @@ object LyricsTranslator {
 
     // ── Cache ─────────────────────────────────────────────────────────────
 
+    /** The saved file for one song in [targetTag], or null when that language is unknown. */
+    fun cacheFileFor(context: Context, key: String, targetTag: String, lines: List<String>): File? =
+        targetCode(targetTag)?.let { cacheFile(context, key, it, lines) }
+
     private fun cacheFile(context: Context, key: String, target: String, lines: List<String>): File {
         val digest = MessageDigest.getInstance("SHA-1")
             .digest("$key|$target|${lines.joinToString("\n").hashCode()}".toByteArray())
             .joinToString("") { "%02x".format(it) }
-        return File(File(context.cacheDir, "lyric-translations"), "$digest.json")
+        return File(LyricTranslationStore.dir(context), "$digest.json")
     }
 
     private fun readCache(file: File, expected: Int): List<String?>? = runCatching {
         if (!file.isFile) return null
         json.decodeFromString(listSerializer, file.readText()).takeIf { it.size == expected }
+            ?.also { LyricTranslationStore.touch(file) }
     }.getOrNull()
 
     private fun writeCache(file: File, lines: List<String?>) {
         runCatching {
             file.parentFile?.mkdirs()
             file.writeText(json.encodeToString(listSerializer, lines))
+            file.parentFile?.let { LyricTranslationStore.prune(it) }
         }
     }
 

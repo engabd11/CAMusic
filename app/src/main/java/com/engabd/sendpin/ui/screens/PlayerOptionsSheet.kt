@@ -122,6 +122,24 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                     }
                 }
 
+                // Only while a translation is on for this song's lyrics. Kept in this sheet
+                // rather than beside the lyrics, where a stray tap could throw it away.
+                val translation by viewModel.lyricsTranslation.collectAsStateWithLifecycle()
+                if (translation !is com.engabd.sendpin.lyrics.LyricsTranslation.Off) {
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .clickable { onClose(); viewModel.translateAgain() }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Default.Translate, null, tint = accent, modifier = Modifier.size(22.dp))
+                        Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                            Text("Translate this song again", color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text("Deletes its saved translation and asks again", color = TextMuted, fontFamily = AppFont, fontSize = 12.sp)
+                        }
+                    }
+                }
+
                 // Power — only for players that actually expose a switch.
                 if (st.canPower) {
                     OptionRow(
