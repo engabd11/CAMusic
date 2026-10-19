@@ -206,7 +206,9 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.17.1** (summaries moved here from the README):
+**v0.11.1 to v0.17.2** (summaries moved here from the README):
+
+**v0.17.2**: **translate lyrics with your own AI, and karaoke that keeps time.** **Settings → Lyrics → Translator → Your own AI** sends the whole song in one request to any OpenAI-compatible service, such as Ollama or LM Studio on your own server, a free Gemini key or OpenRouter, asking for meaning, mood and idiom rather than word for word, with an optional "About this song" note. Translations are kept per song, the key is stored encrypted, and Google's on-phone translator stays as the fallback. The word-by-word fill now follows a playhead that moves every frame instead of every quarter second, and no longer starts ahead of the singer. Translation shows what it is doing at the top of the lyrics (fetching a language the first time, then which line), and finished lines appear as they arrive.
 
 **v0.17.1**: **lyric translation works, and the word-by-word highlight is easy to see.** In 0.17.0's release build the code shrinker removed constructors that Google ML Kit only reaches by reflection, so translation could never start and always said it wasn't working on this phone; a keep rule restores them, and the translator now logs the real cause of any failure. The words still to come are now dimmer and the sung words brighter, so the fill stands out on both themes whatever colour the album art gives.
 
