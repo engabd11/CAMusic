@@ -202,6 +202,16 @@ android {
         resources {
             excludes += "log4j2.xml"
         }
+        // ML Kit's translator ships ~16 MB of native code per processor type, stored
+        // uncompressed, which took the phone APK from 69 to 118 MB in 0.17.0's first
+        // build. Only arm64 keeps it: that is every Android 12+ phone worth translating
+        // lyrics on, and LyricsTranslator.isAvailable turns the feature off anywhere else.
+        jniLibs {
+            for (abi in listOf("armeabi-v7a", "x86", "x86_64")) {
+                excludes += "lib/$abi/libtranslate_jni.so"
+                excludes += "lib/$abi/liblanguage_id_l2c_jni.so"
+            }
+        }
     }
 
     // Already xz: deflating it again inside the APK saves nothing and makes every read
@@ -489,8 +499,10 @@ dependencies {
     // On-device lyric translation (opt-in, off by default). Lyrics are translated on the
     // phone; ML Kit downloads models and reports its own usage metrics to Google. LyricsTranslator guards every
     // call, so a device without Google Play services just loses the toggle.
-    implementation(libs.mlkit.translate)
-    implementation(libs.mlkit.language.id)
+    // Phone only: the TV build has a stub (src/tv/.../LyricsTranslator.kt) and stays
+    // ~45 MB lighter. See the jniLibs excludes in the packaging block for the phone side.
+    "mobileImplementation"(libs.mlkit.translate)
+    "mobileImplementation"(libs.mlkit.language.id)
 
     // D-pad focus affordance (scale/glow on the focused item) for the "tv" flavor's
     // screens. Stock Compose Foundation's LazyRow/LazyColumn/LazyVerticalGrid (used
