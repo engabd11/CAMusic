@@ -206,7 +206,9 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.17.2** (summaries moved here from the README):
+**v0.11.1 to v0.17.3** (summaries moved here from the README):
+
+**v0.17.3**: **lyrics get a settings page of their own, and translations are kept for good.** Lyrics settings moved out of Playback behaviour into **Audio Engine & DSP → Lyrics**: display, online lyrics, timing, translation, and a Saved for each song card that clears every saved translation or resets every song's timing nudge. Saved translations now live in the app's own storage rather than Android's cache, so clearing the cache no longer throws them away; existing ones move over. The player's options have **Translate this song again** under Listening party. Listening party now opens in front of the player instead of behind it, and going back from Listening statistics, Wake & Sleep, Downloads, Speakers or the party slides like every other settings page.
 
 **v0.17.2**: **translate lyrics with your own AI, and karaoke that keeps time.** **Settings → Lyrics → Translator → Your own AI** sends the whole song in one request to any OpenAI-compatible service, such as Ollama or LM Studio on your own server, a free Gemini key or OpenRouter, asking for meaning, mood and idiom rather than word for word, with an optional "About this song" note. Translations are kept per song, the key is stored encrypted, and Google's on-phone translator stays as the fallback. The word-by-word fill now follows a playhead that moves every frame instead of every quarter second, and no longer starts ahead of the singer. Translation shows what it is doing at the top of the lyrics (fetching a language the first time, then which line), and finished lines appear as they arrive.
 
