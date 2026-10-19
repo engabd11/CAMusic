@@ -197,6 +197,8 @@ class AppSettings(private val context: Context) {
         private val PARTY_IDLE_HOURS = intPreferencesKey("party_idle_hours")
         private val PARTY_APPROVE_FIRST = booleanPreferencesKey("party_approve_first")
         private val PARTY_SKIP_MODE = stringPreferencesKey("party_skip_mode")
+        private val UPDATE_NOTIFY = booleanPreferencesKey("update_notify")
+        private val UPDATE_NOTIFIED = stringPreferencesKey("update_notified_version")
         private val SEARCH_ALL_LIBRARIES = booleanPreferencesKey("search_all_libraries") // library search asks every server
         // Scrobbling to ListenBrainz / Last.fm (see scrobble/). Tokens are encrypted.
         private val LB_ENABLED = booleanPreferencesKey("listenbrainz_enabled")
@@ -1553,6 +1555,15 @@ class AppSettings(private val context: Context) {
 
     /** The [com.engabd.sendpin.party.SkipMode] name last used for votes to skip. */
     val partySkipMode: Flow<String> = pref { it[PARTY_SKIP_MODE] ?: "OFF" }
+
+    /** Whether CAMusic asks GitHub once a day for the latest version and says so when a newer one is out. On by default. */
+    val updateNotify: Flow<Boolean> = pref { it[UPDATE_NOTIFY] ?: true }
+
+    /** The last release version a notification was raised for, so one version is announced once. */
+    val updateNotifiedVersion: Flow<String?> = pref { it[UPDATE_NOTIFIED] }
+
+    suspend fun setUpdateNotify(value: Boolean) { context.dataStore.edit { it[UPDATE_NOTIFY] = value } }
+    suspend fun setUpdateNotifiedVersion(version: String) { context.dataStore.edit { it[UPDATE_NOTIFIED] = version } }
 
     suspend fun setPartyIdleHours(hours: Int) { context.dataStore.edit { it[PARTY_IDLE_HOURS] = hours.coerceIn(1, 24) } }
     suspend fun setPartyApproveFirst(value: Boolean) { context.dataStore.edit { it[PARTY_APPROVE_FIRST] = value } }

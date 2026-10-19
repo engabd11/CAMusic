@@ -113,6 +113,7 @@ internal object SettingsSearch {
         SettingsEntry("Backup & restore", "backup restore export import settings transfer new phone", SYSTEM_ABOUT, SYS_BACKUP_ROUTE),
         SettingsEntry("Diagnostics", "logs crash report debug bug", SYSTEM_ABOUT, SYS_DIAGNOSTICS_ROUTE),
         SettingsEntry("USB DAC report", "usb dac descriptors report rates", SYSTEM_ABOUT, SYS_DIAGNOSTICS_ROUTE),
+        SettingsEntry("Tell me when an update is out", "update updates notification notify new version release github check", SYSTEM_ABOUT, SYS_ABOUT_ROUTE),
         SettingsEntry("About", "version licence license source github", SYSTEM_ABOUT, SYS_ABOUT_ROUTE),
     )
 

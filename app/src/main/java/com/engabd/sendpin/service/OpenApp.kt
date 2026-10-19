@@ -63,4 +63,5 @@ object OpenAppRequest {
     const val DOWNLOADS = 105
     const val PARTY = 106
     const val WAKE = 107
+    const val UPDATE = 108
 }
