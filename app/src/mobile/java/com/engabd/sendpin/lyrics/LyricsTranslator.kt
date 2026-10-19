@@ -194,6 +194,10 @@ object LyricsTranslator {
 
     // ── Cache ─────────────────────────────────────────────────────────────
 
+    /** The saved file for one song in [targetTag], or null when that language is unknown. */
+    fun cacheFileFor(context: Context, key: String, targetTag: String, lines: List<String>): File? =
+        targetCode(targetTag)?.let { cacheFile(context, key, it, lines) }
+
     private fun cacheFile(context: Context, key: String, target: String, lines: List<String>): File {
         val digest = MessageDigest.getInstance("SHA-1")
             .digest("$key|$target|${lines.joinToString("\n").hashCode()}".toByteArray())

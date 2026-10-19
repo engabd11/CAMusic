@@ -53,6 +53,9 @@ object LyricTranslationStore {
         return Summary(files.size, files.sumOf { it.length() })
     }
 
+    /** Deletes just these saved translations (one song's); returns how many went. */
+    fun delete(files: List<File>): Int = files.count { it.isFile && it.delete() }
+
     /** Deletes every saved translation; returns how many went. */
     internal fun clear(dir: File): Int = files(dir).count { it.delete() }
 

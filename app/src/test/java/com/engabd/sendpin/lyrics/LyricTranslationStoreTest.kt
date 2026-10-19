@@ -91,6 +91,15 @@ class LyricTranslationStoreTest {
     }
 
     @Test
+    fun `deleting one song's files leaves the others`() {
+        val a = put(files, "a.json")
+        put(files, "b.json")
+        assertEquals(1, LyricTranslationStore.delete(listOf(a, File(files, "missing.json"))))
+        assertFalse(a.exists())
+        assertTrue(File(files, "b.json").exists())
+    }
+
+    @Test
     fun `summary of a missing folder is empty`() {
         assertEquals(LyricTranslationStore.Summary(0, 0), LyricTranslationStore.summary(files))
         assertEquals(0, LyricTranslationStore.clear(files))

@@ -1078,11 +1078,42 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val _lyricsTranslation = MutableStateFlow<LyricsTranslation>(LyricsTranslation.Off)
     val lyricsTranslation: StateFlow<LyricsTranslation> = _lyricsTranslation
 
-    private data class AiSettings(val useAi: Boolean, val url: String, val model: String, val key: String)
+    private data class AiSettings(val useAi: Boolean, val url: String, val model: String, val key: String, val retry: Int = 0)
 
     private data class TranslateRequest(
         val lyrics: MaLyrics?, val on: Boolean, val lang: String, val wifiOnly: Boolean, val ai: AiSettings,
     )
+
+    /** Bumped by [translateAgain]; part of the translation request so the same song re-runs. */
+    private val _translateRetry = MutableStateFlow(0)
+    private var lastTranslateRequest: TranslateRequest? = null
+
+    /**
+     * Forget this song's saved translation and ask again. Only the file for the translator,
+     * model and language in use goes; other languages for the song stay saved.
+     */
+    fun translateAgain() {
+        val req = lastTranslateRequest ?: return
+        val lyrics = req.lyrics ?: return
+        val texts = lyrics.lines.map { it.text }
+        val key = songKey() ?: lyrics.text.hashCode().toString()
+        val app = getApplication<Application>()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val dir = LyricTranslationStore.dir(app)
+            val files = if (req.ai.useAi) {
+                listOf(
+                    aiTranslator.cacheFile(
+                        dir, key, AiLyricsTranslator.targetName(req.lang),
+                        AiLyricsTranslator.Config(req.ai.url, req.ai.model, req.ai.key), texts,
+                    ),
+                )
+            } else {
+                listOfNotNull(LyricsTranslator.cacheFileFor(app, key, req.lang, texts))
+            }
+            LyricTranslationStore.delete(files)
+            _translateRetry.value++
+        }
+    }
 
     private val aiTranslator = AiLyricsTranslator()
 
@@ -2306,7 +2337,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val ai = combine(
                 settings.lyricsTranslator, settings.lyricsAiUrl, settings.lyricsAiModel, settings.lyricsAiKey,
-            ) { which, url, model, key -> AiSettings(which == "ai", url, model, key) }
+                _translateRetry,
+            ) { which, url, model, key, retry -> AiSettings(which == "ai", url, model, key, retry) }
             combine(
                 _lyrics, settings.lyricsTranslate, settings.lyricsTranslateLang,
                 settings.lyricsTranslateWifiOnly, ai,
@@ -2315,6 +2347,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             }
                 .distinctUntilChanged()
                 .collectLatest { req ->
+                    lastTranslateRequest = req
                     val lyrics = req.lyrics
                     if (!req.on || lyrics == null) {
                         _lyricsTranslation.value = LyricsTranslation.Off

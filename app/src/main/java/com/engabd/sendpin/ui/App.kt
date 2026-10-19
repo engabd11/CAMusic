@@ -139,6 +139,21 @@ private val popOut: AnimatedContentTransitionScope<NavBackStackEntry>.() -> Exit
 }
 
 /**
+ * Screens pushed on top of a tab with [pushIn]. The tab underneath has to move with them:
+ * left on the NavHost's fade-through default, Settings faded back in as the page slid away,
+ * so backing out of Listening statistics looked unlike backing out of a Settings page.
+ */
+private val pushedOnTabs = setOf(
+    "downloads", "downloads?from=library", "stats", "party", "speakers", "wake_sleep",
+)
+private val tabExitWhenPushed: AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition? = {
+    if (targetState.destination.route in pushedOnTabs) pushOut() else null
+}
+private val tabPopEnterWhenPushed: AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition? = {
+    if (initialState.destination.route in pushedOnTabs) popIn() else null
+}
+
+/**
  * A NavHost destination that owns its backdrop.
  *
  * Identical to [composable] but for the [ProvideBackdrop] around the content, and that
@@ -356,11 +371,6 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
 
         val navController = rememberNavController()
         val partyContext = androidx.compose.ui.platform.LocalContext.current
-        LaunchedEffect(Unit) {
-            (partyContext.applicationContext as com.engabd.sendpin.SendpinApp).partyManager.openScreen.collect {
-                navController.navigate("party") { launchSingleTop = true }
-            }
-        }
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentRoute = navBackStackEntry?.destination?.route
 
@@ -509,6 +519,16 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
 
         // Overlay expand/collapse state.
         var overlayExpanded by rememberSaveable { mutableStateOf(false) }
+
+        // Asked for from the player options sheet, which sits inside the expanded Now
+        // Playing overlay: the overlay has to come down first or the Party screen opens
+        // underneath it, out of sight, like the library jump above does with onBrowse.
+        LaunchedEffect(Unit) {
+            (partyContext.applicationContext as com.engabd.sendpin.SendpinApp).partyManager.openScreen.collect {
+                overlayExpanded = false
+                navController.navigate("party") { launchSingleTop = true }
+            }
+        }
 
         // Which category Settings has open, and which page inside it — held here
         // rather than inside the screen so that re-tapping the Settings tab can close
@@ -716,7 +736,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             )
                         }
                     }
-                    screen("library") {
+                    screen("library", exitTransition = tabExitWhenPushed, popEnterTransition = tabPopEnterWhenPushed) {
                         CompositionLocalProvider(LocalNavAnimatedScope provides this) {
                             val navToDetail: (String, MaItem) -> Unit = { route, item ->
                                 val n = android.net.Uri.encode(item.name)
@@ -863,26 +883,26 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                     // Settings it belongs to Settings; reached from the Downloads
                     // library it belongs to Library, and lighting the wrong tab there
                     // makes the back gesture land somewhere the user did not come from.
-                    screen("downloads") {
+                    screen("downloads", enterTransition = pushIn, exitTransition = pushOut, popEnterTransition = popIn, popExitTransition = popOut) {
                         DownloadsScreen(
                             viewModel = libraryVm,
                             onBack = { navController.popBackStack() },
                         )
                     }
-                    screen("downloads?from=library") {
+                    screen("downloads?from=library", enterTransition = pushIn, exitTransition = pushOut, popEnterTransition = popIn, popExitTransition = popOut) {
                         DownloadsScreen(
                             viewModel = libraryVm,
                             onBack = { navController.popBackStack() },
                         )
                     }
-                    screen("stats") {
+                    screen("stats", enterTransition = pushIn, exitTransition = pushOut, popEnterTransition = popIn, popExitTransition = popOut) {
                         StatsScreen(onBack = { navController.popBackStack() })
                     }
-                    screen("party") {
+                    screen("party", enterTransition = pushIn, exitTransition = pushOut, popEnterTransition = popIn, popExitTransition = popOut) {
                         com.engabd.sendpin.ui.screens.PartyScreen(onBack = { navController.popBackStack() })
                     }
-                    screen("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
-                    screen("wake_sleep") { WakeSleepScreen(onBack = { navController.popBackStack() }) }
+                    screen("speakers", enterTransition = pushIn, exitTransition = pushOut, popEnterTransition = popIn, popExitTransition = popOut) { SpeakersScreen(onBack = { navController.popBackStack() }) }
+                    screen("wake_sleep", enterTransition = pushIn, exitTransition = pushOut, popEnterTransition = popIn, popExitTransition = popOut) { WakeSleepScreen(onBack = { navController.popBackStack() }) }
                     screen("light_sync") {
                         LightSyncScreen(
                             onBack = { navController.popBackStack() },
@@ -918,7 +938,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                     screen("rhythm_calibration") {
                         RhythmCalibrationScreen(onBack = { navController.popBackStack() })
                     }
-                    screen("settings") {
+                    screen("settings", exitTransition = tabExitWhenPushed, popEnterTransition = tabPopEnterWhenPushed) {
                         SettingsScreen(
                             viewModel = playerVm,
                             libraryViewModel = libraryVm,
