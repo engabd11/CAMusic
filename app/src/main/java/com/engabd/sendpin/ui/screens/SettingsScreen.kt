@@ -116,7 +116,7 @@ enum class SettingsSection(
     ),
     AUDIO(
         "Audio Engine & DSP",
-        "Output and signal path, the equaliser, ReplayGain, crossfade, and gestures",
+        "Output and signal path, the equaliser, ReplayGain, crossfade, lyrics, and gestures",
         Icons.Default.GraphicEq,
     ),
     LIGHTS_SYNC(
@@ -482,7 +482,13 @@ private fun LazyListScope.sectionItems(
                 card("behaviour_player") { BehaviorPlayerCard(settings, accent, scope) }
                 card("behaviour_hands") { BehaviorHandsCard(settings, accent, scope) }
                 card("behaviour_scans") { BehaviorScansCard(settings, accent, scope, advanced) }
-                if (advanced) card("behaviour_lyrics") { BehaviorLyricsCard(settings, scope) }
+            }
+            AUDIO_LYRICS_ROUTE -> {
+                card("lyrics_display") { LyricsDisplayCard(settings, scope) }
+                card("lyrics_online") { LyricsOnlineCard(settings, scope) }
+                card("lyrics_timing") { LyricsTimingCard(settings, scope) }
+                card("lyrics_translation") { LyricsTranslationCard(settings, scope) }
+                card("lyrics_saved") { LyricsSavedCard() }
             }
         }
 

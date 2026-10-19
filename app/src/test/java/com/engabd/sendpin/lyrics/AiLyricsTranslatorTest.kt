@@ -131,7 +131,7 @@ class AiLyricsTranslatorTest {
         server.enqueue(reply("""{"lines":["Hello"]}"""))
         val r = run() as AiLyricsTranslator.Result.Done
         assertEquals(listOf("Hello", null, null), r.lines)
-        assertFalse(File(dir, "lyric-translations").exists() && File(dir, "lyric-translations").list()!!.isNotEmpty())
+        assertTrue(dir.list()!!.isEmpty())
     }
 
     @Test

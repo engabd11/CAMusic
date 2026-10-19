@@ -30,6 +30,7 @@ import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.lyrics.LocalLyrics
 import com.engabd.sendpin.lyrics.Lrclib
+import com.engabd.sendpin.lyrics.LyricTranslationStore
 import com.engabd.sendpin.lyrics.LyricsOffsets
 import com.engabd.sendpin.lyrics.LyricsTranslation
 import com.engabd.sendpin.lyrics.AiLyricsTranslator
@@ -2330,7 +2331,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                             _lyricsTranslation.value = LyricsTranslation.Working("Asking ${config.model} to translate...")
                             when (
                                 val r = aiTranslator.translate(
-                                    config, texts, AiLyricsTranslator.targetName(req.lang), getApplication<Application>().cacheDir, key,
+                                    config, texts, AiLyricsTranslator.targetName(req.lang), LyricTranslationStore.dir(getApplication()), key,
                                 ) { _lyricsTranslation.value = LyricsTranslation.Working(it) }
                             ) {
                                 is AiLyricsTranslator.Result.Done -> {

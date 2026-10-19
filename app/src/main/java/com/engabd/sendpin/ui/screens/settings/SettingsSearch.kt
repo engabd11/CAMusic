@@ -70,7 +70,7 @@ internal object SettingsSearch {
         SettingsEntry("Shake, flip and tap", "gesture sensor shake flip pocket tap hands off", AUDIO, AUDIO_BEHAVIOUR_ROUTE),
         SettingsEntry("Harmonic DJ mode", "key camelot harmonic mixing scans", AUDIO, AUDIO_BEHAVIOUR_ROUTE),
         SettingsEntry("Listening DNA", "key tempo bpm stats statistics scans", AUDIO, AUDIO_BEHAVIOUR_ROUTE),
-        SettingsEntry("Lyrics", "lyrics online synced lrclib timing offset words karaoke word by word translate translation language", AUDIO, AUDIO_BEHAVIOUR_ROUTE, advanced = true),
+        SettingsEntry("Lyrics", "lyrics online synced lrclib timing offset words karaoke word by word translate translation language", AUDIO, AUDIO_LYRICS_ROUTE),
 
         // ── Illumination & Sync ─────────────────────────────────────────
         SettingsEntry("How the lights hear the music", "light sync route hue direct home assistant transport", LIGHTS_SYNC),

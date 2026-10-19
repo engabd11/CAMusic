@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Gesture
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.Palette
@@ -55,6 +56,7 @@ internal const val AUDIO_GAIN_ROUTE = "audio_gain"
 internal const val AUDIO_SCROBBLE_ROUTE = "audio_scrobble"
 internal const val AUDIO_BETWEEN_ROUTE = "audio_between"
 internal const val AUDIO_BEHAVIOUR_ROUTE = "audio_behaviour"
+internal const val AUDIO_LYRICS_ROUTE = "audio_lyrics"
 
 // ── Interface & Appearance ────────────────────────────────────────────────
 internal const val LOOK_THEME_ROUTE = "look_theme"
@@ -114,9 +116,15 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
             Icons.Default.Shuffle,
         ),
         SubPage(
+            AUDIO_LYRICS_ROUTE,
+            "Lyrics",
+            "Word-by-word highlight, translation, online lyrics and timing",
+            Icons.Default.Lyrics,
+        ),
+        SubPage(
             AUDIO_BEHAVIOUR_ROUTE,
             "Playback behaviour",
-            "Shake and swipe gestures, the visualiser, the auto-queue's taste, lyrics timing",
+            "Shake and swipe gestures, the visualiser, and the auto-queue's taste",
             Icons.Default.Gesture,
         ),
         SubPage(
