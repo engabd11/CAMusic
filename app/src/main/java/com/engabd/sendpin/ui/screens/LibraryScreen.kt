@@ -1054,7 +1054,9 @@ private fun isDownloadable(item: MaItem, capabilities: Set<Capability>) =
  * and everything else takes any item.
  */
 private fun isFavouritable(item: MaItem, capabilities: Set<Capability>) = when {
-    isCategory(item) || isDownload(item) -> false
+    isCategory(item) -> false
+    // Downloads keeps its hearts on the phone, so they work with every server off.
+    isDownload(item) -> item.mediaType in MaActionTypes
     !selfHosted(item) -> item.mediaType in MaActionTypes
     Capability.STAR !in capabilities -> false
     item.provider == SubsonicClient.PROVIDER -> item.mediaType in SubsonicActionTypes

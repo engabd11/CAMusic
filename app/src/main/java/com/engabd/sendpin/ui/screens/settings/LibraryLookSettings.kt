@@ -44,7 +44,7 @@ import kotlinx.coroutines.launch
 /**
  * How the library's category buttons look.
  *
- * The row of Artists / Albums / Tracks / Playlists / Genres / Starred / Recently
+ * The row of Artists / Albums / Tracks / Playlists / Genres / Favourites / Recently
  * added / Shuffle all is the first thing on the library page and the most-looked-at
  * furniture in the app, and it had exactly one shape: a 96dp gradient tile, two to a
  * row, hard-coded next to the drawing code with no setting anywhere near it.
@@ -312,7 +312,7 @@ private val ALL_CATEGORIES: List<Triple<String, String, String>> = listOf(
     Triple("tracks", "Tracks", "Libraries that can list songs"),
     Triple("playlists", "Playlists", "Libraries with playlists"),
     Triple("genres", "Genres", "Self-hosted libraries with genres"),
-    Triple("starred", "Starred", "Libraries with favourites"),
+    Triple("starred", "Favourites", "Libraries with favourites, Downloads included"),
     Triple("newest", "Recently Added", "Self-hosted libraries"),
     Triple("random", "Shuffle all", "Self-hosted libraries"),
     Triple("folders", "Folders", "Navidrome and Subsonic servers, MPD and this device"),

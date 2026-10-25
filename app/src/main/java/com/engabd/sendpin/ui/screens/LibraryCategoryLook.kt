@@ -3,7 +3,7 @@ package com.engabd.sendpin.ui.screens
 /**
  * What the library's category buttons look like — the pure half.
  *
- * The row of Artists / Albums / Tracks / Playlists / Genres / Starred / Recently
+ * The row of Artists / Albums / Tracks / Playlists / Genres / Favourites / Recently
  * added / Shuffle all was one fixed shape: a 96dp gradient tile, two to a row, 18dp
  * corners, hard-coded in `CategoryCard` with no setting anywhere near it. It is the
  * first thing on the library page and the most-looked-at furniture in the app, and

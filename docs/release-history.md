@@ -206,7 +206,9 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.17.3** (summaries moved here from the README):
+**v0.11.1 to v0.17.4** (summaries moved here from the README):
+
+**v0.17.4**: **Downloads has Favourites, and every library calls them Favourites.** The Downloads library now has the heart on its songs, albums, artists and playlists, and a **Favourites** category like the other libraries. Its favourites are kept on the phone, so they work with every server switched off, and a song that was already a favourite on its server arrives as one when it downloads. The **Starred** category is now **Favourites** in every library, with a heart for its icon, and the messages say favourites the same way everywhere.
 
 **v0.17.3**: **lyrics get a settings page of their own, and translations are kept for good.** Lyrics settings moved out of Playback behaviour into **Audio Engine & DSP → Lyrics**: display, online lyrics, timing, translation, and a Saved for each song card that clears every saved translation or resets every song's timing nudge. Saved translations now live in the app's own storage rather than Android's cache, so clearing the cache no longer throws them away; existing ones move over. The player's options have **Translate this song again** under Listening party. Listening party now opens in front of the player instead of behind it, and going back from Listening statistics, Wake & Sleep, Downloads, Speakers or the party slides like every other settings page.
 

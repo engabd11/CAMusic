@@ -159,6 +159,9 @@ class DownloadManager(
     private val playlistDao =
         com.engabd.sendpin.local.db.LocalMediaDatabase.get(context).downloadPlaylistDao()
 
+    /** Its own instance for the same reason; the store keeps no state of its own. */
+    private val favourites = com.engabd.sendpin.local.DownloadedFavourites(context)
+
     private companion object {
         const val TAG = "DownloadManager"
         /** Goes at one file before it is called failed. */
@@ -457,6 +460,9 @@ class DownloadManager(
                 sourceProvider = item.provider,
             ).toEntity()
             dao.insert(entity)
+            // Favourited on its server, so favourited here too: the Downloads library
+            // keeps its own hearts, and this is the one moment the server's is known.
+            if (item.favorite) favourites.set("track", item.itemId, true)
             clearJob(item.itemId)
             keepLyrics(item, file)
             enforceStorageCap(storageCapMb)
@@ -703,7 +709,8 @@ class DownloadManager(
         dao.deleteAll()
         // The playlists go with the files. Keeping them would leave a Downloads
         // library full of empty playlists after "delete everything", which reads as
-        // the delete having failed.
+        // the delete having failed. Favourites likewise.
         runCatchingCancellable { playlistDao.removeAll() }
+        favourites.clear()
     }
 }

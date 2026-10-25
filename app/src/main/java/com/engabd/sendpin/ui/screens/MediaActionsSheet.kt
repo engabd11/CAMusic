@@ -232,7 +232,7 @@ fun BoxScope.MediaActionsSheet(
                 ActionRow(
                     if (isFavourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                     if (isFavourite) "Remove from favourites" else "Add to favourites",
-                    if (whole) "Keeps it on the Starred page" else "Keeps it on the Starred page",
+                    "Keeps it on the Favourites page",
                 ) { onClose(); onToggleFavourite() }
             }
             onShare?.let { share ->
