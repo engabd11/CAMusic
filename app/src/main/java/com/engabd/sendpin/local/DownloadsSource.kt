@@ -36,6 +36,7 @@ import java.io.File
 class DownloadsSource(
     private val downloads: DownloadManager,
     private val playlistStore: DownloadedPlaylists,
+    private val favourites: DownloadedFavourites,
 ) : MusicSource {
 
     override val kind: ServerKind = ServerKind.DOWNLOADS
@@ -55,7 +56,11 @@ class DownloadsSource(
      * handled where the category is offered rather than here: the Playlists category
      * only appears once something has actually been kept.
      *
-     * Still no `GENRES`, no `FAVORITES`, and `DOWNLOAD` would be circular.
+     * Still no `GENRES`, and `DOWNLOAD` would be circular.
+     *
+     * `FAVORITES` and `STAR` hold because the hearts are kept on the phone — see
+     * [DownloadedFavourites]. Without them this was the one library with no heart and
+     * no Favourites category.
      *
      * [Capability.REPLAY_GAIN] holds because the measurement came down with the file:
      * a download stores the `MaAudioFormat` the library reported, gain fields and all,
@@ -73,6 +78,8 @@ class DownloadsSource(
         // "Add to playlist" every server library has. They live on this phone.
         Capability.PLAYLIST_WRITE,
         Capability.PLAYLIST_EDIT,
+        Capability.FAVORITES,
+        Capability.STAR,
     )
 
     private fun all(): List<DownloadedTrack> = downloads.downloads.value
@@ -80,30 +87,39 @@ class DownloadsSource(
     /** Never unreachable: the files are on the phone or they are not there at all. */
     override suspend fun probe(): SourceError? = null
 
-    override suspend fun artists(): List<MaItem> = DownloadsIndex.artists(all())
+    // Everything handed out goes through [mark], so each heart shows what
+    // [favourites] holds for it.
+    private fun mark(items: List<MaItem>) = favourites.mark(items)
+
+    private fun mark(detail: Pair<MaItem?, List<MaItem>>) =
+        detail.first?.let(favourites::mark) to mark(detail.second)
+
+    override suspend fun artists(): List<MaItem> = mark(DownloadsIndex.artists(all()))
 
     override suspend fun albums(offset: Int, limit: Int): List<MaItem> =
-        DownloadsIndex.albums(all()).drop(offset).take(limit)
+        mark(DownloadsIndex.albums(all()).drop(offset).take(limit))
 
-    override suspend fun playlists(): List<MaItem> = playlistStore.all()
+    override suspend fun playlists(): List<MaItem> = mark(playlistStore.all())
 
     override suspend fun artistDetail(id: String): Pair<MaItem?, List<MaItem>> =
-        DownloadsIndex.artistDetail(all(), id)
+        mark(DownloadsIndex.artistDetail(all(), id))
 
     override suspend fun albumDetail(id: String): Pair<MaItem?, List<MaItem>> =
-        DownloadsIndex.albumDetail(all(), id)
+        mark(DownloadsIndex.albumDetail(all(), id))
 
-    override suspend fun playlistTracks(id: String): List<MaItem> = playlistStore.trackItems(id)
+    override suspend fun playlistTracks(id: String): List<MaItem> = mark(playlistStore.trackItems(id))
 
     override suspend fun tracks(offset: Int, limit: Int): List<MaItem> =
-        DownloadsIndex.items(all()).drop(offset).take(limit)
+        mark(DownloadsIndex.items(all()).drop(offset).take(limit))
 
-    override suspend fun children(item: MaItem): List<MaItem> = when (item.mediaType) {
-        "artist" -> DownloadsIndex.artistAlbums(all(), item.itemId)
-        "album" -> DownloadsIndex.albumTracks(all(), item.itemId)
-        "playlist" -> playlistStore.trackItems(item.itemId)
-        else -> emptyList()
-    }
+    override suspend fun children(item: MaItem): List<MaItem> = mark(
+        when (item.mediaType) {
+            "artist" -> DownloadsIndex.artistAlbums(all(), item.itemId)
+            "album" -> DownloadsIndex.albumTracks(all(), item.itemId)
+            "playlist" -> playlistStore.trackItems(item.itemId)
+            else -> emptyList()
+        },
+    )
 
     override suspend fun tracksUnder(item: MaItem): List<MaItem> = when (item.mediaType) {
         // Not routed through [DownloadsIndex.tracksUnder], which is pure and knows
@@ -113,7 +129,9 @@ class DownloadsSource(
         else -> DownloadsIndex.tracksUnder(all(), item)
     }
 
-    override suspend fun song(id: String): MaItem? = downloads.get(id)?.let(DownloadsIndex::item)
+    override suspend fun song(id: String): MaItem? = downloads.get(id)?.let(DownloadsIndex::item)?.let(favourites::mark)
+
+    override suspend fun setStarred(item: MaItem, starred: Boolean) = favourites.set(item, starred)
 
     override suspend fun createPlaylist(name: String, songIds: List<String>): String =
         playlistStore.create(name, songIds)
@@ -134,17 +152,26 @@ class DownloadsSource(
         return playlistId
     }
 
-    override suspend fun recentlyAdded(limit: Int): List<MaItem> =
-        DownloadsIndex.recentlyAdded(all(), { runCatchingCancellable { File(it.filePath).lastModified() }.getOrDefault(0L) }, limit)
+    override suspend fun recentlyAdded(limit: Int): List<MaItem> = mark(
+        DownloadsIndex.recentlyAdded(all(), { runCatchingCancellable { File(it.filePath).lastModified() }.getOrDefault(0L) }, limit),
+    )
 
-    override suspend fun favorites(): MaSearchResults =
-        MaSearchResults(emptyList(), emptyList(), emptyList(), emptyList())
+    /** Only what is on the phone now: a favourite whose files were deleted drops out. */
+    override suspend fun favorites(): MaSearchResults {
+        val list = all()
+        return MaSearchResults(
+            artists = mark(DownloadsIndex.artists(list)).filter { it.favorite },
+            albums = mark(DownloadsIndex.albums(list)).filter { it.favorite },
+            tracks = mark(DownloadsIndex.items(list)).filter { it.favorite },
+            playlists = mark(playlistStore.all()).filter { it.favorite },
+        )
+    }
 
     override suspend fun randomSongs(size: Int): List<MaItem> =
-        DownloadsIndex.items(all()).shuffled().take(size)
+        mark(DownloadsIndex.items(all()).shuffled().take(size))
 
     override suspend fun randomAlbums(limit: Int): List<MaItem> =
-        DownloadsIndex.albums(all()).shuffled().take(limit)
+        mark(DownloadsIndex.albums(all()).shuffled().take(limit))
 
     override suspend fun search(query: String, limit: Int): MaSearchResults {
         val base = DownloadsIndex.search(all(), query, limit)
@@ -153,7 +180,10 @@ class DownloadsSource(
         // Searched by name here rather than in [DownloadsIndex], which is pure and has
         // no access to the playlist tables.
         return base.copy(
-            playlists = playlistStore.all().filter { it.name.lowercase().contains(q) }.take(limit),
+            artists = mark(base.artists),
+            albums = mark(base.albums),
+            tracks = mark(base.tracks),
+            playlists = mark(playlistStore.all().filter { it.name.lowercase().contains(q) }.take(limit)),
         )
     }
 

@@ -211,7 +211,7 @@ internal fun categoryIconOf(id: String): ImageVector = when (id) {
     // These three reached the QueueMusic fallback, so on a Subsonic library three of
     // the seven categories wore the same generic glyph.
     "genres" -> Icons.Default.Category
-    "starred" -> Icons.Default.Star
+    "starred" -> Icons.Default.Favorite
     "random" -> Icons.Default.Shuffle
     "folders" -> Icons.Default.Folder
     else -> Icons.AutoMirrored.Filled.QueueMusic

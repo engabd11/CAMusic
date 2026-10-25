@@ -291,7 +291,7 @@ class PlaylistDetailViewModel(
                 _tracks.value = _tracks.value.map {
                     if (it.itemId == track.itemId) it.copy(favorite = !wanted) else it
                 }
-                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+                _toast.tryEmit(e.message ?: "Couldn't change the favourite")
             }
         }
     }
@@ -311,10 +311,10 @@ class PlaylistDetailViewModel(
         viewModelScope.launch {
             try {
                 if (wanted) maRepo.addFavorite(current) else maRepo.removeFavorite(current)
-                _toast.tryEmit(if (wanted) "Added to favorites" else "Removed from favorites")
+                _toast.tryEmit(if (wanted) "Added to favourites" else "Removed from favourites")
             } catch (e: Exception) {
                 _playlist.value = _playlist.value?.copy(favorite = !wanted)
-                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+                _toast.tryEmit(e.message ?: "Couldn't change the favourite")
             }
         }
     }

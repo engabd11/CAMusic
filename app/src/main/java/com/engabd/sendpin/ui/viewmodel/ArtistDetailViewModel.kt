@@ -602,10 +602,10 @@ class ArtistDetailViewModel(
                     else -> maRepo.removeFavorite(current)
                 }
                 ref = ref.copy(favorite = wanted)
-                _toast.tryEmit(if (wanted) "Added to favorites" else "Removed from favorites")
+                _toast.tryEmit(if (wanted) "Added to favourites" else "Removed from favourites")
             } catch (e: Exception) {
                 _artist.value = _artist.value?.copy(favorite = !wanted)
-                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+                _toast.tryEmit(e.message ?: "Couldn't change the favourite")
             }
         }
     }

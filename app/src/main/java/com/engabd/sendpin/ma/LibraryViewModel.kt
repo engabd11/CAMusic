@@ -371,6 +371,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val downloadManager = (app as SendpinApp).downloads
     /** Playlists kept as playlists in Downloads — see [recordPlaylist]. */
     val downloadedPlaylists = (app as SendpinApp).downloadedPlaylists
+    /** Hearts in Downloads, which keeps its own — see [toggleFavorite]. */
+    private val downloadedFavourites = (app as SendpinApp).downloadedFavourites
     /** Offline per-track analysis (bpm, key) — for Harmonic DJ mode's ranking bonus. */
     private val trackScans = (app as SendpinApp).trackScans
     val downloads: StateFlow<List<DownloadedTrack>> get() = downloadManager.downloads
@@ -3880,7 +3882,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                         // not "nothing starred", it is Music Assistant not answering -
                         // which read as "No results / Try a different search".
                         if (failed.get() == parts.size) throw lastFailure ?: IllegalStateException("Music Assistant didn't answer")
-                        if (failed.get() > 0) _toast.tryEmit("Some starred items couldn't load")
+                        if (failed.get() > 0) _toast.tryEmit("Some favourites couldn't load")
                         parts.flatten()
                     }
                 }
@@ -4509,7 +4511,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _favorites.update { if (isFav) it - item.itemId else it + item.itemId }
         viewModelScope.launch {
             try {
-                if (MusicSources.isLocalProvider(item.provider)) {
+                // Straight to the store, not through [source]: the offline fallback lists
+                // downloads while the active source is still the server that is down.
+                if (item.provider == MusicSources.DOWNLOAD_PROVIDER) {
+                    downloadedFavourites.set(item, !isFav)
+                } else if (MusicSources.isLocalProvider(item.provider)) {
                     val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
                     sc.setStarred(item, !isFav)
                 } else if (isFav) {
@@ -4517,10 +4523,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     maRepo.addFavorite(item)
                 }
-                _toast.tryEmit(if (isFav) "Removed from favorites" else "Added to favorites")
+                _toast.tryEmit(if (isFav) "Removed from favourites" else "Added to favourites")
             } catch (e: Exception) {
                 _favorites.update { if (isFav) it + item.itemId else it - item.itemId }
-                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+                _toast.tryEmit(e.message ?: "Couldn't change the favourite")
             }
         }
     }
@@ -4570,13 +4576,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _backend.value == Backend.MA -> {
                 add(category("artists", "Artists")); add(category("albums", "Albums"))
                 add(category("tracks", "Tracks")); add(category("playlists", "Playlists"))
-                // Starred was a self-hosted-only category, for no reason other than
+                // Favourites was a self-hosted-only category, for no reason other than
                 // that nobody had written the MA query — see [openCategory].
-                add(category("starred", "Starred"))
+                add(category("starred", "Favourites"))
                 add(category("radios", "Radio stations")); add(category("podcasts", "Podcasts"))
             }
             // Driven by what the source says it can answer, not by a fixed list.
-            // Every self-hosted library got Playlists, Genres and Starred whatever it
+            // Every self-hosted library got Playlists, Genres and Favourites whatever it
             // was — LocalMediaSource declares only SEARCH and still offered all three,
             // each of which dead-ends in an empty screen. See [Capability]: a shelf
             // that is always empty is worse than the feature being absent.
@@ -4597,7 +4603,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // Gated on the capability, not offered blind: only a source that can
                 // walk its folders gets the category.
                 if (src != null && src.has(Capability.FOLDERS)) add(category("folders", "Folders"))
-                if (src == null || src.has(Capability.FAVORITES)) add(category("starred", "Starred"))
+                if (src == null || src.has(Capability.FAVORITES)) add(category("starred", "Favourites"))
                 add(category("newest", "Recently Added"))
                 add(category("random", "Shuffle all"))
             }
@@ -4634,7 +4640,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * land.
      */
     private fun downloadItems(list: List<DownloadedTrack>): List<MaItem> =
-        com.engabd.sendpin.local.DownloadsIndex.items(list)
+        // Remembered here because the offline route publishes these straight to the
+        // node, past the loader that would otherwise fold in their hearts.
+        downloadedFavourites.mark(com.engabd.sendpin.local.DownloadsIndex.items(list)).also(::rememberFavorites)
 
     /** [downloadItems] with any kept playlists in front of it. See [openCategory]. */
     private suspend fun downloadNodeItems(): List<MaItem> =

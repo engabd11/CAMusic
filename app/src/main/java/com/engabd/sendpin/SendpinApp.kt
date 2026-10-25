@@ -118,6 +118,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
         com.engabd.sendpin.local.DownloadedPlaylists(this)
     }
 
+    /** Hearts in the Downloads library, which has no server to keep them. */
+    val downloadedFavourites: com.engabd.sendpin.local.DownloadedFavourites by lazy {
+        com.engabd.sendpin.local.DownloadedFavourites(this)
+    }
+
     /**
      * The one authority on which player owns this phone's audio output.
      *

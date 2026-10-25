@@ -358,7 +358,7 @@ enum class Capability {
      */
     PLAYLIST_EDIT,
 
-    /** Favourites can be *listed* — the Starred shelf. See [STAR] for changing them. */
+    /** Favourites can be *listed* — the Favourites category. See [STAR] for changing them. */
     FAVORITES,
 
     /**
