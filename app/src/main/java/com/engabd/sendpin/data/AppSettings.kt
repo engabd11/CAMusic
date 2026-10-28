@@ -1003,7 +1003,10 @@ class AppSettings(private val context: Context) {
             obj.forEach { (name, element) ->
                 if (name == SERVERS_EXPORT_KEY) return@forEach
                 val primitive = element as? JsonPrimitive ?: return@forEach
-                val bool = primitive.booleanOrNull
+                // Only an unquoted true/false is a switch. booleanOrNull ignores the quotes, so a
+                // username or password that is the word "true" came back as a Boolean and
+                // crashed the next read of that text setting.
+                val bool = if (primitive.isString) null else primitive.booleanOrNull
                 if (bool != null) {
                     prefs[booleanPreferencesKey(name)] = bool
                 } else {
