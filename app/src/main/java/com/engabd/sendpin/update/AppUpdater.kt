@@ -120,7 +120,8 @@ object AppUpdater {
             try {
                 _state.value = State.Downloading(release, if (release.apkSize > 0) 0f else null)
                 val file = download(app, release)
-                verify(app, file)?.let { reason ->
+                // Off the main thread: checking a 70 MB APK's signature hashes all of it.
+                withContext(Dispatchers.IO) { verify(app, file) }?.let { reason ->
                     file.delete()
                     _state.value = State.Failed(reason, release)
                     return@launch
@@ -148,7 +149,8 @@ object AppUpdater {
             _state.value = State.Available(s.release)
             return
         }
-        if (app.packageManager.canRequestPackageInstalls()) proceedToInstall(app, s.release, file)
+        if (!app.packageManager.canRequestPackageInstalls() || job?.isActive == true) return
+        job = scope.launch { proceedToInstall(app, s.release, file) }
     }
 
     /** The system page where CAMusic is allowed to install apps. */
@@ -270,14 +272,17 @@ object AppUpdater {
         return null
     }
 
-    private fun proceedToInstall(context: Context, release: ReleaseInfo, file: File) {
+    private suspend fun proceedToInstall(context: Context, release: ReleaseInfo, file: File) {
         if (!context.packageManager.canRequestPackageInstalls()) {
             _state.value = State.NeedsPermission(release)
             return
         }
         _state.value = State.Installing(release)
         try {
-            install(context, file)
+            // Copies the whole APK into the session and fsyncs it: seconds on a slow phone.
+            withContext(Dispatchers.IO) { install(context, file) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Install session failed", e)
             _state.value = State.Failed("Android would not start the install: ${e.message}", release)
