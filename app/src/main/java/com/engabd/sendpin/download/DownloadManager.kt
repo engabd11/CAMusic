@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -137,6 +139,19 @@ class DownloadManager(
      * and nothing else.
      */
     private val runs = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * One lock per file. Runs go side by side, and two of them reaching the same track
+     * (a double tap, an album and then its artist, the restart resume and a new tap)
+     * used to write one `.part` file at once and then delete each other's finished file.
+     * Above `init`, which starts the resume run.
+     *
+     * shortcut: one Mutex per track downloaded this process is never removed; fine at
+     * library sizes, add removal if that ever shows in a heap dump.
+     */
+    private val fileLocks = HashMap<String, Mutex>()
+
+    private fun lockFor(name: String): Mutex = synchronized(fileLocks) { fileLocks.getOrPut(name) { Mutex() } }
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
     private val serializer = ListSerializer(DownloadedTrack.serializer())
@@ -282,7 +297,7 @@ class DownloadManager(
      * multiply: this used to evict at MiB while the other half of the same feature
      * refused new downloads at MB.
      */
-    suspend fun enforceStorageCap(capMb: Int) {
+    suspend fun enforceStorageCap(capMb: Int, landed: File? = null) {
         val capBytes = AppSettings.storageCapBytes(capMb) ?: return
         // Never the track being listened to. Deleting the file out from under the
         // player is the one eviction a user would experience as the app breaking, and
@@ -296,7 +311,10 @@ class DownloadManager(
         // the loop — quadratic in the size of the library, on a cap that exists because
         // the library is large.
         val sizes = _downloads.value.associateWith { runCatchingCancellable { File(it.filePath).length() }.getOrDefault(0L) }
-        var used = sizes.values.sum()
+        // The file that just landed is usually not in the list yet (it follows the
+        // table a moment behind), so it is counted here or the cap runs one track over.
+        var used = sizes.values.sum() +
+            (landed?.takeIf { f -> sizes.keys.none { it.filePath == f.absolutePath } }?.length() ?: 0L)
         val candidates = sizes.keys
             .filterNot { it.id == playing || it.id in inPlaylists }
             .sortedBy { runCatchingCancellable { File(it.filePath).lastModified() }.getOrDefault(Long.MAX_VALUE) }
@@ -404,6 +422,19 @@ class DownloadManager(
         coverUrl: String? = null,
         wifiOnly: Boolean = false,
         storageCapMb: Int = 0,
+    ): Boolean = lockFor(fileNameFor(item.provider, item.itemId)).withLock {
+        // Asked of the table, not [isDownloaded]: the list behind that lags an insert,
+        // and the run this one waited on may have just landed the file.
+        if (dao.get(item.itemId, item.provider) != null) true
+        else downloadUnlocked(item, url, coverUrl, wifiOnly, storageCapMb)
+    }
+
+    private suspend fun downloadUnlocked(
+        item: MaItem,
+        url: String,
+        coverUrl: String?,
+        wifiOnly: Boolean,
+        storageCapMb: Int,
     ): Boolean = withContext(Dispatchers.IO) {
         if (isDownloaded(item)) return@withContext true
         if (wifiOnly && !isUnmetered()) {
@@ -465,7 +496,7 @@ class DownloadManager(
             if (item.favorite) favourites.set("track", item.itemId, true)
             clearJob(item.itemId)
             keepLyrics(item, file)
-            enforceStorageCap(storageCapMb)
+            enforceStorageCap(storageCapMb, landed = file)
             true
         } catch (e: CancellationException) {
             // The run was cancelled, not the file refused. The partial file stays, so
