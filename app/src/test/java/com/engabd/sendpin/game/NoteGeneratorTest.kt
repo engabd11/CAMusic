@@ -526,6 +526,24 @@ class NoteGeneratorTest {
     }
 
     @Test
+    fun `the slam lands where the bass comes in, not where the section starts`() {
+        // What a real scan of a build-and-drop looked like: one loud section that
+        // starts at the build (beat 16) at a mean energy well under 0.65, with the
+        // sustained bass only arriving two bars later (beat 24).
+        val beats = 48
+        val onsets = grid(beats) { s, c -> if (c == OnsetGrid.LOW_HOLD && s / 4 >= 24) 0.8f else 0f }
+        val scan = fakeScan(beats = beats).copy(
+            sections = listOf(ScanSection(0f, 8f, 0.16f), ScanSection(8f, 24f, 0.61f)),
+            onsets = onsets,
+        )
+        val roles = ChartRoles.of(scan)
+        assertEquals(setOf(24), roles.dropBeats)
+        assertEquals(Role.BUILD, roles.at(16))
+        assertEquals(Role.BUILD, roles.at(23))
+        assertEquals(Role.DROP, roles.at(24))
+    }
+
+    @Test
     fun `never more than two notes at once`() {
         val beats = 16
         // Everything hits everywhere, and the kick and lead both ring.

@@ -80,11 +80,15 @@ enum class Role { NORMAL, BUILD, DROP, BREAK }
 /**
  * Where a scan's drops, builds and breakdowns fall, by beat index.
  *
- * A drop is a section that is loud and a big step up on the one before it; its
- * slam lands on the downbeat nearest the boundary, because a section boundary is
- * measured to a frame and a drop is played on the one. A build is the two bars
- * before a drop, whatever section they belong to: that is where the roll and the
- * charge live. A breakdown is a quiet section after a real fall.
+ * A drop is a section near the track's loudest and a big step up on the one before
+ * it. Loudness is the track's own scale: section energies are relative to its peak,
+ * and a section's mean sits well under that, so an absolute floor missed real drops.
+ * Its slam lands where the bass comes in, when the onset grid can say: segmentation
+ * often puts the boundary at the start of the build, where the energy first rises,
+ * not at the drop itself. Without a grid it lands on the downbeat nearest the
+ * boundary. A build is the two bars before a drop, whatever section they belong
+ * to: that is where the roll and the charge live. A breakdown is a quiet section
+ * after a real fall.
  */
 internal class ChartRoles(
     private val roles: Array<Role>,
@@ -104,13 +108,14 @@ internal class ChartRoles(
             val drops = HashSet<Int>()
             val bar = scan.beatsPerBar.coerceAtLeast(1)
             fun firstBeatFrom(s: Float): Int = scan.beats.indexOfFirst { it >= s - BOUNDARY_SLACK_S }.let { if (it < 0) n else it }
+            val loudest = scan.sections.maxOfOrNull { it.energy } ?: 0f
             for ((i, section) in scan.sections.withIndex()) {
                 val prev = scan.sections.getOrNull(i - 1) ?: continue
                 val from = firstBeatFrom(section.startS)
                 val until = firstBeatFrom(section.endS)
                 if (from >= n) continue
-                if (section.energy >= DROP_ENERGY && section.energy - prev.energy >= DROP_JUMP) {
-                    val drop = (from - 2..from + 2)
+                if (section.energy >= DROP_SHARE * loudest && section.energy - prev.energy >= DROP_JUMP) {
+                    val drop = bassEntry(scan, from, bar) ?: (from - 2..from + 2)
                         .filter { it in 0 until n && Math.floorMod(it - scan.downbeat, bar) == 0 }
                         .minByOrNull { kotlin.math.abs(it - from) } ?: from
                     drops.add(drop)
@@ -121,11 +126,37 @@ internal class ChartRoles(
                         roles[b] = Role.BUILD
                         progress[b] = (b - buildFrom).toFloat() / (drop - buildFrom)
                     }
-                } else if (section.energy <= BREAK_ENERGY && prev.energy - section.energy >= BREAK_FALL) {
+                } else if (section.energy <= BREAK_SHARE * loudest && prev.energy - section.energy >= BREAK_FALL) {
                     for (b in from until until.coerceAtMost(n)) if (roles[b] == Role.NORMAL) roles[b] = Role.BREAK
                 }
             }
             return ChartRoles(roles, progress, drops)
+        }
+
+        /**
+         * The downbeat near section start [from] where the sustained bass steps up the
+         * most from one bar to the next — where the drop actually lands. Null without an
+         * onset grid, or when no bar steps up by [DROP_BASS_JUMP].
+         */
+        private fun bassEntry(scan: TrackScan, from: Int, bar: Int): Int? {
+            val grid = scan.onsets ?: return null
+            val n = minOf(scan.beats.size, grid.slots / OnsetGrid.SLOTS_PER_BEAT)
+            fun bass(b0: Int, b1: Int): Float {
+                var sum = 0f
+                for (s in b0 * OnsetGrid.SLOTS_PER_BEAT until b1 * OnsetGrid.SLOTS_PER_BEAT) sum += grid.at(s, OnsetGrid.LOW_HOLD)
+                return sum / ((b1 - b0) * OnsetGrid.SLOTS_PER_BEAT)
+            }
+            var best: Int? = null
+            var bestJump = DROP_BASS_JUMP
+            for (d in (from - bar).coerceAtLeast(bar)..minOf(from + DROP_SEARCH_BARS * bar, n - bar)) {
+                if (Math.floorMod(d - scan.downbeat, bar) != 0) continue
+                val jump = bass(d, d + bar) - bass(d - bar, d)
+                if (jump > bestJump) {
+                    bestJump = jump
+                    best = d
+                }
+            }
+            return best
         }
     }
 }
@@ -1127,12 +1158,16 @@ private const val HOLD_BREAK_ONSET = 0.5f
 private const val MIN_HOLD_SLOTS = 4
 private const val MAX_HOLD_SLOTS = 32
 
-/** Section energy (0..1) a drop reaches, and the step up from the section before it. */
-private const val DROP_ENERGY = 0.65f
+/** A drop reaches this share of the track's loudest section, a step up of at least [DROP_JUMP]. */
+private const val DROP_SHARE = 0.8f
 private const val DROP_JUMP = 0.25f
 
-/** A breakdown is at most this loud, after a fall of at least this much. */
-private const val BREAK_ENERGY = 0.35f
+/** How far into a drop section its bass entry is looked for, and how big a step counts. */
+private const val DROP_SEARCH_BARS = 4
+private const val DROP_BASS_JUMP = 0.2f
+
+/** A breakdown is at most this share of the loudest section, after a fall of at least this much. */
+private const val BREAK_SHARE = 0.5f
 private const val BREAK_FALL = 0.2f
 
 /** Bars before a drop that are its build. */

@@ -1607,8 +1607,14 @@ internal fun buildOnsetGrid(ex: OfflineExtractor, beatTimes: FloatArray): OnsetG
         raw[OnsetGrid.TONE_HOLD][s] = tone / (toneHi - toneLo)
     }
     val data = ByteArray(slots * OnsetGrid.CHANNELS)
+    // Tone is a subset of mid, so it is measured on mid's scale. Against its own p95 a
+    // track with a handful of tonal attacks would blow its noise up into a lead line.
+    val refs = FloatArray(OnsetGrid.CHANNELS) { c ->
+        percentile(DoubleArray(slots) { raw[c][it].toDouble() }, 95.0).toFloat().coerceAtLeast(1e-9f)
+    }
+    refs[OnsetGrid.TONE] = refs[OnsetGrid.MID]
     for (c in 0 until OnsetGrid.CHANNELS) {
-        val ref = percentile(DoubleArray(slots) { raw[c][it].toDouble() }, 95.0).toFloat().coerceAtLeast(1e-9f)
+        val ref = refs[c]
         for (s in 0 until slots) {
             data[s * OnsetGrid.CHANNELS + c] = (unitF(raw[c][s] / ref) * 255f + 0.5f).toInt().toByte()
         }
