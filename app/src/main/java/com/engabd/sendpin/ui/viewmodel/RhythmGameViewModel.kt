@@ -362,7 +362,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
 
         for (o in onsets) {
             val audible = clock.fromSource(o.atMs) + GameTiming.effectiveLeadMs(leadMs, o.lagMs)
-            generator.onOnset(o.beat, o.bass, o.mid, o.midStrength, audible)
+            generator.onOnset(o, audible)
         }
 
         if (chart != null && chart === lastChart) {

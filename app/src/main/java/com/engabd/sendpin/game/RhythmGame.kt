@@ -2,8 +2,10 @@ package com.engabd.sendpin.game
 
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.BeatGrid
+import com.engabd.sendpin.audio.OnsetGrid
 import com.engabd.sendpin.audio.TrackScan
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.roundToLong
 
 /**
@@ -64,7 +66,119 @@ data class GameNote(
     val intensity: Float,
     /** True on the note that falls on a bar's downbeat — the UI accents these. */
     val downbeat: Boolean = false,
+    /** How long the note is held after it is struck, ms; 0 for a tap. */
+    val holdMs: Long = 0L,
+    /** Half of a drop's two-thumb slam: lanes 0 and 3 at the same instant. */
+    val slam: Boolean = false,
+    /** What part of the song the note sits in. */
+    val role: Role = Role.NORMAL,
 )
+
+/** Where a note sits in the song's arc, from the scan's sections. */
+enum class Role { NORMAL, BUILD, DROP, BREAK }
+
+/**
+ * Where a scan's drops, builds and breakdowns fall, by beat index.
+ *
+ * A drop is a section that is loud and a big step up on the one before it; its
+ * slam lands on the downbeat nearest the boundary, because a section boundary is
+ * measured to a frame and a drop is played on the one. A build is the two bars
+ * before a drop, whatever section they belong to: that is where the roll and the
+ * charge live. A breakdown is a quiet section after a real fall.
+ */
+internal class ChartRoles(
+    private val roles: Array<Role>,
+    private val progress: FloatArray,
+    val dropBeats: Set<Int>,
+) {
+    fun at(index: Int): Role = roles.getOrElse(index) { Role.NORMAL }
+
+    /** 0 at the start of a build, approaching 1 at its drop. */
+    fun buildProgress(index: Int): Float = progress.getOrElse(index) { 0f }
+
+    companion object {
+        fun of(scan: TrackScan): ChartRoles {
+            val n = scan.beats.size
+            val roles = Array(n) { Role.NORMAL }
+            val progress = FloatArray(n)
+            val drops = HashSet<Int>()
+            val bar = scan.beatsPerBar.coerceAtLeast(1)
+            fun firstBeatFrom(s: Float): Int = scan.beats.indexOfFirst { it >= s - BOUNDARY_SLACK_S }.let { if (it < 0) n else it }
+            for ((i, section) in scan.sections.withIndex()) {
+                val prev = scan.sections.getOrNull(i - 1) ?: continue
+                val from = firstBeatFrom(section.startS)
+                val until = firstBeatFrom(section.endS)
+                if (from >= n) continue
+                if (section.energy >= DROP_ENERGY && section.energy - prev.energy >= DROP_JUMP) {
+                    val drop = (from - 2..from + 2)
+                        .filter { it in 0 until n && Math.floorMod(it - scan.downbeat, bar) == 0 }
+                        .minByOrNull { kotlin.math.abs(it - from) } ?: from
+                    drops.add(drop)
+                    for (b in drop until until.coerceAtLeast(drop + 1).coerceAtMost(n)) roles[b] = Role.DROP
+                    val buildFrom = (drop - BUILD_BARS * bar).coerceAtLeast(0)
+                    for (b in buildFrom until drop) {
+                        if (roles[b] == Role.DROP) continue
+                        roles[b] = Role.BUILD
+                        progress[b] = (b - buildFrom).toFloat() / (drop - buildFrom)
+                    }
+                } else if (section.energy <= BREAK_ENERGY && prev.energy - section.energy >= BREAK_FALL) {
+                    for (b in from until until.coerceAtMost(n)) if (roles[b] == Role.NORMAL) roles[b] = Role.BREAK
+                }
+            }
+            return ChartRoles(roles, progress, drops)
+        }
+    }
+}
+
+/**
+ * What the last few bars did, lane by lane, for feeds with no scan.
+ *
+ * Music repeats by the bar, so the best guess at what the next bar holds is what
+ * the last two held at the same point. A note is charted where a lane hit one *and*
+ * two bars back (their mean, against the lane's own peak), which is what keeps a
+ * one-off fill from being copied forward. Charting runs ahead of the music, so the
+ * bars looked back over are the newest ones already heard, not simply "one bar ago".
+ */
+internal class BarPattern {
+    private class Hit(val lane: Int, val strength: Float, val atMs: Long)
+
+    private val hits = ArrayDeque<Hit>()
+    private var firstAtMs = Long.MAX_VALUE
+
+    fun record(lane: Int, strength: Float, atMs: Long) {
+        if (strength <= 0f) return
+        if (firstAtMs == Long.MAX_VALUE) firstAtMs = atMs
+        hits.addLast(Hit(lane, strength, atMs))
+        while (atMs - hits.first().atMs > PATTERN_WINDOW_MS) hits.removeFirst()
+    }
+
+    /**
+     * How strongly [lane] hit at [timeMs]'s place in the bar, 0..1, from the two
+     * newest bars heard by [knownUntilMs]. Null until there are two bars to read.
+     */
+    fun strengthAt(lane: Int, timeMs: Long, barMs: Float, toleranceMs: Float, knownUntilMs: Long): Float? {
+        if (barMs <= 0f) return null
+        val n = kotlin.math.ceil((timeMs - knownUntilMs) / barMs).toInt().coerceAtLeast(1)
+        val newer = timeMs - n * barMs
+        val older = newer - barMs
+        if (older + toleranceMs < firstAtMs) return null
+        var peak = 0f
+        var a = 0f
+        var b = 0f
+        for (h in hits) {
+            if (h.lane != lane) continue
+            if (h.strength > peak) peak = h.strength
+            if (abs(h.atMs - newer) <= toleranceMs && h.strength > a) a = h.strength
+            if (abs(h.atMs - older) <= toleranceMs && h.strength > b) b = h.strength
+        }
+        return if (peak <= 0f) 0f else (a + b) / 2f / peak
+    }
+
+    fun clear() {
+        hits.clear()
+        firstAtMs = Long.MAX_VALUE
+    }
+}
 
 /**
  * How well a tap landed.
@@ -110,6 +224,9 @@ enum class Judgement(val label: String, val points: Int, val windowMs: Long) {
  */
 val DIFFICULTY_SCALE = mapOf("easy" to 1.5f, "normal" to 1f, "expert" to 0.66f)
 
+/** The finest subdivision each difficulty charts: notes per beat (quarters, 8ths, 16ths). */
+val DIFFICULTY_DENSITY = mapOf("easy" to 1, "normal" to 2, "expert" to 4)
+
 /**
  * Turns the live analysis stream into a chart the player can actually read.
  *
@@ -152,6 +269,25 @@ class NoteGenerator(
 ) {
     private val notes = ArrayList<GameNote>()
     private var nextId = 1L
+
+    /**
+     * Notes per beat at most: 1, 2 or 4 (see [DIFFICULTY_DENSITY]). Applies to the
+     * beats charted from the next frame on.
+     */
+    var density: Int = 2
+        set(value) { field = if (value >= 4) 4 else if (value >= 2) 2 else 1 }
+
+    /** The adopted scan's drops, builds and breakdowns; rebuilt with [scanIdentity]. */
+    private var roles: ChartRoles? = null
+
+    /** When each lane's hold, if any, lets go, on the game clock. */
+    private val holdUntil = LongArray(lanes)
+
+    /** The live feeds' bar memory. See [BarPattern]. */
+    private val pattern = BarPattern()
+
+    /** The newest audible instant a frame has described, which is as far as [pattern] knows. */
+    private var lastAudibleNow = 0L
 
     /**
      * Bumped whenever the note list actually changes.
@@ -247,6 +383,7 @@ class NoteGenerator(
         chart: GameChartSource? = null,
     ) {
         val audibleNow = nowMs + leadMs
+        lastAudibleNow = audibleNow
 
         trackCharacter(frame)
 
@@ -291,13 +428,16 @@ class NoteGenerator(
      * An onset the analyser flagged, delivered through [GameOnsetBuffer] rather than
      * on a frame. [audibleMs] is when it is heard, on the game clock.
      *
-     * Feeds the same two things the frame flags used to: the phase loop that keeps the
-     * fallback grid on the beat, and the hat density. A frame the conflated flow
+     * Feeds the phase loop that keeps the fallback grid on the beat, the hat density,
+     * and the bar memory unscanned feeds chart from. A frame the conflated flow
      * dropped can no longer take its beat with it.
      */
-    fun onOnset(beat: Boolean, bass: Boolean, mid: Boolean, midStrength: Float, audibleMs: Long) {
-        if (mid) hatLevel += (midStrength - hatLevel) * 0.05f
-        trackPhase(beat || bass, audibleMs)
+    fun onOnset(onset: GameOnset, audibleMs: Long) {
+        if (onset.mid) hatLevel += (onset.midStrength - hatLevel) * 0.05f
+        if (onset.bass) pattern.record(LANE_KICK, onset.bassStrength, audibleMs)
+        if (onset.beat && !onset.bass) pattern.record(LANE_SNARE, onset.beatStrength, audibleMs)
+        if (onset.mid) pattern.record(LANE_MELODY, onset.midStrength, audibleMs)
+        trackPhase(onset.beat || onset.bass, audibleMs)
     }
 
     /**
@@ -395,6 +535,9 @@ class NoteGenerator(
         nextScanBeat = 0
         pastScanBeats = 0
         prevScanAccent = 1f
+        roles = null
+        holdUntil.fill(0L)
+        pattern.clear()
     }
 
     // ── Listening ───────────────────────────────────────────────────────────
@@ -489,6 +632,7 @@ class NoteGenerator(
                 scanIdentity = identity
                 nextScanBeat = 0
                 prevScanAccent = 1f
+                roles = ChartRoles.of(scan)
             }
             val horizon = audibleNow + lookAheadMs
             // Skip every beat already past the hit window — the catch-up after a
@@ -567,24 +711,42 @@ class NoteGenerator(
         }
         prevScanAccent = accent
 
+        val role = roles?.at(index) ?: Role.NORMAL
+        // The drop: both thumbs, on the one. Works from sections alone, so a scan
+        // from before the onset grid still gets its slams.
+        val slam = roles?.dropBeats?.contains(index) == true
+        if (slam) {
+            holdUntil.fill(0L)
+            add(LANE_KICK, timeMs, NoteKind.KICK, 1f, downbeat, slam = true, role = Role.DROP)
+            add(LANE_MELODY, timeMs, NoteKind.MELODY, 1f, downbeat, slam = true, role = Role.DROP)
+        }
+
+        val grid = scan.onsets
+        if (grid != null && (index + 1) * OnsetGrid.SLOTS_PER_BEAT <= grid.slots) {
+            chartOnsetBeat(grid, index, timeMs, gapMs, downbeat, accent, role, roles?.buildProgress(index) ?: 0f, slam)
+            return
+        }
+
         // The pulse lane follows the measured accent, not a fixed kick/snare
         // pattern: the light reward already scales with note intensity, so a
         // beat that hit hard pays out the way it sounded.
         val heavy = downbeat || accent >= 0.5f
-        add(if (heavy) LANE_KICK else LANE_SNARE, timeMs, if (heavy) NoteKind.KICK else NoteKind.SNARE, accent, downbeat)
+        if (!slam) {
+            add(if (heavy) LANE_KICK else LANE_SNARE, timeMs, if (heavy) NoteKind.KICK else NoteKind.SNARE, accent, downbeat, role = role)
+        }
 
         // Offbeat hats, gated by the section's own low-band energy (the drum
         // proxy) rather than a global EMA — a sparse verse stays sparse.
         val drumEnergy = stems?.bass ?: section?.energy ?: accent
         if (drumEnergy > HAT_THRESHOLD && chance(index, 11) < 0.35f + drumEnergy) {
-            add(LANE_HAT, timeMs + half, NoteKind.HAT, drumEnergy.coerceAtMost(1f), false)
+            add(LANE_HAT, timeMs + half, NoteKind.HAT, drumEnergy.coerceAtMost(1f), false, role = role)
         }
 
         // Melody lane on vocal presence (mid-channel stem energy), chorus-weighted
         // by keeping it to one bar position — an event, not a fifth of the noise.
         val vocal = stems?.vocals ?: 0f
         if (vocal > MELODY_THRESHOLD && inBar == 2 && chance(index, 23) < 0.55f) {
-            add(LANE_MELODY, timeMs, NoteKind.MELODY, vocal.coerceAtMost(1f), false)
+            add(LANE_MELODY, timeMs, NoteKind.MELODY, vocal.coerceAtMost(1f), false, role = role)
         }
 
         // Fills only into real builds: the next section is genuinely louder than
@@ -595,9 +757,121 @@ class NoteGenerator(
             inBar == bar - 1 &&
             chance(index, 37) < 0.3f
         ) {
-            add(LANE_HAT, timeMs + half, NoteKind.HAT, 0.8f, false)
-            add(LANE_SNARE, timeMs + half + (half / 2f).roundToLong(), NoteKind.SNARE, 0.9f, false)
+            add(LANE_HAT, timeMs + half, NoteKind.HAT, 0.8f, false, role = role)
+            add(LANE_SNARE, timeMs + half + (half / 2f).roundToLong(), NoteKind.SNARE, 0.9f, false, role = role)
         }
+    }
+
+    /**
+     * One beat transcribed from the scan's [OnsetGrid]: what actually played there.
+     *
+     * The difficulty sets the subdivision looked at (quarters, 8ths, 16ths) and each
+     * slot gets at most one note, in the lane of the band that hit hardest, so
+     * density follows the song and the setting caps it. Hats are weighted down a
+     * little, because a hat ticks on nearly every 16th and would otherwise win every
+     * slot the kick and snare leave quiet. Breakdowns look at half the slots; the
+     * second half of a build looks at twice as many, and its mids and highs become
+     * the snare roll into the drop.
+     *
+     * A kick or lead whose sustain carries on, with no new attack in its band, is a
+     * hold for as long as it does: the 808 that rings, the synth that is held.
+     */
+    private fun chartOnsetBeat(
+        grid: OnsetGrid,
+        index: Int,
+        timeMs: Long,
+        gapMs: Float,
+        downbeat: Boolean,
+        accent: Float,
+        role: Role,
+        buildProgress: Float,
+        skipOnBeat: Boolean,
+    ) {
+        val perBeat = when (role) {
+            Role.BREAK -> (density / 2).coerceAtLeast(1)
+            Role.BUILD -> if (buildProgress >= 0.5f) (density * 2).coerceAtMost(4) else density
+            else -> density
+        }
+        val step = OnsetGrid.SLOTS_PER_BEAT / perBeat
+        val slotMs = gapMs / OnsetGrid.SLOTS_PER_BEAT
+        var charted = false
+        for (k in 0 until OnsetGrid.SLOTS_PER_BEAT step step) {
+            if (k == 0 && skipOnBeat) continue
+            val s = index * OnsetGrid.SLOTS_PER_BEAT + k
+            val t = timeMs + (k * slotMs).roundToLong()
+            val low = grid.at(s, OnsetGrid.LOW)
+            val mid = grid.at(s, OnsetGrid.MID)
+            val high = grid.at(s, OnsetGrid.HIGH)
+            val tone = grid.at(s, OnsetGrid.TONE)
+            var lane = LANE_KICK
+            var best = low
+            // Tone is mid that was tonal; the snare keeps only the mid that was not.
+            for ((l, v) in arrayOf(LANE_SNARE to mid - tone * 0.5f, LANE_HAT to high * HAT_WEIGHT, LANE_MELODY to tone)) {
+                if (v > best) {
+                    best = v
+                    lane = l
+                }
+            }
+            if (role == Role.BUILD && buildProgress >= 0.5f && max(mid, high) >= ROLL_FLOOR) {
+                lane = LANE_SNARE
+                best = max(best, 0.6f)
+            }
+            if (best < NOTE_FLOOR) continue
+            add(lane, t, NoteKind.entries[lane], best, downbeat && k == 0, holdMs = holdLength(grid, s, lane, role, slotMs), role = role)
+            charted = true
+        }
+        // A beat the grid heard nothing clear on but that still hit keeps its pulse,
+        // so a quiet verse thins out rather than going silent.
+        if (!charted && !skipOnBeat && accent >= PULSE_FALLBACK_ACCENT) {
+            val heavy = downbeat || accent >= 0.5f
+            add(if (heavy) LANE_KICK else LANE_SNARE, timeMs, if (heavy) NoteKind.KICK else NoteKind.SNARE, accent, downbeat, role = role)
+        }
+    }
+
+    /** How long the note at slot [s] is held, ms, or 0 for a tap. */
+    private fun holdLength(grid: OnsetGrid, s: Int, lane: Int, role: Role, slotMs: Float): Long {
+        if (role == Role.BUILD) return 0L
+        val (hold, onset) = when (lane) {
+            LANE_KICK -> OnsetGrid.LOW_HOLD to OnsetGrid.LOW
+            LANE_MELODY -> OnsetGrid.TONE_HOLD to OnsetGrid.TONE
+            else -> return 0L
+        }
+        val start = grid.at(s, hold)
+        if (start < HOLD_MIN_LEVEL) return 0L
+        var run = 0
+        while (run < MAX_HOLD_SLOTS) {
+            val next = s + run + 1
+            if (next >= grid.slots || grid.at(next, hold) < start * HOLD_KEEP || grid.at(next, onset) >= HOLD_BREAK_ONSET) break
+            run++
+        }
+        return if (run >= MIN_HOLD_SLOTS) (run * slotMs).roundToLong() else 0L
+    }
+
+    /**
+     * One beat charted from the [BarPattern], for feeds with no scan. False when the
+     * pattern is not learned yet or heard nothing at this point of the bar, and the
+     * template keeps the beat instead.
+     */
+    private fun chartPatternBeat(timeMs: Long, period: Float, barMs: Float, downbeat: Boolean): Boolean {
+        val step = OnsetGrid.SLOTS_PER_BEAT / density
+        val tolerance = period / 8f
+        var charted = false
+        for (k in 0 until OnsetGrid.SLOTS_PER_BEAT step step) {
+            val t = timeMs + (k * period / OnsetGrid.SLOTS_PER_BEAT).roundToLong()
+            var lane = -1
+            var best = 0f
+            for (l in PATTERN_LANES) {
+                val v = pattern.strengthAt(l, t, barMs, tolerance, lastAudibleNow) ?: return charted
+                if (v > best) {
+                    best = v
+                    lane = l
+                }
+            }
+            if (lane < 0 || best < PATTERN_FLOOR) continue
+            add(lane, t, NoteKind.entries[lane], best, downbeat && k == 0)
+            charted = true
+        }
+        return charted
     }
 
     /**
@@ -614,7 +888,10 @@ class NoteGenerator(
         val half = (periodMs / 2f).roundToLong().coerceAtLeast(60L)
         val pulseAccent = if (accent > 0f) accent else accentNow
 
-        if (downbeat || pulseAccent >= 0.5f) {
+        val patterned = chartPatternBeat(timeMs, periodMs, periodMs * bar, downbeat)
+        if (patterned) {
+            // The bar memory has the kick, snare and lead; only the hats stay on the rule.
+        } else if (downbeat || pulseAccent >= 0.5f) {
             add(LANE_KICK, timeMs, NoteKind.KICK, pulseAccent, downbeat)
         } else {
             add(LANE_SNARE, timeMs, NoteKind.SNARE, pulseAccent, false)
@@ -623,7 +900,7 @@ class NoteGenerator(
         if (hatLevel > HAT_THRESHOLD && chance(timeMs.toInt(), 11) < 0.35f + hatLevel) {
             add(LANE_HAT, timeMs + half, NoteKind.HAT, hatLevel, false)
         }
-        if (melodyLevel > MELODY_THRESHOLD && inBar == 2 && chance(timeMs.toInt(), 23) < 0.55f) {
+        if (!patterned && melodyLevel > MELODY_THRESHOLD && inBar == 2 && chance(timeMs.toInt(), 23) < 0.55f) {
             add(LANE_MELODY, timeMs, NoteKind.MELODY, melodyLevel, false)
         }
         if (energyLevel > FILL_THRESHOLD && inBar == bar - 1 && chance(timeMs.toInt(), 37) < 0.3f) {
@@ -676,8 +953,12 @@ class NoteGenerator(
         val downbeat = inBar == 0
         val half = (periodMs / 2f).roundToLong()
 
-        // The pulse: kick on 1 and 3, snare on 2 and 4.
-        if (inBar == 0 || inBar == 2) {
+        // The pulse: what the last two bars did here, once they are known; until
+        // then kick on 1 and 3, snare on 2 and 4.
+        val patterned = chartPatternBeat(timeMs, periodMs, periodMs * BEATS_PER_BAR, downbeat)
+        if (patterned) {
+            // Charted from the bar memory.
+        } else if (inBar == 0 || inBar == 2) {
             add(LANE_KICK, timeMs, NoteKind.KICK, 0.7f + energyLevel * 0.3f, downbeat)
         } else {
             add(LANE_SNARE, timeMs, NoteKind.SNARE, 0.6f + energyLevel * 0.3f, false)
@@ -692,7 +973,7 @@ class NoteGenerator(
 
         // A melody accent, sparingly — every other bar at most, so the fourth lane
         // is an event rather than a fifth of the noise.
-        if (melodyLevel > MELODY_THRESHOLD && inBar == 2 && chance(index, 23) < 0.55f) {
+        if (!patterned && melodyLevel > MELODY_THRESHOLD && inBar == 2 && chance(index, 23) < 0.55f) {
             add(LANE_MELODY, timeMs, NoteKind.MELODY, melodyLevel, false)
         }
 
@@ -705,11 +986,26 @@ class NoteGenerator(
         }
     }
 
-    private fun add(lane: Int, timeMs: Long, kind: NoteKind, intensity: Float, downbeat: Boolean) {
+    private fun add(
+        lane: Int,
+        timeMs: Long,
+        kind: NoteKind,
+        intensity: Float,
+        downbeat: Boolean,
+        holdMs: Long = 0L,
+        slam: Boolean = false,
+        role: Role = Role.NORMAL,
+    ) {
         if (lane !in 0 until lanes) return
         if (timeMs < countInEndMs) return
         // Two notes a player cannot tell apart are one note they will miss half of.
         if (notes.any { it.lane == lane && abs(it.triggerTimeMs - timeMs) < MIN_GAP_MS }) return
+        if (!slam) {
+            // A lane is busy while its hold rings, and a phone is played with two
+            // thumbs: a third simultaneous note is one nobody can hit.
+            if (holdUntil[lane] > timeMs - MIN_GAP_MS) return
+            if (busyLanes(timeMs, except = lane) >= MAX_SIMULTANEOUS) return
+        }
         notes.add(
             GameNote(
                 id = nextId++,
@@ -718,9 +1014,23 @@ class NoteGenerator(
                 kind = kind,
                 intensity = intensity.coerceIn(0f, 1f),
                 downbeat = downbeat,
+                holdMs = holdMs,
+                slam = slam,
+                role = role,
             )
         )
+        if (holdMs > 0L) holdUntil[lane] = timeMs + holdMs
         revision++
+    }
+
+    /** Lanes other than [except] with a note at [timeMs] or a hold ringing through it. */
+    private fun busyLanes(timeMs: Long, except: Int): Int {
+        var busy = 0
+        for (l in 0 until lanes) {
+            if (l == except) continue
+            if (holdUntil[l] > timeMs || notes.any { it.lane == l && abs(it.triggerTimeMs - timeMs) < CHORD_MS }) busy++
+        }
+        return busy
     }
 
     /**
@@ -780,6 +1090,65 @@ private const val FILL_SECTION_JUMP = 0.2f
  * Closest two notes in one lane may be.
  */
 private const val MIN_GAP_MS = 110L
+
+/** Notes closer than this in time are one chord, for the two-thumb rule. */
+private const val CHORD_MS = 40L
+
+/** Two thumbs. */
+private const val MAX_SIMULTANEOUS = 2
+
+// ── Transcription (see chartOnsetBeat) ───────────────────────────────────────
+//
+// Every onset-grid value is normalised to the track's own p95, so these read as
+// "this hard, for this song", not as absolute levels.
+
+/** A slot's strongest band must reach this to become a note. */
+private const val NOTE_FLOOR = 0.35f
+
+/** Hats tick on nearly every 16th; this keeps them from winning every quiet slot. */
+private const val HAT_WEIGHT = 0.8f
+
+/** In the back half of a build, mids or highs this strong are the roll. */
+private const val ROLL_FLOOR = 0.15f
+
+/** A beat with no clear slot but at least this accent keeps a pulse note. */
+private const val PULSE_FALLBACK_ACCENT = 0.3f
+
+/** A hold must start at least this loud in its sustain channel... */
+private const val HOLD_MIN_LEVEL = 0.4f
+
+/** ...stay above this fraction of where it started... */
+private const val HOLD_KEEP = 0.6f
+
+/** ...with no new attack in its band this strong... */
+private const val HOLD_BREAK_ONSET = 0.5f
+
+/** ...for at least a beat, and is cut at two bars of 4/4. */
+private const val MIN_HOLD_SLOTS = 4
+private const val MAX_HOLD_SLOTS = 32
+
+/** Section energy (0..1) a drop reaches, and the step up from the section before it. */
+private const val DROP_ENERGY = 0.65f
+private const val DROP_JUMP = 0.25f
+
+/** A breakdown is at most this loud, after a fall of at least this much. */
+private const val BREAK_ENERGY = 0.35f
+private const val BREAK_FALL = 0.2f
+
+/** Bars before a drop that are its build. */
+private const val BUILD_BARS = 2
+
+/** A beat this close before a section boundary already belongs to it. */
+private const val BOUNDARY_SLACK_S = 0.15f
+
+/** How much history [BarPattern] keeps: three bars at 60 BPM. */
+private const val PATTERN_WINDOW_MS = 16_000L
+
+/** A lane must have hit this consistently, one and two bars back, to be charted. */
+private const val PATTERN_FLOOR = 0.45f
+
+/** The lanes the bar memory learns; hats stay on their density rule. */
+private val PATTERN_LANES = intArrayOf(LANE_KICK, LANE_SNARE, LANE_MELODY)
 
 /** Beats counted in, after the first lock, before the first note is charted. */
 const val COUNT_IN_BEATS = 4
