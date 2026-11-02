@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -20,7 +19,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -34,12 +35,16 @@ import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.hue.DiscoveredBridge
 import com.engabd.sendpin.hue.LinkButtonNotPressed
+import com.engabd.sendpin.ui.design.BridgeLinkPhase
+import com.engabd.sendpin.ui.design.BridgeLinkPrompt
 import com.engabd.sendpin.ui.design.MeterBar
 import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.Pill
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -316,13 +321,70 @@ private fun DirectBridgeSetup(settings: AppSettings, scope: CoroutineScope, acce
     /** Set once a scan has run, so the "nothing found" hint only appears after one. */
     var tried by remember { mutableStateOf(false) }
     var manualIp by remember { mutableStateOf("") }
-    var pairing by remember { mutableStateOf(false) }
+    /** The bridge being linked; while set, the card shows the press-the-button prompt. */
+    var linking by remember { mutableStateOf<DiscoveredBridge?>(null) }
+    var linkPhase by remember { mutableStateOf(BridgeLinkPhase.Waiting) }
+    var linkAttempt by remember { mutableStateOf(0) }
     var pairError by remember { mutableStateOf<String?>(null) }
+    var linkJob by remember { mutableStateOf<Job?>(null) }
+    // Tied to this page, so leaving it stops the polling.
+    val pageScope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
 
     LaunchedEffect(Unit) {
         bridgeIp = settings.hueBridgeIp.first()
         appKey = settings.hueAppKey.first()
         paired = bridgeIp.isNotBlank() && appKey.isNotBlank()
+    }
+
+    fun link(b: DiscoveredBridge) {
+        linkJob?.cancel()
+        linking = b
+        linkPhase = BridgeLinkPhase.Waiting
+        linkAttempt++
+        pairError = null
+        linkJob = pageScope.launch {
+            try {
+                val (key, clientKey) = bridge.pairWhenPressed(b.host)
+                val id = bridge.fetchApplicationId(b.host, key) ?: ""
+                // The bridge id comes off the mDNS TXT record and is what the
+                // certificate's Common Name is checked against on every later connection.
+                settings.setHueBridge(b.host, key, clientKey, id, b.bridgeId)
+                linkPhase = BridgeLinkPhase.Linked
+                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                delay(1_800) // Long enough to see the tick land before the card changes.
+                bridgeIp = b.host
+                appKey = key
+                paired = true
+                linking = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: LinkButtonNotPressed) {
+                linkPhase = BridgeLinkPhase.Failed
+                haptics.performHapticFeedback(HapticFeedbackType.Reject)
+            } catch (e: Exception) {
+                pairError = e.message ?: "Pairing failed"
+                linkPhase = BridgeLinkPhase.Failed
+                haptics.performHapticFeedback(HapticFeedbackType.Reject)
+            }
+        }
+    }
+
+    linking?.let { b ->
+        SettingsCard(title = "Link ${b.name}", lead = b.host) {
+            BridgeLinkPrompt(linkPhase, linkAttempt, accent, failure = pairError)
+            when (linkPhase) {
+                BridgeLinkPhase.Waiting -> OledButton("Cancel", accent = accent, outline = true) {
+                    linkJob?.cancel(); linking = null
+                }
+                BridgeLinkPhase.Failed -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OledButton("Back", accent = accent, outline = true, modifier = Modifier.weight(1f)) { linking = null }
+                    OledButton("Try again", accent = accent, modifier = Modifier.weight(1f)) { link(b) }
+                }
+                BridgeLinkPhase.Linked -> {}
+            }
+        }
+        return
     }
 
     if (!paired) {
@@ -388,28 +450,7 @@ private fun DirectBridgeSetup(settings: AppSettings, scope: CoroutineScope, acce
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
                         .background(Glass).border(1.dp, Hairline, RoundedCornerShape(12.dp))
-                        .clickable {
-                            pairing = true
-                            pairError = null
-                            scope.launch {
-                                try {
-                                    val (key, clientKey) = bridge.pair(b.host)
-                                    val id = bridge.fetchApplicationId(b.host, key) ?: ""
-                                    // The bridge id comes off the mDNS TXT record and
-                                    // is what the certificate's Common Name is checked
-                                    // against on every later connection.
-                                    settings.setHueBridge(b.host, key, clientKey, id, b.bridgeId)
-                                    bridgeIp = b.host
-                                    appKey = key
-                                    paired = true
-                                } catch (_: LinkButtonNotPressed) {
-                                    pairError = "Press the link button on the bridge, then tap again"
-                                } catch (e: Exception) {
-                                    pairError = e.message ?: "Pairing failed"
-                                }
-                                pairing = false
-                            }
-                        }
+                        .clickable { link(b) }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -419,11 +460,9 @@ private fun DirectBridgeSetup(settings: AppSettings, scope: CoroutineScope, acce
                         Text(b.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Text(b.host, color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp)
                     }
-                    if (pairing) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = accent)
+                    Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(18.dp))
                 }
             }
-
-            pairError?.let { StatusLine(it, Health.BAD, accent) }
         }
     } else {
         SettingsCard(

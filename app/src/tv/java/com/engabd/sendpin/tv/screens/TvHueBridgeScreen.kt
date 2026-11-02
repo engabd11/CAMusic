@@ -18,6 +18,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +26,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -35,15 +38,19 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.hue.DiscoveredBridge
 import com.engabd.sendpin.hue.LinkButtonNotPressed
 import com.engabd.sendpin.tv.design.TvButton
-import com.engabd.sendpin.tv.design.TvError
 import com.engabd.sendpin.tv.design.TvTile
 import com.engabd.sendpin.tv.design.tvDpadExitField
+import com.engabd.sendpin.ui.design.BridgeLinkPhase
+import com.engabd.sendpin.ui.design.BridgeLinkPrompt
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.SectionLabel
 import com.engabd.sendpin.ui.theme.TextMuted
 import com.engabd.sendpin.ui.theme.TextPrimary
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -84,9 +91,40 @@ fun TvHueBridgeScreen(onBack: () -> Unit) {
     /** Set once a scan has finished, so the "nothing found" hint only appears after one. */
     var tried by remember { mutableStateOf(false) }
     var manualIp by remember { mutableStateOf("") }
-    /** Which host is mid-pair, so only that row says so rather than all of them. */
-    var pairingHost by remember { mutableStateOf<String?>(null) }
+    /** The bridge being linked; while set, the screen shows the press-the-button prompt. */
+    var linking by remember { mutableStateOf<DiscoveredBridge?>(null) }
+    var linkPhase by remember { mutableStateOf(BridgeLinkPhase.Waiting) }
+    var linkAttempt by remember { mutableStateOf(0) }
     var pairError by remember { mutableStateOf<String?>(null) }
+    var linkJob by remember { mutableStateOf<Job?>(null) }
+    val actionFocus = remember { FocusRequester() }
+
+    fun link(found: DiscoveredBridge) {
+        linkJob?.cancel()
+        linking = found
+        linkPhase = BridgeLinkPhase.Waiting
+        linkAttempt++
+        pairError = null
+        linkJob = scope.launch {
+            try {
+                val (key, clientKey) = bridge.pairWhenPressed(found.host)
+                val appId = bridge.fetchApplicationId(found.host, key) ?: ""
+                // The bridge id comes off the mDNS TXT record and is what the
+                // certificate's Common Name is checked against on every later connection.
+                settings.setHueBridge(found.host, key, clientKey, appId, found.bridgeId)
+                linkPhase = BridgeLinkPhase.Linked
+                delay(1_800) // Long enough to see the tick land before the page changes.
+                linking = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: LinkButtonNotPressed) {
+                linkPhase = BridgeLinkPhase.Failed
+            } catch (e: Exception) {
+                pairError = e.message ?: "Pairing failed"
+                linkPhase = BridgeLinkPhase.Failed
+            }
+        }
+    }
 
     // Collected rather than snapshotted after the scan window closes, so bridges
     // appear as mDNS answers for them — usually in the first second or two of the
@@ -105,6 +143,32 @@ fun TvHueBridgeScreen(onBack: () -> Unit) {
     ) {
         Text("Hue Bridge", color = TextPrimary, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(20.dp))
+
+        // Ahead of the paired check: the key is stored on success, and the tick should
+        // still get its moment before the page flips to "Paired".
+        linking?.let { found ->
+            BridgeLinkPrompt(linkPhase, linkAttempt, accent, Modifier.width(620.dp), failure = pairError)
+            Spacer(Modifier.height(20.dp))
+            // The tile that had focus is gone; put it on the action so the remote still works.
+            LaunchedEffect(linkPhase) { runCatching { actionFocus.requestFocus() } }
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                when (linkPhase) {
+                    BridgeLinkPhase.Waiting -> TvButton(
+                        onClick = { linkJob?.cancel(); linking = null },
+                        modifier = Modifier.focusRequester(actionFocus),
+                    ) { Text("Cancel") }
+                    BridgeLinkPhase.Failed -> {
+                        TvButton(
+                            onClick = { link(found) },
+                            modifier = Modifier.focusRequester(actionFocus),
+                        ) { Text("Try again") }
+                        TvButton(onClick = { linking = null }) { Text("Back") }
+                    }
+                    BridgeLinkPhase.Linked -> {}
+                }
+            }
+            return@Column
+        }
 
         if (paired) {
             Text("Paired with the bridge at $bridgeIp.", color = TextMuted, style = MaterialTheme.typography.bodyMedium)
@@ -137,7 +201,6 @@ fun TvHueBridgeScreen(onBack: () -> Unit) {
                 enabled = !scanning,
                 onClick = {
                     scanning = true
-                    pairError = null
                     bridge.startDiscovery()
                     scope.launch {
                         // Philips' order: mDNS first, then the cloud endpoint, then a
@@ -163,40 +226,13 @@ fun TvHueBridgeScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 discovered.forEach { found ->
-                    val busy = pairingHost != null
-                    TvTile(
-                        modifier = Modifier.width(620.dp),
-                        onClick = onClick@{
-                            // One pairing attempt at a time: the bridge's link-button
-                            // window is ~30s and a second request inside it races the
-                            // first for the same key.
-                            if (busy) return@onClick
-                            pairingHost = found.host
-                            pairError = null
-                            scope.launch {
-                                try {
-                                    val (key, clientKey) = bridge.pair(found.host)
-                                    val appId = bridge.fetchApplicationId(found.host, key) ?: ""
-                                    // The bridge id comes off the mDNS TXT record and is
-                                    // what the certificate's Common Name is checked
-                                    // against on every later connection.
-                                    settings.setHueBridge(found.host, key, clientKey, appId, found.bridgeId)
-                                } catch (_: LinkButtonNotPressed) {
-                                    pairError = "Press the link button on the bridge, then select it again"
-                                } catch (e: Exception) {
-                                    pairError = e.message ?: "Pairing failed"
-                                }
-                                pairingHost = null
-                            }
-                        },
-                    ) {
+                    // link() cancels any earlier attempt, so two requests never race
+                    // the bridge's link-button window for the same key.
+                    TvTile(modifier = Modifier.width(620.dp), onClick = { link(found) }) {
                         Row(Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(found.name, color = TextPrimary, fontWeight = FontWeight.SemiBold)
                                 Text(found.host, color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                            }
-                            if (pairingHost == found.host) {
-                                Text("Pairing…", color = accent, style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
@@ -238,9 +274,5 @@ fun TvHueBridgeScreen(onBack: () -> Unit) {
             }
         }
 
-        pairError?.let {
-            Spacer(Modifier.height(16.dp))
-            Text(it, color = TvError, style = MaterialTheme.typography.bodySmall)
-        }
     }
 }

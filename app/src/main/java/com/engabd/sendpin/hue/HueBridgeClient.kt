@@ -7,6 +7,7 @@ import android.net.nsd.NsdServiceInfo
 import android.util.Log
 import com.engabd.sendpin.data.Crypto
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -336,6 +337,28 @@ class HueBridgeClient(
         return@withContext success.username to success.clientkey
     }
 
+    /**
+     * [pair], asked again every [pollMs] until the link button is pressed or [windowMs]
+     * runs out, so nobody has to press the button first and then race back to the phone.
+     * Polling is what Philips' own apps do. Throws [LinkButtonNotPressed] on timeout and
+     * any other failure straight away.
+     */
+    suspend fun pairWhenPressed(
+        host: String,
+        windowMs: Long = LINK_WINDOW_MS,
+        pollMs: Long = 1_500,
+    ): Pair<String, String> {
+        val deadline = System.nanoTime() + windowMs * 1_000_000
+        while (true) {
+            try {
+                return pair(host)
+            } catch (e: LinkButtonNotPressed) {
+                if (System.nanoTime() >= deadline) throw e
+                delay(pollMs)
+            }
+        }
+    }
+
     // ── Application ID ─────────────────────────────────────────────────────
 
     /**
@@ -536,6 +559,9 @@ class HueBridgeClient(
     }
 
     companion object {
+        /** How long a pairing attempt waits for the link button, shown as a countdown. */
+        const val LINK_WINDOW_MS = 30_000L
+
         /**
          * An OkHttp client that validates the bridge the way Philips specifies.
          *
