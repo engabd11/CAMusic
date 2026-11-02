@@ -56,7 +56,7 @@ class AuroraScript : AmbienceScript {
      * its range in about four seconds, which is quicker than any curtain asks for. The
      * limiter is a backstop here, not a shaper.
      */
-    override val comfort = ComfortProfile(risePerS = 0.15f, fallPerS = 0.15f, roomSwingPerS = 0.08f)
+    override val comfort = ComfortProfile(risePerS = 0.7f, fallPerS = 0.7f, roomSwingPerS = 0.3f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -100,8 +100,8 @@ class AuroraScript : AmbienceScript {
         out: MutableMap<Int, Rgb>,
     ) {
         val intensity = params.intensity.coerceIn(0f, 1f)
-        // Intensity lifts the curtains' brightness as well as how lively they are.
-        val peak = PEAK_MIN + (PEAK_MAX - PEAK_MIN) * intensity
+        // Intensity is how lively the curtains are; how bright is the Brightness slider's.
+        val peak = PEAK
         val lively = 0.8f + 0.4f * intensity
 
         // Where each curtain is on the axis, how wide, and how bright, right now. Done
@@ -115,7 +115,8 @@ class AuroraScript : AmbienceScript {
             width[k] = (0.20f + 0.07f * k) * (1f + 0.30f * lively * SmoothNoise.fractal(seed, tS, 0.018f, 2))
             // Never quite off: a curtain thins to a third of its height, not to nothing,
             // so the sky keeps some structure.
-            level[k] = (0.65f + 0.35f * SmoothNoise.fractal(seed + 31, tS, 0.014f, 2)).coerceIn(0.33f, 1f)
+            // Pulsing: slow at the bottom of the slider, a visible breathing at the top.
+            level[k] = (0.65f + 0.35f * SmoothNoise.fractal(seed + 31, tS, 0.014f + 0.06f * intensity, 3)).coerceIn(0.33f, 1f)
         }
         // The pink flush: rare, slow, and only on the leading edge. Positive for a
         // minute or so perhaps a few times an hour.
@@ -129,7 +130,10 @@ class AuroraScript : AmbienceScript {
             var lead = 0f          // how much of the glow is on a curtain's leading edge
             for (k in 0 until CURTAINS) {
                 val d = (axis - centre[k]) / width[k]
-                val g = level[k] * exp(-d * d)
+                // Rays rippling along the curtain, the folds catching the light in turn.
+                val ripple = 1f + RIPPLE * (0.2f + 0.8f * intensity) *
+                    sin(2f * PI.toFloat() * (axis * 4.5f - (tS * (0.08 + 0.30 * intensity)).toFloat() + k * 1.7f))
+                val g = level[k] * exp(-d * d) * ripple
                 glow += g
                 // The curtains move towards higher axis positions, so the leading edge is
                 // the side with the larger coordinate.
@@ -198,8 +202,8 @@ class AuroraScript : AmbienceScript {
          * only thing you look at.
          */
         const val SKY = 0.04f
-        const val PEAK_MIN = 0.20f
-        const val PEAK_MAX = 0.50f
+        const val PEAK = 0.66f
+        const val RIPPLE = 0.35f
 
         /** The pink noise has to climb past this before any pink shows, and is full by that. */
         const val PINK_FROM = 0.74f

@@ -51,7 +51,7 @@ class ForestDawnScript : AmbienceScript {
 
     override val effect = AmbienceEffect.FOREST_DAWN
 
-    override val comfort = ComfortProfile(risePerS = 0.12f, fallPerS = 0.12f, roomSwingPerS = 0.05f)
+    override val comfort = ComfortProfile(risePerS = 0.9f, fallPerS = 0.9f, roomSwingPerS = 0.12f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -118,14 +118,15 @@ class ForestDawnScript : AmbienceScript {
         val intensity = params.intensity.coerceIn(0f, 1f)
         val p = progress(tS)
         // Shade only exists once there is sun to cast it.
-        val depth = (0.05f + 0.22f * smoothstep(0.30f, 0.90f, p)) * (0.8f + 0.4f * intensity)
+        val depth = (0.10f + 0.17f * smoothstep(0.30f, 0.90f, p)) * (0.8f + 0.4f * intensity)
 
         for ((i, id) in room.ids.withIndex()) {
             val axis = room.axisPos[id] ?: 0.5f
             val pos = room.positions[id] ?: room.centre()
             val pl = (p + 0.05f * (axis - 0.5f)).coerceIn(0f, 1f)
             val dir = SKY.colourAt(pl)
-            val sky = SKY.levelAt(pl) * (0.9f + 0.2f * intensity)
+            // The window side of the room is lit first and most.
+            val sky = SKY.levelAt(pl) * 1.1f * (0.88f + 0.24f * axis)
 
             // Two crossing fields drifting opposite ways, plus the leaves' own flutter.
             val a = SmoothNoise.value(fieldA, pos.x * 2.2 + pos.y * 1.6 + tS * 0.045)
@@ -133,7 +134,11 @@ class ForestDawnScript : AmbienceScript {
             val flutter = SmoothNoise.fractal(lampSeed[i], tS, 0.22f, 2, 2.4f, 0.5f)
             val shade = (0.5f + 0.5f * (0.55f * a + 0.35f * b + 0.10f * flutter)).coerceIn(0f, 1f)
 
-            var level = sky * (1f - depth * shade)
+            // Leaves stirring in the breeze: the light through them flickers, gently at the
+            // bottom of the slider and visibly at the top.
+            val leaves = 0.7f * SmoothNoise.fractal(fieldA + 5, tS * (0.25 + 0.8 * intensity) + axis * 1.4, 1f, 3) +
+                0.3f * SmoothNoise.fractal(lampSeed[i] + 3, tS, 0.25f + 0.8f * intensity, 3)
+            var level = sky * (1f - depth * shade) * (1f + LEAF_FLICKER * (0.2f + 0.8f * intensity) * leaves)
             val colour = mix(dir, LEAF, 0.22f * shade * smoothstep(0.3f, 0.8f, p))
 
             // Where a bird is singing, a few points of lift.
@@ -231,6 +236,7 @@ class ForestDawnScript : AmbienceScript {
 
         /** Perceived lift a singing bird gives the lamps beside it, at the peak. */
         const val BIRD_LIFT = 0.05f
+        const val LEAF_FLICKER = 0.55f
 
         val LEAF = Rgb(0.78f, 1.0f, 0.62f)
 
@@ -243,7 +249,7 @@ class ForestDawnScript : AmbienceScript {
                 Rgb(1.00f, 0.74f, 0.40f),       // gold
                 Blackbody.rgb(3100f),           // soft morning gold
             ),
-            floatArrayOf(0.07f, 0.16f, 0.28f, 0.40f, 0.46f),
+            floatArrayOf(0.24f, 0.34f, 0.48f, 0.60f, 0.68f),
         )
     }
 }

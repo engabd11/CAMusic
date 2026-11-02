@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.ui.design.CastGlow
 import com.engabd.sendpin.ui.design.DisclosureChevron
-import com.engabd.sendpin.ui.design.ExperimentalBadge
 import com.engabd.sendpin.ui.design.GlassCard
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.Motion
@@ -309,10 +308,9 @@ internal fun AmbienceTile(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(
-                        "Ambience",
+                        "Scenes",
                         color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
                     )
-                    ExperimentalBadge()
                 }
 
                 if (effect != null) {
@@ -323,17 +321,12 @@ internal fun AmbienceTile(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(11.dp),
                     ) {
-                        Box(
-                            Modifier.size(44.dp).clip(RoundedCornerShape(14.dp))
-                                .background(accent.a(0.20f))
+                        androidx.compose.foundation.Image(
+                            androidx.compose.ui.res.painterResource(ambienceImage(effect)), null,
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(14.dp))
                                 .border(1.dp, accent.a(0.45f), RoundedCornerShape(14.dp)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                ambienceIcon(effect), null,
-                                tint = accent, modifier = Modifier.size(22.dp),
-                            )
-                        }
+                        )
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
                                 effect.title,
@@ -377,23 +370,18 @@ internal fun AmbienceTile(
                             .chunked(3).forEach { row ->
                             Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                                 row.forEach { e ->
-                                    Box(
-                                        Modifier.size(28.dp).clip(RoundedCornerShape(9.dp))
-                                            .background(Ink.a(0.35f))
+                                    androidx.compose.foundation.Image(
+                                        androidx.compose.ui.res.painterResource(ambienceImage(e)), null,
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                        modifier = Modifier.size(28.dp).clip(RoundedCornerShape(9.dp))
                                             .border(1.dp, HairlineSoft, RoundedCornerShape(9.dp)),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(
-                                            ambienceIcon(e), null,
-                                            tint = TextSecondary, modifier = Modifier.size(15.dp),
-                                        )
-                                    }
+                                    )
                                 }
                             }
                         }
                     }
                     Text(
-                        "Nine rooms, with their own sound. No music needed.",
+                        "${AmbienceEffect.entries.size} scenes, each with its own sound. No music needed.",
                         color = TextFaint, fontSize = 11.sp, lineHeight = 14.sp,
                         maxLines = 2, overflow = TextOverflow.Ellipsis,
                     )

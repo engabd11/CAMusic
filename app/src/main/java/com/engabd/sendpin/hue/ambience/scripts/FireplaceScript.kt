@@ -34,10 +34,11 @@ import kotlin.math.sin
  *
  * ## What a real fireplace does to a room
  *
- * **It is a warm, low, steady glow that never stops moving.** Each lamp carries a few
- * octaves of smooth noise from about one cycle in twelve seconds up to two and a half a
- * second, weighted roughly 1/f, so the slow octaves set the mood and the fast ones add
- * life without ever being a strobe. The wander is a pure function of time ([SmoothNoise]),
+ * **It is a warm glow that never stops moving.** Each lamp carries four octaves of
+ * smooth noise from about one cycle in four seconds up to four or five a second, weighted
+ * roughly 1/f: the slow octaves are the fire's roar and the fast ones are flames licking,
+ * which is what a room lit by a fire actually does. At full intensity the far lamps
+ * swing by a third or more; at the bottom of the slider the fire barely stirs. The wander is a pure function of time ([SmoothNoise]),
  * so nothing repeats and nothing needs a random generator on the render thread. On top
  * of that sits a shared drift over minutes, a log settling or a draught finding the
  * chimney, that no single lamp shows on its own.
@@ -69,14 +70,12 @@ class FireplaceScript : AmbienceScript {
     override val effect = AmbienceEffect.FIREPLACE
 
     /**
-     * Rise 0.7 a second is a pop's 0.1 over its 0.12 s attack with a little room;
-     * fall 0.4 lets that pop cool over about a quarter of a second at the very least
-     * and in practice over its own 0.6 to 0.9 s. The room mean may never move faster
-     * than 0.25 a second, which a fire at this scale does not come near.
+     * Flames lick, so a lamp may move a few units a second; the room as a whole, which
+     * is the fire's roar rather than its flames, about a third of that. A pop gets more.
      */
     override val comfort = ComfortProfile(
-        risePerS = 0.60f, fallPerS = 0.40f, roomSwingPerS = 0.25f,
-        burstRisePerS = 1.6f, burstFallPerS = 0.8f, burstRoomSwingPerS = 0.5f,
+        risePerS = 3.0f, fallPerS = 3.0f, roomSwingPerS = 1.0f,
+        burstRisePerS = 5f, burstFallPerS = 3f, burstRoomSwingPerS = 1.5f,
     )
 
     private var popping = false
@@ -299,9 +298,9 @@ class FireplaceScript : AmbienceScript {
         }
 
         var nowPopping = false
-        val hearthLevel = HEARTH_BASE + HEARTH_GAIN * intensity
-        val farLevel = FAR_BASE + FAR_GAIN * intensity
-        val depth = 0.8f + 0.4f * intensity
+        val hearthLevel = HEARTH_LEVEL
+        val farLevel = FAR_LEVEL
+        val depth = 0.6f + 3.0f * intensity
 
         for ((i, id) in ids.withIndex()) {
             val h = hearthShare[i]
@@ -429,8 +428,8 @@ class FireplaceScript : AmbienceScript {
         const val MIN_POP_STRENGTH = 0.45f
 
         /** How much brighter, in perceived units, the nearest lamp gets at a pop's peak. */
-        const val POP_GAIN_MIN = 0.06f
-        const val POP_GAIN_MAX = 0.10f
+        const val POP_GAIN_MIN = 0.14f
+        const val POP_GAIN_MAX = 0.24f
 
         /** The sound of a pop is a short tick, however slowly the lamp glows. */
         val POP_SOUND = Envelope(attackS = 0.004f, holdS = 0.006f, decayTauS = 0.09f)
@@ -449,24 +448,21 @@ class FireplaceScript : AmbienceScript {
         const val LAMP_DRIFT = 0.04f
 
         /**
-         * The flicker's four octaves: about one cycle in twelve seconds, then roughly
-         * three times faster each, up to about two and a half a second. Each octave is
-         * 0.6 of the last, which is close to 1/f amplitude for a ratio of three.
+         * The flicker's four octaves: about one cycle in four seconds, then 2.6 times
+         * faster each, up to four or five a second: the roar, then the flames.
          */
-        const val FLICKER_BASE_HZ = 0.08f
+        const val FLICKER_BASE_HZ = 0.25f
         const val FLICKER_OCTAVES = 4
-        const val FLICKER_RATIO = 3.1f
+        const val FLICKER_RATIO = 2.6f
         const val FLICKER_ROLLOFF = 0.75f
 
         /** Flicker depth, as a fraction of a lamp's own level. Coals are steadier. */
-        const val FLICKER_HEARTH = 0.20f
-        const val FLICKER_FAR = 0.42f
+        const val FLICKER_HEARTH = 0.32f
+        const val FLICKER_FAR = 0.55f
 
-        /** Perceived brightness of the hearth lamps and the far lamps at intensity 0 and 1. */
-        const val HEARTH_BASE = 0.36f
-        const val HEARTH_GAIN = 0.26f
-        const val FAR_BASE = 0.20f
-        const val FAR_GAIN = 0.14f
+        /** Perceived brightness of the hearth lamps and the far lamps. Intensity moves the fire, never this. */
+        const val HEARTH_LEVEL = 0.62f
+        const val FAR_LEVEL = 0.34f
 
         /** Colour temperature of the coals and of the bounce, in kelvin. */
         const val HEARTH_KELVIN = 1850f

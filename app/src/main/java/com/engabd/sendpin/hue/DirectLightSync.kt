@@ -1042,7 +1042,9 @@ class DirectLightSync(
         /** The bundled recording's pre-analysed timeline, when there is one. See `AmbienceBedTimeline`. */
         bedPlan: com.engabd.sendpin.hue.ambience.AmbienceBedTimeline? = null,
     ): Boolean = withContext(Dispatchers.IO) {
-        stopAmbience()
+        // Switching scenes keeps the bridge session: closing it here meant a fresh
+        // HTTPS start and DTLS handshake on every switch, a few seconds of dark room.
+        stopAmbience(keepSession = true)
         if (!running.get()) {
             start()
             // start() is best-effort: no bridge, no key, no area all land here.
@@ -1080,7 +1082,9 @@ class DirectLightSync(
     }
 
     /** Stop whatever ambience show is running, and close the session if Effects opened it. */
-    suspend fun stopAmbience() {
+    suspend fun stopAmbience() = stopAmbience(keepSession = false)
+
+    private suspend fun stopAmbience(keepSession: Boolean) {
         val session = ambience ?: return
         // Cleared *first*, so the very next render tick falls through to the ordinary
         // path rather than calling into a session that is being torn down.
@@ -1096,7 +1100,9 @@ class DirectLightSync(
         }
         idleStartS = -1f
         idleT = 0f
-        if (ambienceOwnsSession) {
+        // The music show keeps the encoder's ordinary colour slew.
+        encoder?.snapFromDark = false
+        if (ambienceOwnsSession && !keepSession) {
             ambienceOwnsSession = false
             stop()
         }
@@ -1541,6 +1547,7 @@ class DirectLightSync(
                     // structure, none of which exist. Safety and the rate limiter
                     // are kept, and the session brings its own limiter so the
                     // music show's flash budget and rung cannot leak into this one.
+                    enc.snapFromDark = amb.script.flashy
                     val ambGuarded = amb.safety.process(painted, dt)
                     // No EffectRateLimiter here: the session has already held the scene to
                     // its own comfort limits in perceived brightness (ComfortLimiter), and

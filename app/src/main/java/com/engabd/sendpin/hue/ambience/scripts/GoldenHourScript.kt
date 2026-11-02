@@ -49,7 +49,7 @@ class GoldenHourScript : AmbienceScript {
 
     override val effect = AmbienceEffect.GOLDEN_HOUR
 
-    override val comfort = ComfortProfile(risePerS = 0.08f, fallPerS = 0.08f, roomSwingPerS = 0.04f)
+    override val comfort = ComfortProfile(risePerS = 0.6f, fallPerS = 0.6f, roomSwingPerS = 0.06f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -98,7 +98,10 @@ class GoldenHourScript : AmbienceScript {
             val dir = SKY.colourAt(pl)
 
             val d = (axis - sunAt) / SUN_WIDTH
-            val glow = sunGain * exp(-d * d)
+            // Leaves and a sheer curtain moving in front of the sun: the patch dapples.
+            val dapple = 1f + DAPPLE * (0.2f + 0.8f * intensity) *
+                SmoothNoise.fractal(lampSeed[i] + 5, tS + axis * 2.0, 0.15f + 0.45f * intensity, 3)
+            val glow = sunGain * exp(-d * d) * dapple
             val drift = 1f + 0.03f * SmoothNoise.fractal(lampSeed[i], tS, 1f / 80f, 2, 2.3f)
             val level = ((sky + glow) * drift).coerceIn(0f, 1f)
             val colour = mix(dir, sunColour, if (level > 1e-4f) glow / (sky + glow) else 0f)
@@ -157,6 +160,8 @@ class GoldenHourScript : AmbienceScript {
     }
 
     private companion object {
+        const val DAPPLE = 0.6f
+
         const val MIN_MINUTES = 30f
         const val MAX_MINUTES = 45f
 

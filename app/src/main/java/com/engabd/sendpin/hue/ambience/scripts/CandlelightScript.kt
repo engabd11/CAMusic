@@ -30,19 +30,22 @@ import com.engabd.sendpin.hue.ambience.smoothstep
  * at 1700 to 1850 K, a little redder and dimmer than the fireplace's coals, and that
  * colour temperature drifts by a few tens of kelvin over minutes rather than flickering.
  *
- * **The flicker is small and smooth.** A real flame moves a lot, but a lamp that did the
- * same would be a strobe in a dark room. Each candle carries three octaves of smooth
- * noise ([SmoothNoise], 0.12 to 1.1 Hz) at about 7 to 10 percent of its level, so it
- * reads as a living flame at a distance and never as a flicker you can count.
+ * **The flicker is a flame's, and smooth.** Each candle carries three octaves of smooth
+ * noise ([SmoothNoise], 0.35 to about 3 Hz). The summed noise only swings about a third
+ * of its range, so its depth is large: at full intensity the flame reaches the top of the
+ * lamp and dips to about half, which is what a candle does across a dark room. The
+ * intensity slider runs from a near-still flame to that, and the old, near-invisible
+ * flicker is what the bottom of the slider now looks like.
  *
  * **A draught, now and then.** Every one to four minutes a breath of air crosses one
  * candle: for a few seconds its flicker is more than twice as lively and faster, and
  * its level sags a little as the flame leans. It settles back by itself. That is the
  * scene's only event, and it touches one lamp.
  *
- * **Everything else is reflection.** The lamps that are not candles sit at a dim, warm
+ * **Everything else is reflection.** The lamps that are not candles sit at a warm
  * 1850 to 2000 K, brighter the closer they are to a candle, and drift very slowly. They
- * never flicker on their own: walls do not.
+ * never flicker on their own, since walls do not, but they carry their nearest candle's
+ * flicker: the wall is lit by that flame, so when it dips the wall dips with it.
  *
  * The sound is a quiet room, a barely audible wick tick and, with the draught, a soft
  * breath of air.
@@ -51,8 +54,8 @@ class CandlelightScript : AmbienceScript {
 
     override val effect = AmbienceEffect.CANDLELIGHT
 
-    /** Nothing here moves faster than 0.2 a second; the limiter is a backstop. */
-    override val comfort = ComfortProfile(risePerS = 0.25f, fallPerS = 0.25f, roomSwingPerS = 0.10f)
+    /** A flame dances, so a lamp may move a few units a second; the room far less. */
+    override val comfort = ComfortProfile(risePerS = 3.0f, fallPerS = 3.0f, roomSwingPerS = 1.2f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -67,6 +70,10 @@ class CandlelightScript : AmbienceScript {
     private var candles = IntArray(0)
     private lateinit var candleOf: IntArray
     private lateinit var nearness: FloatArray
+    /** Each lamp's nearest candle, as an index into [candles]. */
+    private lateinit var nearestCandle: IntArray
+    /** Each candle's flicker this frame, as a multiplier on its resting level. */
+    private var flicker = FloatArray(0)
 
     private val pink = PinkNoise(0xCA_4D)
     private val roomLp = OnePole()
@@ -105,6 +112,10 @@ class CandlelightScript : AmbienceScript {
             for (ci in candles) best = minOf(best, room.gap(room.ids[i], room.ids[ci]))
             1f / (1f + 5f * best * best)
         }
+        nearestCandle = IntArray(n) { i ->
+            candles.indices.minByOrNull { room.gap(room.ids[i], room.ids[candles[it]]) } ?: 0
+        }
+        flicker = FloatArray(candles.size) { 1f }
     }
 
     override fun retune(params: AmbienceParams) { this.params = params }
@@ -150,29 +161,36 @@ class CandlelightScript : AmbienceScript {
             when (e.timbre.toInt()) { 0 -> unrest0 += u; 1 -> unrest1 += u; else -> unrest2 += u }
         }
 
+        // The flames first, so the walls can follow them.
+        for ((ci, i) in candles.withIndex()) {
+            val s = lampSeed[i]
+            val unrest = when (ci) { 0 -> unrest0; 1 -> unrest1; else -> unrest2 }.coerceIn(0f, 1f)
+            // A draught adds a faster layer on top rather than speeding the noise up,
+            // because scaling time would move the whole pattern at once.
+            val wander = SmoothNoise.fractal(s, tS, FLAME_BASE_HZ, 3, 2.9f, 0.6f) +
+                0.7f * unrest * SmoothNoise.fractal(s + 5, tS, 0.6f, 2, 2f, 0.6f)
+            val depth = (FLAME_DEPTH + FLAME_DEPTH_GAIN * intensity) * (1f + 0.5f * unrest)
+            // The flame leans away from the draught: a small dip, not a flash.
+            val lean = 1f - 0.10f * unrest
+            flicker[ci] = ((1f + depth * wander) * lean).coerceIn(0.25f, 1.6f)
+        }
+
         for ((i, id) in room.ids.withIndex()) {
             val s = lampSeed[i]
             val ci = candleOf[i]
             if (ci >= 0) {
-                val unrest = when (ci) { 0 -> unrest0; 1 -> unrest1; else -> unrest2 }.coerceIn(0f, 1f)
-                // A draught adds a faster layer on top rather than speeding the noise up,
-                // because scaling time would move the whole pattern at once.
-                val wander = SmoothNoise.fractal(s, tS, FLAME_BASE_HZ, 3, 2.9f, 0.6f) +
-                    0.7f * unrest * SmoothNoise.fractal(s + 5, tS, 0.6f, 2, 2f, 0.6f)
-                val depth = (FLAME_DEPTH + 0.03f * intensity) * (1f + 1.4f * unrest)
-                // The flame leans away from the draught: a small dip, not a flash.
-                val lean = 1f - 0.10f * unrest
-                val base = CANDLE_BASE + CANDLE_GAIN * intensity
+                val base = CANDLE_LEVEL
                 val slow = 1f + 0.03f * SmoothNoise.value(s + 17, tS / 60.0)
-                val level = (base * (1f + depth * wander) * lean * slow).coerceIn(0f, 1f)
+                val level = (base * flicker[ci] * slow).coerceIn(0f, 1f)
                 val kelvin = 1775f + 75f * SmoothNoise.value(s + 53, tS / 90.0)
                 val c = Blackbody.rgb(kelvin)
                 out[id] = Rgb(c.first * level, c.second * level, c.third * level)
             } else {
-                val glow = ROOM_BASE + ROOM_GAIN * intensity
+                val glow = ROOM_LEVEL
                 val lift = 0.55f + 0.9f * nearness[i]
                 val drift = 1f + 0.08f * SmoothNoise.fractal(s, tS, 1f / 70f, 2, 2.2f)
-                val level = (glow * lift * drift).coerceIn(0f, 1f)
+                val lit = flicker.getOrElse(nearestCandle[i]) { 1f }
+                val level = (glow * lift * drift * lit).coerceIn(0f, 1f)
                 val c = mix(Blackbody.rgb(2000f), Blackbody.rgb(1850f), nearness[i])
                 out[id] = Rgb(c.first * level, c.second * level, c.third * level)
             }
@@ -235,16 +253,15 @@ class CandlelightScript : AmbienceScript {
         const val DRAUGHT_MIN_S = 60.0
         const val DRAUGHT_MAX_S = 240.0
 
-        /** Perceived brightness of a candle lamp at intensity 0 and 1. */
-        const val CANDLE_BASE = 0.38f
-        const val CANDLE_GAIN = 0.14f
+        /** Perceived brightness of a candle lamp. Intensity moves the flame, never this. */
+        const val CANDLE_LEVEL = 0.82f
 
         /** And of the reflected light, before it is lifted by nearness to a candle. */
-        const val ROOM_BASE = 0.10f
-        const val ROOM_GAIN = 0.06f
+        const val ROOM_LEVEL = 0.30f
 
         /** Flame flicker: slowest octave in Hz, and depth as a fraction of the level. */
-        const val FLAME_BASE_HZ = 0.12f
-        const val FLAME_DEPTH = 0.07f
+        const val FLAME_BASE_HZ = 0.35f
+        const val FLAME_DEPTH = 0.25f
+        const val FLAME_DEPTH_GAIN = 0.85f
     }
 }

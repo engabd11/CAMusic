@@ -125,7 +125,10 @@ class AmbienceSession(
      * lightning strike is allowed to be a lightning strike. This is the same escape the
      * Extreme rung already gets, and here the listener has asked for lightning by name.
      */
-    val safety = FieldSafety(calmGated = false)
+    val safety = FieldSafety(
+        if (script.flashy) com.engabd.sendpin.hue.RELAXED_MAX_FLASHES_PER_S else com.engabd.sendpin.hue.MAX_FLASHES_PER_S,
+        calmGated = false,
+    )
 
     /**
      * The scene's own speed limit, standing in for `EffectRateLimiter` on this path.
@@ -466,9 +469,8 @@ class AmbienceSession(
      *
      * The frame is built in three steps. The script paints in perceived brightness; the
      * comfort limiter holds every lamp to the scene's speed limit in those same units;
-     * and only then is it converted to the linear value the encoder expects. The master
-     * brightness ceiling is applied last, in linear light, so the slider keeps meaning
-     * what it means everywhere else in the app.
+     * and the master brightness ceiling is applied last, so the slider keeps meaning
+     * what it means everywhere else in the app. See [AmbienceFrameShaper].
      */
     fun renderLights(dtS: Float): Map<Int, Rgb>? {
         if (!running) return null

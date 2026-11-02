@@ -75,7 +75,7 @@ enum class AmbienceEffect(
     ),
     LIGHT_TRAIN(
         "light_train", "Light train",
-        "A beam that runs the length of the room and away into the distance.",
+        "A night train going by: warm windows, one carriage after another.",
     ),
     AURORA(
         "aurora", "Aurora",
@@ -311,6 +311,13 @@ interface AmbienceScript {
      * exemption is for the event the listener asked for, not for the scene around it.
      */
     val burstActive: Boolean get() = false
+
+    /**
+     * True for a scene made of flashes (fireworks, lightning), which gets the relaxed
+     * flash budget the Intense music rung uses rather than the default three a second.
+     * Never none at all, as Extreme has: the scenes carry no seizure warning of their own.
+     */
+    val flashy: Boolean get() = false
 
     /** Called once before the first [schedule], with the room this show will run in. */
     fun bind(room: RoomModel, params: AmbienceParams)

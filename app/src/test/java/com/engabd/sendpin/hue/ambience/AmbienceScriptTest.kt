@@ -648,7 +648,8 @@ class AmbienceSpatialTest {
             t += 0.1
         }
         assertTrue(prev != null)
-        assertTrue(worst < 0.15f, "an aurora lamp moved $worst in one second")
+        // The curtains ripple and pulse now, but still never jump.
+        assertTrue(worst < 0.5f, "an aurora lamp moved $worst in one second")
     }
 
     @Test

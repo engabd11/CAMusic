@@ -23,6 +23,21 @@ class HueStreamEncoderSlewStateTest {
     }
 
     @Test
+    fun `a dark lamp snaps to its new colour only when asked to`() {
+        // A dim blue night, then a bright red burst: the firework case.
+        fun burstXy(snap: Boolean): Pair<Float, Float> {
+            val enc = HueStreamEncoder(configId).apply { snapFromDark = snap }
+            repeat(3) { enc.buildPackets(mapOf(0 to Triple(0.01f, 0.01f, 0.05f))) }
+            enc.buildPackets(mapOf(0 to Triple(1f, 0f, 0f)))
+            return enc.snapshotXy().getValue(0)
+        }
+        val slewed = burstXy(snap = false)
+        val snapped = burstXy(snap = true)
+        // Red sits at large x; the slewed lamp is still most of the way back at blue.
+        assertTrue(snapped.first > slewed.first + 0.2f, "snapped $snapped slewed $slewed")
+    }
+
+    @Test
     fun `slewing records per-channel state`() {
         val enc = HueStreamEncoder(configId)
         // A red channel walked along the spectrum edge: several frames so the
