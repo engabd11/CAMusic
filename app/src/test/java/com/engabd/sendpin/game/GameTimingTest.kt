@@ -76,29 +76,6 @@ class GameTimingTest {
         assertEquals(17L, GameTiming.displayLatencyMs(0f)) // unknown rate falls back to 60 Hz
     }
 
-    // ── Early taps ───────────────────────────────────────────────────────────
-
-    @Test
-    fun `an early tap waits so the light and the beat arrive together`() {
-        // 250 ms early, lamp pipeline 100 ms: send in 150 ms.
-        assertEquals(150L, GameTiming.flashDelayMs(250L))
-    }
-
-    @Test
-    fun `a tap on or after the beat goes out at once`() {
-        assertEquals(0L, GameTiming.flashDelayMs(0L))
-        assertEquals(0L, GameTiming.flashDelayMs(-40L))
-        // Earlier than now by less than the pipeline: it cannot be earlier than now.
-        assertEquals(0L, GameTiming.flashDelayMs(80L))
-    }
-
-    @Test
-    fun `the held flash becomes visible exactly on the note`() {
-        val early = 175L
-        val delay = GameTiming.flashDelayMs(early)
-        assertEquals(early, delay + GameTiming.LIGHT_PIPELINE_MS)
-    }
-
     // ── Calibration sign ─────────────────────────────────────────────────────
 
     @Test

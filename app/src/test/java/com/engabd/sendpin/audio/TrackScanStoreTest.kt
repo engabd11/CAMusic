@@ -87,12 +87,12 @@ class TrackScanStoreTest {
      * per section) plus the format-5 tail's leading "has stems" flag, which is
      * the only byte format-5 contributes here since [scan] never sets [stems] —
      * the `if (stems != null)` block writes nothing more when it's false, and the
-     * format-6 tail's "has loudness" flag likewise. The key
+     * format-6 tail's "has loudness" flag and format-7's "has onsets" flag likewise. The key
      * used to be the end of the file and the tests that bend it counted back from
      * there; naming the offset is what stops the next tail from silently making
      * them bend the wrong byte and pass for the wrong reason.
      */
-    private val tailAfterKey = 2 + 2 + 1 + 1  // beatsPerBar + tuning + two sections' labels + no-stems flag + no-loudness flag
+    private val tailAfterKey = 2 + 2 + 1 + 1 + 1  // beatsPerBar + tuning + two sections' labels + no-stems + no-loudness + no-onsets flags
 
     @Test
     fun `a corrupt key byte costs the key, not the whole scan`() {
@@ -337,6 +337,30 @@ class TrackScanStoreTest {
 
         assertNotNull(loaded, "a short read of the tail must cost the measurement, not the grid")
         assertEquals(null, loaded.loudness)
+        assertEquals(128f, loaded.bpm)
+    }
+
+    @Test
+    fun `an onset grid survives the trip to disk and back`() {
+        val grid = OnsetGrid(ByteArray(8 * OnsetGrid.CHANNELS) { (it * 7).toByte() })
+        TrackScanStore(dir).save("onsets", scan().copy(onsets = grid))
+
+        val loaded = TrackScanStore(dir).load("onsets")
+
+        assertNotNull(loaded)
+        assertEquals(grid, loaded.onsets)
+        assertEquals(8, loaded.onsets!!.slots)
+    }
+
+    @Test
+    fun `a format-6 file written before the onset grid still loads, with none`() {
+        val file = File(dir.apply { mkdirs() }, fileNameFor("pre-onsets"))
+        writeFormat5(file, format = 6, loudnessTail = { out -> out.writeBoolean(false) })
+
+        val loaded = TrackScanStore(dir).load("pre-onsets")
+
+        assertNotNull(loaded)
+        assertEquals(null, loaded.onsets)
         assertEquals(128f, loaded.bpm)
     }
 

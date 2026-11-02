@@ -2,9 +2,12 @@ package com.engabd.sendpin.game
 
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.BeatGrid
+import com.engabd.sendpin.audio.OnsetGrid
 import com.engabd.sendpin.audio.ScanSection
 import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.ui.viewmodel.GameRecord
+import com.engabd.sendpin.ui.viewmodel.RhythmHud
+import com.engabd.sendpin.ui.viewmodel.gradeFor
 import com.engabd.sendpin.ui.viewmodel.mergeRecord
 import kotlin.math.roundToLong
 import kotlin.test.Test
@@ -240,7 +243,7 @@ class NoteGeneratorTest {
             val onBeat = (t % periodMs) < 20L
             viaFrames.onFrame(if (onBeat) beatFrame() else quietFrame(), t, 0L)
             viaOnsets.onFrame(quietFrame(), t, 0L)
-            if (onBeat) viaOnsets.onOnset(beat = true, bass = true, mid = false, midStrength = 0f, audibleMs = t)
+            if (onBeat) viaOnsets.onOnset(GameOnset(t, 0f, beat = true, beatStrength = 0.8f, bass = true, bassStrength = 0.8f, mid = false, midStrength = 0f), audibleMs = t)
             t += 20L
         }
         assertTrue(viaOnsets.locked, "onsets alone never locked the grid")
@@ -449,6 +452,139 @@ class NoteGeneratorTest {
         gen.onFrame(beatFrame(), end + 40L, 0L)
     }
 
+    // ── Transcription from the onset grid ───────────────────────────────────
+
+    /** An onset grid for [beats] beats, valued per (slot, channel) by [f]. */
+    private fun grid(beats: Int, f: (slot: Int, channel: Int) -> Float) =
+        OnsetGrid(ByteArray(beats * OnsetGrid.SLOTS_PER_BEAT * OnsetGrid.CHANNELS) { i ->
+            (f(i / OnsetGrid.CHANNELS, i % OnsetGrid.CHANNELS).coerceIn(0f, 1f) * 255f).toInt().toByte()
+        })
+
+    /** Play until the lookahead has charted every beat of [scan], keeping every note. */
+    private fun NoteGenerator.chartAll(scan: TrackScan): List<GameNote> {
+        playWithEngine(startMs = 0L, frames = (scan.durationS * 50).toInt(), scan = scan, reap = false)
+        return active().sortedBy { it.triggerTimeMs }
+    }
+
+    @Test
+    fun `lanes follow the onset bands`() {
+        val beats = 16
+        val onsets = grid(beats) { s, c ->
+            val beat = s / 4
+            when {
+                s % 4 == 0 && c == OnsetGrid.LOW && beat % 2 == 0 -> 1f
+                s % 4 == 0 && c == OnsetGrid.MID && beat % 2 == 1 -> 1f
+                s % 4 == 2 && c == OnsetGrid.HIGH -> 1f
+                else -> 0f
+            }
+        }
+        val notes = NoteGenerator().chartAll(fakeScan(beats = beats).copy(onsets = onsets))
+        assertTrue(notes.size >= 16, "too few notes: ${notes.size}")
+        for (n in notes) {
+            val beat = (n.triggerTimeMs / 500L).toInt()
+            val expected = when {
+                n.triggerTimeMs % 500L == 250L -> LANE_HAT
+                beat % 2 == 0 -> LANE_KICK
+                else -> LANE_SNARE
+            }
+            assertEquals(expected, n.lane, "note at ${n.triggerTimeMs} in the wrong lane")
+        }
+    }
+
+    @Test
+    fun `a sustained tone becomes a hold and owns its lane`() {
+        val beats = 16
+        // The tone strikes at beat 8 and rings for eight slots; a weak tonal blip
+        // at slot 34 sits inside the hold and must not chart.
+        val onsets = grid(beats) { s, c ->
+            when {
+                c == OnsetGrid.TONE && s == 32 -> 1f
+                c == OnsetGrid.TONE && s == 34 -> 0.4f
+                c == OnsetGrid.TONE_HOLD && s in 32..39 -> 1f
+                else -> 0f
+            }
+        }
+        val notes = NoteGenerator().chartAll(fakeScan(beats = beats).copy(onsets = onsets))
+        val hold = assertNotNull(notes.singleOrNull { it.lane == LANE_MELODY && it.triggerTimeMs == 4000L })
+        assertEquals(7 * 125L, hold.holdMs, "the hold should run to the last sustained slot")
+        assertTrue(notes.none { it.lane == LANE_MELODY && it.triggerTimeMs in 4001L..4875L }, "a note charted inside the hold")
+    }
+
+    @Test
+    fun `a drop slams both thumbs on its first downbeat, with a build before it`() {
+        // Quiet half, then a loud one: the drop is beat 16, a downbeat. No onset
+        // grid, so this is also the old-scan path.
+        val scan = fakeScan(beats = 32).copy(
+            sections = listOf(ScanSection(0f, 8f, 0.3f), ScanSection(8f, 16f, 0.9f)),
+        )
+        val notes = NoteGenerator().chartAll(scan)
+        val slam = notes.filter { it.slam }
+        assertEquals(setOf(LANE_KICK, LANE_MELODY), slam.map { it.lane }.toSet())
+        assertTrue(slam.all { it.triggerTimeMs == 8000L && it.role == Role.DROP })
+        assertTrue(notes.filter { it.triggerTimeMs in 4000L until 8000L }.all { it.role == Role.BUILD })
+        assertTrue(notes.filter { it.triggerTimeMs > 8000L }.all { it.role == Role.DROP })
+    }
+
+    @Test
+    fun `the slam lands where the bass comes in, not where the section starts`() {
+        // What a real scan of a build-and-drop looked like: one loud section that
+        // starts at the build (beat 16) at a mean energy well under 0.65, with the
+        // sustained bass only arriving two bars later (beat 24).
+        val beats = 48
+        val onsets = grid(beats) { s, c -> if (c == OnsetGrid.LOW_HOLD && s / 4 >= 24) 0.8f else 0f }
+        val scan = fakeScan(beats = beats).copy(
+            sections = listOf(ScanSection(0f, 8f, 0.16f), ScanSection(8f, 24f, 0.61f)),
+            onsets = onsets,
+        )
+        val roles = ChartRoles.of(scan)
+        assertEquals(setOf(24), roles.dropBeats)
+        assertEquals(Role.BUILD, roles.at(16))
+        assertEquals(Role.BUILD, roles.at(23))
+        assertEquals(Role.DROP, roles.at(24))
+    }
+
+    @Test
+    fun `never more than two notes at once`() {
+        val beats = 16
+        // Everything hits everywhere, and the kick and lead both ring.
+        val onsets = grid(beats) { _, _ -> 1f }
+        val notes = NoteGenerator().apply { density = 4 }.chartAll(fakeScan(beats = beats).copy(onsets = onsets))
+        assertTrue(notes.isNotEmpty())
+        for (n in notes) {
+            val t = n.triggerTimeMs
+            val busy = notes.count { o -> o.triggerTimeMs - 40L <= t && t <= o.triggerTimeMs + o.holdMs + 40L }
+            assertTrue(busy <= 2, "$busy notes at once at $t")
+        }
+    }
+
+    @Test
+    fun `density follows the difficulty`() {
+        val beats = 16
+        val onsets = grid(beats) { _, c -> if (c == OnsetGrid.LOW) 1f else 0f }
+        val scan = fakeScan(beats = beats).copy(onsets = onsets)
+        val easy = NoteGenerator().apply { density = 1 }.chartAll(scan)
+        val expert = NoteGenerator().apply { density = 4 }.chartAll(scan)
+        assertTrue(easy.all { it.triggerTimeMs % 500L == 0L }, "easy charted off the beat")
+        assertEquals(easy.size * 4, expert.size, "expert should chart every sixteenth easy skips")
+    }
+
+    @Test
+    fun `the bar memory charts what the last two bars did`() {
+        val pattern = BarPattern()
+        val bar = 2000f
+        // Two bars of a kick on 1 and an offbeat on the "and" of 2.
+        for (b in 0 until 2) {
+            pattern.record(LANE_KICK, 1f, b * 2000L)
+            pattern.record(LANE_KICK, 0.8f, b * 2000L + 750L)
+        }
+        assertNull(pattern.strengthAt(LANE_KICK, 2000L, bar, 60f, knownUntilMs = 2000L), "one bar is not a pattern")
+        val known = 4000L
+        assertEquals(1f, assertNotNull(pattern.strengthAt(LANE_KICK, 4000L, bar, 60f, known)), 1e-3f)
+        assertEquals(0.8f, assertNotNull(pattern.strengthAt(LANE_KICK, 4750L, bar, 60f, known)), 1e-3f)
+        assertEquals(0f, assertNotNull(pattern.strengthAt(LANE_KICK, 4500L, bar, 60f, known)), 1e-3f)
+        assertEquals(0f, assertNotNull(pattern.strengthAt(LANE_SNARE, 4000L, bar, 60f, known)), 1e-3f)
+    }
+
     @Test
     fun `the PLL path is byte-identical when no engine grid exists`() {
         // Same feed, no chart parameter: the generator must behave exactly as
@@ -472,6 +608,14 @@ class NoteGeneratorTest {
     }
 
         // ── Run records (A5) ─────────────────────────────────────────────────────
+
+        @Test
+        fun `the grade weighs every note reached and S forgives no miss`() {
+            assertEquals("-", gradeFor(RhythmHud()))
+            assertEquals("S", gradeFor(RhythmHud(perfect = 20, great = 2)))
+            assertEquals("A", gradeFor(RhythmHud(perfect = 20, great = 2, missed = 1)))
+            assertEquals("D", gradeFor(RhythmHud(good = 5, missed = 5)))
+        }
 
         @Test
         fun `a first run becomes the record and counts the play`() {

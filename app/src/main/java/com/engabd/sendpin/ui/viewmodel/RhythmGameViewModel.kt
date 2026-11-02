@@ -8,10 +8,12 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.game.GameNote
 import com.engabd.sendpin.game.GameChartSource
+import com.engabd.sendpin.game.GameHaptics
 import com.engabd.sendpin.game.GameTiming
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.NoteGenerator
 import com.engabd.sendpin.game.PausableClock
+import com.engabd.sendpin.game.Role
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,7 +26,11 @@ data class JudgementEvent(
     val lane: Int,
     val comboAfter: Int,
     val atMs: Long,
+    val kind: EventKind = EventKind.TAP,
 )
+
+/** What a [JudgementEvent] was about, beyond the grade of a single tap. */
+enum class EventKind { TAP, HOLD_DONE, HOLD_DROPPED, SLAM, DROP_MISSED }
 
 /** Everything the heads-up display shows. One object, so it recomposes once. */
 data class RhythmHud(
@@ -46,7 +52,32 @@ data class RhythmHud(
      * while the beat is still being found ("listening").
      */
     val countIn: Int = -1,
+    val holdsDone: Int = 0,
+    val holdsTotal: Int = 0,
+    val dropsHit: Int = 0,
+    val dropsTotal: Int = 0,
+    /** How much of the current build the player has earned, 0..1. */
+    val charge: Float = 0f,
+    /** True while the run is in a drop section, where hits score double. */
+    val fever: Boolean = false,
 )
+
+/**
+ * The run's letter, from how well the notes reached were struck: a Perfect counts
+ * whole, a Great 0.7, a Good 0.4, a miss nothing. S needs no misses at all.
+ */
+internal fun gradeFor(hud: RhythmHud): String {
+    val reached = hud.perfect + hud.great + hud.good + hud.missed
+    if (reached == 0) return "-"
+    val w = (hud.perfect + hud.great * 0.7f + hud.good * 0.4f) / reached
+    return when {
+        w >= 0.9f && hud.missed == 0 -> "S"
+        w >= 0.85f -> "A"
+        w >= 0.7f -> "B"
+        w >= 0.55f -> "C"
+        else -> "D"
+    }
+}
 
 /**
  * One track's best rhythm-game run, persisted as a JSON map keyed by the scan
@@ -75,17 +106,14 @@ internal fun mergeRecord(old: GameRecord?, score: Int, combo: Int, accuracy: Flo
  *
  * ## The one rule this model exists to enforce
  *
- * In this mode the room does not react to the music at all. The music show is switched
- * off in [com.engabd.sendpin.hue.DirectLightSync.setGameMode], the analysis keeps
- * running only because the chart is written from its beat grid, and the lamps show a
- * dim album-colour glow until the player does something. A struck note flashes its
- * lane's lamps, a missed one leaves a faint ember, and that is every light there is.
- * That is what makes the game a game: a room that moved on its own would look the same
- * whether the player was there or not.
+ * The room shows the music's own light show, and only while the player keeps time. The
+ * show renders as usual; [com.engabd.sendpin.hue.DirectLightSync.setGameMode] puts a
+ * gate in front of it, shut to a dim album-colour glow, and every opening of that gate
+ * is something the player earned: a hit ([openRoom]), a hold carried, a build charged,
+ * a drop slammed. A miss or a broken combo shuts it. A room that moved on its own would
+ * look the same whether the player was there or not; this one goes dark without them.
  *
- * So there are exactly three calls into the light engine, all from a judgement the
- * player earned or lost ([flashRoom], and the miss and combo-break calls in [tick]),
- * and no path from an analysis frame to a light anywhere in this file.
+ * There is still no path from an analysis frame to a light anywhere in this file.
  *
  * ## Clocks
  *
@@ -103,6 +131,25 @@ internal fun mergeRecord(old: GameRecord?, score: Int, combo: Int, accuracy: Flo
 class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private val generator = NoteGenerator()
     private val directLightSync = (app as SendpinApp).directLightSync
+    private val haptics = GameHaptics(app)
+
+    /** The hold being carried in each lane, if any; its head has already scored. */
+    private val held = arrayOfNulls<GameNote>(LANE_COUNT)
+
+    private val _holds = MutableStateFlow<List<GameNote>>(emptyList())
+
+    /** Holds the player is carrying right now, for the screen to burn their tails down. */
+    val holds: StateFlow<List<GameNote>> = _holds.asStateFlow()
+
+    /** The trigger time of the slam whose first half was struck, or [NO_SLAM]. */
+    private var slamHalfAtMs = NO_SLAM
+
+    /** The last slam counted into [RhythmHud.dropsTotal], so a pair counts once. */
+    private var lastSlamCountedMs = NO_SLAM
+
+    /** The build being charged: its notes resolved, and how many of them were struck. */
+    private var buildSeen = 0
+    private var buildHit = 0
 
     private val _notes = MutableStateFlow<List<GameNote>>(emptyList())
     val notes: StateFlow<List<GameNote>> = _notes.asStateFlow()
@@ -140,6 +187,9 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         val offsetMs: Int = 0,
         /** The offset that would centre the player's taps, or null when the run was too short to say. */
         val suggestedOffsetMs: Int? = null,
+        val grade: String = gradeFor(hud),
+        /** Every note reached was struck. */
+        val fullCombo: Boolean = hud.missed == 0 && hud.perfect + hud.great + hud.good > 0,
     )
 
     private val _result = MutableStateFlow<RunResult?>(null)
@@ -160,7 +210,6 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      */
     private var timingOffsetMs = 0
     private var difficultyScale = 1f
-    private var hapticsOn = true
 
     private val eventId = java.util.concurrent.atomic.AtomicLong()
     private var publishedRevision = -1
@@ -239,6 +288,12 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         _judgement.value = null
         _result.value = null
         _hud.value = RhythmHud()
+        held.fill(null)
+        _holds.value = emptyList()
+        slamHalfAtMs = NO_SLAM
+        lastSlamCountedMs = NO_SLAM
+        buildSeen = 0
+        buildHit = 0
         currentTrackKey = runCatching { directLightSync.currentGameTrackKey() }.getOrNull()
         loadRecordsIfNeeded()
         currentRecord = records[currentTrackKey]
@@ -263,6 +318,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private fun resumeFromCalibration() {
         calibrating = false
         generator.reset()
+        dropHolds()
         lastChart = null
         publishedRevision = -1
         publish()
@@ -362,7 +418,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
 
         for (o in onsets) {
             val audible = clock.fromSource(o.atMs) + GameTiming.effectiveLeadMs(leadMs, o.lagMs)
-            generator.onOnset(o.beat, o.bass, o.mid, o.midStrength, audible)
+            generator.onOnset(o, audible)
         }
 
         if (chart != null && chart === lastChart) {
@@ -381,14 +437,16 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * [offset] shifts the judged clock; [scale] widens or narrows the judgement
-     * windows; [haptics] gates the vibration channel. All three are settings the
-     * screen (or a calibration flow) may change mid-session, so they are plain
-     * fields applied from the next frame on rather than constructor state.
+     * windows; [haptics] gates the vibration channel; [density] is the finest
+     * subdivision charted. All are settings the screen (or a calibration flow) may
+     * change mid-session, so they are plain fields applied from the next frame on
+     * rather than constructor state.
      */
-    fun applyTiming(offsetMs: Int, scale: Float, haptics: Boolean) {
+    fun applyTiming(offsetMs: Int, scale: Float, haptics: Boolean, density: Int = 2) {
         timingOffsetMs = offsetMs.coerceIn(-300, 300)
         difficultyScale = scale.coerceIn(0.4f, 2f)
-        hapticsOn = haptics
+        this.haptics.enabled = haptics
+        generator.density = density
     }
 
     /** The offset currently applied, for the calibration flow's read-back. */
@@ -401,7 +459,15 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     fun stop() {
         if (!running) return
         running = false
+        dropHolds()
+        haptics.cancel()
         runCatching { directLightSync.setGameMode(false) }
+    }
+
+    /** Let go of every hold without scoring it, for a board that is being cleared. */
+    private fun dropHolds() {
+        held.fill(null)
+        if (_holds.value.isNotEmpty()) _holds.value = emptyList()
     }
 
     override fun onCleared() {
@@ -434,44 +500,46 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
                 return
             }
         }
+        val judgedNow = GameTiming.judgedMs(now, timingOffsetMs)
+        // A hold carried to its tail completes on its own: nobody should have to time
+        // the release of a note that has already ended.
+        for (lane in held.indices) {
+            val h = held[lane] ?: continue
+            if (judgedNow >= h.triggerTimeMs + h.holdMs) finishHold(lane, h, completed = true, now)
+        }
         // Reaped on the judged clock and the difficulty's own window: the same pair
         // `take` searches with, so a note is retired exactly when no tap could still
         // score it. (It was reaped at the unscaled Normal window, so Expert notes
         // lingered past their last scoring moment and Easy ones were cut short.)
-        val missed = generator.reap(GameTiming.judgedMs(now, timingOffsetMs), difficultyScale)
+        val missed = generator.reap(judgedNow, difficultyScale)
         if (missed.isEmpty()) {
             publish()
             return
         }
         notesReached += missed.size
-        var hud = _hud.value
-        val hadCombo = hud.combo > 0
-        // Embers on the lanes that were missed, and the colour fading back if a
-        // combo just broke. Nothing flashes: a miss is quiet.
-        val realNow = clock.toSource(now)
-        runCatching {
-            for (lane in missed.map { it.lane }.distinct()) directLightSync.receiveGameMiss(lane, realNow)
-            if (hadCombo) directLightSync.receiveGameComboBreak(realNow)
-        }
-        hud = hud.copy(combo = 0, multiplier = 1, missed = hud.missed + missed.size)
-        _hud.value = hud.withAccuracy()
+        for (n in missed) account(n, struck = false)
+        // The room goes dark from the moment the miss is known. Nothing flashes: a
+        // miss is quiet, and the show it cost is the penalty.
+        runCatching { directLightSync.receiveGameClose(clock.toSource(now)) }
+        val hud = _hud.value
+        _hud.value = hud.copy(combo = 0, multiplier = 1, missed = hud.missed + missed.size).withAccuracy()
         // One event for the run, not one per note: four notes expiring on the same
         // frame is one mistake, and four "Miss" banners stacked on top of each
         // other reads as a bug. The run is attributed to the lane of the note
         // closest to the line — the one the player was most likely watching —
         // rather than an arbitrary first element.
         val nearest = missed.minByOrNull { it.triggerTimeMs }
-        emit(Judgement.MISS, nearest?.lane ?: -1, 0, now)
+        emit(Judgement.MISS, nearest?.lane ?: -1, 0, now, if (missed.any { it.slam }) EventKind.DROP_MISSED else EventKind.TAP)
         publish()
     }
 
     /**
      * The player tapped [lane] at [now].
      *
-     * A tap with no note near it is deliberately free: it scores nothing, flashes
+     * A tap with no note near it is deliberately free: it scores nothing, lights
      * nothing, and does not break the combo. Punishing it would make the honest
      * response to an unclear chart — tapping to find out — the losing move, and the
-     * chart here is generated live rather than authored.
+     * chart here is generated rather than authored.
      *
      * A tap that *does* find a note always scores, because the window
      * [NoteGenerator.take] searches is the widest scoring window. A note the player
@@ -482,82 +550,160 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * bringing the *judged* clock back by it centres every window on how the player
      * actually experiences the beat. The chart itself is untouched, because a shifted
      * chart would misplace notes relative to the music.
+     *
+     * A hold's head scores like any tap and then the hold is carried ([release],
+     * [finishHold]); a slam's two halves score as two taps and the second pays the
+     * drop's bonus; a drop section's notes score double.
      */
     fun tap(lane: Int, now: Long): Judgement? {
         if (!running || clock.paused) return null
         val judgedNow = GameTiming.judgedMs(now, timingOffsetMs)
         val note = generator.take(lane, judgedNow, difficultyScale) ?: return null
         val signed = judgedNow - note.triggerTimeMs
-        val delta = kotlin.math.abs(signed)
-        val judgement = Judgement.forDelta(delta, difficultyScale)
+        val judgement = Judgement.forDelta(kotlin.math.abs(signed), difficultyScale)
         tapErrors.add(signed)
         notesReached++
         notesStruck++
+        account(note, struck = true)
 
         var hud = _hud.value
         val combo = hud.combo + 1
         val multiplier = multiplierFor(combo)
         val steppedUp = multiplier > hud.multiplier
+        var points = judgement.points * multiplier * (if (note.role == Role.DROP) FEVER_MULTIPLIER else 1)
+        var slammed = false
+        if (note.slam) {
+            if (slamHalfAtMs == note.triggerTimeMs) {
+                slammed = true
+                slamHalfAtMs = NO_SLAM
+                points += SLAM_BONUS * multiplier
+            } else {
+                slamHalfAtMs = note.triggerTimeMs
+            }
+        }
         hud = hud.copy(
-            score = hud.score + judgement.points * multiplier,
+            score = hud.score + points,
             combo = combo,
             bestCombo = maxOf(hud.bestCombo, combo),
             multiplier = multiplier,
             perfect = hud.perfect + if (judgement == Judgement.PERFECT) 1 else 0,
             great = hud.great + if (judgement == Judgement.GREAT) 1 else 0,
             good = hud.good + if (judgement == Judgement.GOOD) 1 else 0,
+            dropsHit = hud.dropsHit + if (slammed) 1 else 0,
         )
         _hud.value = hud.withAccuracy()
-        emit(judgement, lane, combo, now)
-        if (hapticsOn) haptics(judgement, steppedUp)
-        flashRoom(note, judgement, combo, now, earlyByMs = note.triggerTimeMs - now)
+        emit(judgement, lane, combo, now, if (slammed) EventKind.SLAM else EventKind.TAP)
+        when {
+            slammed -> haptics.slam()
+            note.holdMs > 0L -> haptics.holdStart(note.holdMs, beatMs())
+            else -> haptics.hit(judgement, steppedUp)
+        }
+        if (note.holdMs > 0L) {
+            held[lane] = note
+            _holds.value = held.filterNotNull()
+        }
+        openRoom(note, judgement)
         publish()
         return judgement
     }
 
     /**
-     * The haptic channel: a tap's confirmation reaches the hand before the eye.
-     * Sharp for a Perfect, soft for the rest, a double pulse when the multiplier
-     * steps up — the one reward that works with no bridge and no screen attention.
+     * The player lifted the finger on [lane] at [now]. Inside the last window of a
+     * hold's tail that is a completed hold; earlier, a dropped one — which costs its
+     * remaining points and its light but never the combo, because letting go of a
+     * long note a little early is not the same mistake as missing one.
      */
-    private fun haptics(judgement: Judgement, steppedUp: Boolean) {
-        val vibrator = getApplication<Application>().getSystemService(android.content.Context.VIBRATOR_SERVICE)
-            as? android.os.Vibrator ?: return
-        if (!vibrator.hasVibrator()) return
-        runCatching {
-            when {
-                steppedUp -> vibrator.vibrate(
-                    android.os.VibrationEffect.createWaveform(longArrayOf(0, 24, 60, 24), -1),
-                )
-                judgement == Judgement.PERFECT -> vibrator.vibrate(
-                    android.os.VibrationEffect.createWaveform(longArrayOf(0, 28), -1),
-                )
-                else -> vibrator.vibrate(android.os.VibrationEffect.createOneShot(12, 96))
-            }
-        }
+    fun release(lane: Int, now: Long) {
+        if (!running) return
+        val h = held.getOrNull(lane) ?: return
+        val judgedNow = GameTiming.judgedMs(now, timingOffsetMs)
+        val done = judgedNow >= h.triggerTimeMs + h.holdMs - Judgement.hitWindowMs(difficultyScale)
+        finishHold(lane, h, completed = done, now)
+    }
+
+    private fun finishHold(lane: Int, h: GameNote, completed: Boolean, now: Long) {
+        held[lane] = null
+        _holds.value = held.filterNotNull()
+        val end = h.triggerTimeMs + h.holdMs
+        val heldMs = (minOf(GameTiming.judgedMs(now, timingOffsetMs), end) - h.triggerTimeMs).coerceAtLeast(0L)
+        val beats = (heldMs / beatMs()).toInt()
+        val hud = _hud.value
+        val points = (HOLD_TICK_POINTS * beats + if (completed) HOLD_BONUS else 0) * hud.multiplier
+        _hud.value = hud.copy(score = hud.score + points, holdsDone = hud.holdsDone + if (completed) 1 else 0)
+        haptics.holdEnd(completed)
+        if (!completed) runCatching { directLightSync.receiveGameClose(clock.toSource(now)) }
+        emit(
+            if (completed) Judgement.PERFECT else Judgement.MISS,
+            lane, hud.combo, now,
+            if (completed) EventKind.HOLD_DONE else EventKind.HOLD_DROPPED,
+        )
     }
 
     /**
-     * The light a hit earns: its lane's lamps flash.
+     * Book a note that has just been resolved, struck or missed, into the run's
+     * hold, drop and build counts, and the build's charge into the room.
+     */
+    private fun account(note: GameNote, struck: Boolean) {
+        var hud = _hud.value
+        if (note.holdMs > 0L) hud = hud.copy(holdsTotal = hud.holdsTotal + 1)
+        if (note.slam && note.triggerTimeMs != lastSlamCountedMs) {
+            lastSlamCountedMs = note.triggerTimeMs
+            hud = hud.copy(dropsTotal = hud.dropsTotal + 1)
+        }
+        // A miss halves the build rather than emptying it: one dropped note in a
+        // sixteenth-note roll should cost something, not the whole build.
+        if (note.role == Role.BUILD) {
+            buildSeen++
+            buildHit = if (struck) buildHit + 1 else buildHit / 2
+        } else {
+            buildSeen = 0
+            buildHit = 0
+        }
+        val charge = if (buildSeen == 0) 0f else buildHit.toFloat() / buildSeen * minOf(1f, buildSeen / BUILD_FULL_NOTES)
+        if (charge != hud.charge) runCatching { directLightSync.receiveGameCharge(charge) }
+        _hud.value = hud.copy(charge = charge, fever = note.role == Role.DROP)
+    }
+
+    /**
+     * The light a hit earns: the show, let through.
      *
-     * [judgement] sets the peak (a Perfect is full, a Good less than half) and [combo]
-     * deepens the colour and lengthens the glow. A tap that lands before its note is
-     * audible ([earlyByMs] above zero) is held back so the lamp, which takes about
-     * [GameTiming.LIGHT_PIPELINE_MS] to show a command, lights as the beat is heard
-     * rather than ahead of it. A tap on or after the beat goes out at once, because
-     * it can no longer be early.
+     * Opened from just before [note]'s own moment — a frame is sent
+     * [GameTiming.LIGHT_PIPELINE_MS] before it is seen, so an early tap lets that
+     * beat's flash through whole — and carried through the next note on the board,
+     * so a player keeping time never sees the gate shut between beats. A hold keeps
+     * it open to its tail and a slam for the drop's first bar. [judgement] sets how
+     * much of the show gets through: all of it for a Perfect, half for a Good.
      *
      * Stamped in real time ([PausableClock.toSource]) because the light render loop is
      * on another thread and knows nothing of the game clock. Best-effort by design: the
      * game is playable with no bridge paired at all, and a light that cannot be reached
      * must not cost the player a note.
      */
-    private fun flashRoom(note: GameNote, judgement: Judgement, combo: Int, tapGameMs: Long, earlyByMs: Long) {
+    private fun openRoom(note: GameNote, judgement: Judgement) {
+        val beat = beatMs()
+        val until = when {
+            note.slam -> note.triggerTimeMs + beat * DROP_OPEN_BEATS
+            note.holdMs > 0L -> note.triggerTimeMs + note.holdMs
+            else -> {
+                val next = generator.active()
+                    .filter { it.triggerTimeMs > note.triggerTimeMs + CHORD_MS }
+                    .minOfOrNull { it.triggerTimeMs }
+                (next ?: note.triggerTimeMs) + (beat * GATE_CARRY_BEATS).toLong()
+            }
+        }
+        val level = when (judgement) {
+            Judgement.PERFECT -> 1f
+            Judgement.GREAT -> 0.75f
+            else -> 0.5f
+        }
         runCatching {
-            val startMs = clock.toSource(tapGameMs) + GameTiming.flashDelayMs(earlyByMs)
-            directLightSync.receiveGameHit(note.lane, judgement, combo, startMs)
+            val from = clock.toSource(note.triggerTimeMs) - GameTiming.LIGHT_PIPELINE_MS - GATE_LEAD_MS
+            directLightSync.receiveGameOpen(from, clock.toSource(until) - GameTiming.LIGHT_PIPELINE_MS, level)
         }
     }
+
+    /** One beat at the chart's tempo, ms. */
+    private fun beatMs(): Long = generator.bpm.let { if (it > 0f) (60_000f / it).toLong() else 500L }
 
     private fun publish() {
         // Only when something actually changed. [tick] runs on every display frame,
@@ -577,12 +723,14 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         val bpm = generator.bpm
         val countIn = generator.countInBeatsLeft(nowMs())
         if (hud.locked != generator.locked || hud.bpm.toInt() != bpm.toInt() || hud.countIn != countIn) {
+            // Each count-in beat is felt as well as seen.
+            if (countIn > 0 && countIn != hud.countIn) haptics.countIn()
             _hud.value = hud.copy(locked = generator.locked, bpm = bpm, countIn = countIn)
         }
     }
 
-    private fun emit(judgement: Judgement, lane: Int, comboAfter: Int, atMs: Long) {
-        _judgement.value = JudgementEvent(eventId.incrementAndGet(), judgement, lane, comboAfter, atMs)
+    private fun emit(judgement: Judgement, lane: Int, comboAfter: Int, atMs: Long, kind: EventKind = EventKind.TAP) {
+        _judgement.value = JudgementEvent(eventId.incrementAndGet(), judgement, lane, comboAfter, atMs, kind)
     }
 
     private fun RhythmHud.withAccuracy(): RhythmHud =
@@ -605,3 +753,33 @@ private const val TRACK_CHECK_MS = 1000L
 
 /** How old a chart snapshot may be, in ms, before the game stops trusting it. */
 private const val CHART_STALE_MS = 400L
+
+private const val LANE_COUNT = 4
+
+/** "No slam half pending", for the trigger-time bookkeeping. */
+private const val NO_SLAM = Long.MIN_VALUE
+
+/** Notes closer than this are one chord, as the generator's two-thumb rule counts them. */
+private const val CHORD_MS = 40L
+
+/** Drop sections score double. */
+private const val FEVER_MULTIPLIER = 2
+
+/** What landing both halves of a drop's slam adds, before the multiplier. */
+private const val SLAM_BONUS = 200
+
+/** Per beat carried, and for carrying a hold all the way. */
+private const val HOLD_TICK_POINTS = 10
+private const val HOLD_BONUS = 50
+
+/** Build notes struck before the charge can reach full. */
+private const val BUILD_FULL_NOTES = 8f
+
+/** How far past the next note a hit holds the gate open, in beats. */
+private const val GATE_CARRY_BEATS = 0.9f
+
+/** How long a landed slam opens the room for: the drop's first bar. */
+private const val DROP_OPEN_BEATS = 4
+
+/** The gate opens this much before a note's flash is sent, so its attack is not clipped. */
+private const val GATE_LEAD_MS = 40L
