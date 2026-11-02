@@ -317,8 +317,8 @@ class UnderwaterScript : AmbienceScript {
          * at the surface, and the most a swell and a shaft add. The floor is close to
          * black on purpose: the depth is most of the effect.
          */
-        const val FLOOR_LEVEL = 0.06f
-        const val SURFACE_LEVEL = 0.26f
+        const val FLOOR_LEVEL = 0.10f
+        const val SURFACE_LEVEL = 0.36f
         const val CAUSTIC_DEPTH = 0.16f
         const val SWELL_DEPTH = 0.12f
         const val BEAM_LEVEL = 0.22f

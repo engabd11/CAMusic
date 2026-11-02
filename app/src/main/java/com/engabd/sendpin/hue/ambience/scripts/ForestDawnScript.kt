@@ -118,14 +118,15 @@ class ForestDawnScript : AmbienceScript {
         val intensity = params.intensity.coerceIn(0f, 1f)
         val p = progress(tS)
         // Shade only exists once there is sun to cast it.
-        val depth = (0.05f + 0.22f * smoothstep(0.30f, 0.90f, p)) * (0.8f + 0.4f * intensity)
+        val depth = (0.10f + 0.17f * smoothstep(0.30f, 0.90f, p)) * (0.8f + 0.4f * intensity)
 
         for ((i, id) in room.ids.withIndex()) {
             val axis = room.axisPos[id] ?: 0.5f
             val pos = room.positions[id] ?: room.centre()
             val pl = (p + 0.05f * (axis - 0.5f)).coerceIn(0f, 1f)
             val dir = SKY.colourAt(pl)
-            val sky = SKY.levelAt(pl) * (0.9f + 0.2f * intensity)
+            // The window side of the room is lit first and most.
+            val sky = SKY.levelAt(pl) * (0.9f + 0.2f * intensity) * (0.88f + 0.24f * axis)
 
             // Two crossing fields drifting opposite ways, plus the leaves' own flutter.
             val a = SmoothNoise.value(fieldA, pos.x * 2.2 + pos.y * 1.6 + tS * 0.045)
@@ -243,7 +244,7 @@ class ForestDawnScript : AmbienceScript {
                 Rgb(1.00f, 0.74f, 0.40f),       // gold
                 Blackbody.rgb(3100f),           // soft morning gold
             ),
-            floatArrayOf(0.07f, 0.16f, 0.28f, 0.40f, 0.46f),
+            floatArrayOf(0.20f, 0.32f, 0.46f, 0.60f, 0.68f),
         )
     }
 }

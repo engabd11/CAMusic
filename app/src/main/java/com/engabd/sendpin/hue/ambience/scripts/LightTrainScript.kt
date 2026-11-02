@@ -57,12 +57,12 @@ class LightTrainScript : AmbienceScript {
     override val effect = AmbienceEffect.LIGHT_TRAIN
 
     /**
-     * About two thirds of a unit a second takes a lamp from dark to its window level in
+     * A little over a unit a second takes a lamp from dark to its window level in
      * well under a second, which is as fast as a carriage's soft edge ever asks for (its
      * steepest moment is half again its average). The room mean may move as fast, since
      * only the lamps under the train are moving.
      */
-    override val comfort = ComfortProfile(risePerS = 0.65f, fallPerS = 0.65f, roomSwingPerS = 0.65f)
+    override val comfort = ComfortProfile(risePerS = 1.2f, fallPerS = 1.2f, roomSwingPerS = 1.2f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -375,17 +375,17 @@ class LightTrainScript : AmbienceScript {
         const val QUIET_S = 20f
 
         /** Perceived brightness of a lit window, at intensity 0 and 1. */
-        const val WINDOW_MIN = 0.22f
-        const val WINDOW_MAX = 0.40f
+        const val WINDOW_MIN = 0.38f
+        const val WINDOW_MAX = 0.68f
 
-        const val NIGHT_LEVEL = 0.035f
-        const val HEADLIGHT_LEVEL = 0.14f
+        const val NIGHT_LEVEL = 0.06f
+        const val HEADLIGHT_LEVEL = 0.24f
         const val HEADLIGHT_WIDTH = 0.10f
-        const val STATION_LEVEL = 0.16f
+        const val STATION_LEVEL = 0.28f
         const val STATION_WIDTH = 0.28f
-        const val SIGNAL_LEVEL = 0.07f
+        const val SIGNAL_LEVEL = 0.12f
         const val SIGNAL_WIDTH = 0.16f
-        const val CLACK_LEVEL = 0.05f
+        const val CLACK_LEVEL = 0.08f
         const val CLACK_WIDTH = 0.16f
 
         /** A clack's glow: a soft rise and a short fall, so it is a pulse and not a spark. */

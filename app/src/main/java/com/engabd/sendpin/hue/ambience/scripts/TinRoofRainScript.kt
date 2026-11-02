@@ -182,7 +182,9 @@ class TinRoofRainScript : AmbienceScript {
             }
             val axis = room.axisPos[id] ?: 0.5f
             val windowSide = 0.55f + 0.45f * axis
-            val shimmer = 0.6f * SmoothNoise.value(s, tS * 0.33) + 0.4f * SmoothNoise.value(s + 9, tS * 0.85)
+            // Water running down one pane: the slow layer is shared along the window, so
+            // neighbouring lamps ripple together, and only the fast one is the lamp's own.
+            val shimmer = 0.6f * SmoothNoise.value(SHIMMER_SEED, tS * 0.33 + axis * 1.2) + 0.4f * SmoothNoise.value(s + 9, tS * 0.85)
             val depth = 0.03f + 0.07f * rain
             var level = (WINDOW_BASE + WINDOW_GAIN * rain) * windowSide * (1f + depth * shimmer)
             level += flash * windowSide
@@ -260,9 +262,10 @@ class TinRoofRainScript : AmbienceScript {
         const val FLASH_GAIN_MIN = 0.06f
         const val FLASH_GAIN_MAX = 0.10f
 
-        const val READING_LEVEL = 0.42f
-        const val WINDOW_BASE = 0.10f
-        const val WINDOW_GAIN = 0.08f
+        const val READING_LEVEL = 0.55f
+        const val WINDOW_BASE = 0.18f
+        const val WINDOW_GAIN = 0.12f
+        const val SHIMMER_SEED = 0x7A_11
 
         /** Cool blue-grey light from outside. */
         val WINDOW = Rgb(0.55f, 0.68f, 0.88f)

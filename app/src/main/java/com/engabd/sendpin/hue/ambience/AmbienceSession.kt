@@ -466,9 +466,8 @@ class AmbienceSession(
      *
      * The frame is built in three steps. The script paints in perceived brightness; the
      * comfort limiter holds every lamp to the scene's speed limit in those same units;
-     * and only then is it converted to the linear value the encoder expects. The master
-     * brightness ceiling is applied last, in linear light, so the slider keeps meaning
-     * what it means everywhere else in the app.
+     * and the master brightness ceiling is applied last, so the slider keeps meaning
+     * what it means everywhere else in the app. See [AmbienceFrameShaper].
      */
     fun renderLights(dtS: Float): Map<Int, Rgb>? {
         if (!running) return null
@@ -506,7 +505,7 @@ class AmbienceSession(
         frame.clear()
         script.renderLights(t, lightScratch, n, frame)
         if (frame.isEmpty()) return null
-        return shaper.shape(frame, dtS, fade, params.brightness)
+        return shaper.shape(frame, dtS, fade, params.brightness, params.intensity)
     }
 
     private fun generatorLoop() {

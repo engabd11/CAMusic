@@ -2,6 +2,14 @@ package com.engabd.sendpin.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,7 +39,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,6 +55,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.engabd.sendpin.R
 import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -97,8 +112,23 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
     ) { uri -> pickingFor?.let { viewModel.setClip(it, uri) }; pickingFor = null }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
-        Bloom(if (running != null) accent else TextFaint, 440.dp, (-40).dp, (-70).dp,
-            if (running != null) 0.42f else 0.16f)
+        // The selected scene, softly, behind the top of the page: brighter while it runs.
+        val backdrop = (running ?: expanded)?.let { AmbienceEffect.fromWire(it) }
+        Crossfade(backdrop, animationSpec = tween(700), label = "backdrop") { e ->
+            if (e != null) {
+                Box(Modifier.fillMaxWidth().height(360.dp)) {
+                    Image(
+                        painterResource(ambienceImage(e)), null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().blur(28.dp)
+                            .alpha(if (running != null) 0.55f else 0.30f),
+                    )
+                    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Ink))))
+                }
+            } else {
+                Bloom(TextFaint, 440.dp, (-40).dp, (-70).dp, 0.16f)
+            }
+        }
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Row(
@@ -108,15 +138,9 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                 CircleBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(9.dp),
-                    ) {
-                        Text("Effects", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
-                        ExperimentalBadge()
-                    }
+                    Text("Scenes", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
                     Text(
-                        "Atmosphere, not a reaction to music",
+                        "Your room, in light and sound",
                         color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                     )
                 }
@@ -132,31 +156,10 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                 }
 
                 Text(
-                    "Experimental: these shows drive the bridge directly and take the room " +
-                        "off the music while they run. Expect rough edges — timings, levels " +
-                        "and the sound mix are all still being tuned.",
-                    color = WarnAmber, fontSize = 12.sp, lineHeight = 17.sp,
-                )
-                Spacer(Modifier.height(12.dp))
-
-                Text(
-                    "Each effect plays a real recording and lights the room from it. The " +
-                        "app listens to the sound it is playing, so the flash lands on the " +
-                        "thunderclap, from the side it came from, and a far-off rumble " +
-                        "washes the room instead of cracking it.",
+                    "Each scene plays a real recording and lights every lamp in the room " +
+                        "from it. Thunder flashes where it came from, a fire breathes in its " +
+                        "corner, and the calm scenes drift on their own. Tap one to begin.",
                     color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp,
-                )
-                Spacer(Modifier.height(10.dp))
-                // The two kinds of effect, stated plainly: which ones follow the sound
-                // and which ones merely live alongside it. The distinction is the
-                // design, not a footnote - a storm is its thunder, an aurora is not
-                // its pad.
-                Text(
-                    "Storms, fireworks and the fireplace react to what you hear - a clap " +
-                        "flashes where it came from. The aurora, underwater and light train " +
-                        "are their own scene: their sound is a background, and the lights " +
-                        "drift on their own no matter what plays.",
-                    color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
                 )
                 Spacer(Modifier.height(16.dp))
 
@@ -339,34 +342,50 @@ private fun EffectCard(
     onClick: () -> Unit,
 ) {
     val accent = LocalAccent.current
-    GlassCard(
-        modifier = modifier,
-        radius = 18.dp,
-        fill = if (running) accent.a(0.14f) else Glass,
+    val shape = RoundedCornerShape(18.dp)
+    // A slow breath on the running scene's border, the room's own pace rather than a blink.
+    val breath = if (running) {
+        rememberInfiniteTransition(label = "breath").animateFloat(
+            0.45f, 1f,
+            infiniteRepeatable(tween(2600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "breath",
+        ).value
+    } else 0f
+    Box(
+        modifier.aspectRatio(0.82f).clip(shape)
+            .border(if (running) 2.dp else 1.dp, if (running) accent.a(breath) else Hairline, shape)
+            .clickable(onClick = onClick),
     ) {
-        Column(
-            Modifier.fillMaxWidth().clickable(onClick = onClick).padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Box(
-                Modifier.size(38.dp).clip(RoundedCornerShape(12.dp))
-                    .background(if (running) accent.a(0.20f) else Glass)
-                    .border(1.dp, if (running) accent.a(0.45f) else Hairline, RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    ambienceIcon(effect), null,
-                    tint = if (running) accent else TextMuted,
-                    modifier = Modifier.size(19.dp),
-                )
-            }
+        Image(
+            painterResource(ambienceImage(effect)), null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(0.35f to Color.Transparent, 1f to Ink.a(0.92f)),
+            ),
+        )
+        if (running) {
             Text(
-                effect.title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                "Playing",
+                color = Ink, fontWeight = FontWeight.Bold, fontSize = 11.sp,
+                modifier = Modifier.align(Alignment.TopStart).padding(10.dp)
+                    .clip(RoundedCornerShape(100)).background(accent)
+                    .padding(horizontal = 9.dp, vertical = 3.dp),
+            )
+        }
+        Column(
+            Modifier.align(Alignment.BottomStart).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                effect.title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(
-                effect.blurb, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                maxLines = 3, overflow = TextOverflow.Ellipsis,
+                effect.blurb, color = TextSecondary, fontSize = 11.sp, lineHeight = 14.sp,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -417,6 +436,23 @@ internal fun ambienceIcon(e: AmbienceEffect): ImageVector = when (e) {
     AmbienceEffect.FOREST_DAWN -> Icons.Default.Forest
     AmbienceEffect.TIN_ROOF_RAIN -> Icons.Default.Cottage
     AmbienceEffect.GOLDEN_HOUR -> Icons.Default.WbTwilight
+}
+
+/** The picture for each scene. Internal for the same reason as [ambienceIcon]. */
+internal fun ambienceImage(e: AmbienceEffect): Int = when (e) {
+    AmbienceEffect.FIREWORKS -> R.drawable.ambience_fireworks
+    AmbienceEffect.FIREWORKS_2 -> R.drawable.ambience_fireworks_2
+    AmbienceEffect.THUNDERSTORM -> R.drawable.ambience_thunderstorm
+    AmbienceEffect.THUNDERSTORM_2 -> R.drawable.ambience_thunderstorm_2
+    AmbienceEffect.UNDERWATER -> R.drawable.ambience_underwater
+    AmbienceEffect.FIREPLACE -> R.drawable.ambience_fireplace
+    AmbienceEffect.LIGHT_TRAIN -> R.drawable.ambience_light_train
+    AmbienceEffect.AURORA -> R.drawable.ambience_aurora
+    AmbienceEffect.COASTAL_RAIN -> R.drawable.ambience_coastal_rain
+    AmbienceEffect.CANDLELIGHT -> R.drawable.ambience_candlelight
+    AmbienceEffect.FOREST_DAWN -> R.drawable.ambience_forest_dawn
+    AmbienceEffect.TIN_ROOF_RAIN -> R.drawable.ambience_tin_roof_rain
+    AmbienceEffect.GOLDEN_HOUR -> R.drawable.ambience_golden_hour
 }
 
 private fun formatRemaining(seconds: Int): String {

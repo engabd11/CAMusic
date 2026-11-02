@@ -69,7 +69,7 @@ class AmbienceComfortTest {
      * - underwater: water does not jump. 0.25 a second is the profile's own ceiling.
      *   Swells and sun shafts together: 1 to 4 a minute.
      * - aurora: 0.12 a second, and no events at all.
-     * - light train: windows pass at 0.5 a second at most. Clacks are sound, not named
+     * - light train: windows pass at 0.6 a second at most. Clacks are sound, not named
      *   light events, so they are not counted; trains are counted in the next test.
      * - coastal rain: 0.35. Headlights and distant glows are rare (at most 3 a minute).
      * - candlelight: a flame moves 0.25 a second at most; a draught comes once every one to
@@ -88,7 +88,8 @@ class AmbienceComfortTest {
         AmbienceEffect.FIREWORKS_2 to Limits(1.00f, 0.60f, 16f, 2f),
         AmbienceEffect.UNDERWATER to Limits(0.25f, 0.12f, 4f, 0.5f),
         AmbienceEffect.AURORA to Limits(0.15f, 0.085f, 0f, 0f),
-        AmbienceEffect.LIGHT_TRAIN to Limits(0.65f, 0.65f, 1000f, 0f),
+        // Brighter windows than it once had, crossed in the same second.
+        AmbienceEffect.LIGHT_TRAIN to Limits(1.0f, 1.0f, 1000f, 0f),
         AmbienceEffect.COASTAL_RAIN to Limits(0.35f, 0.25f, 3f, 0f),
         AmbienceEffect.CANDLELIGHT to Limits(0.25f, 0.10f, 1.2f, 0f),
         AmbienceEffect.FOREST_DAWN to Limits(0.15f, 0.06f, 6f, 0.3f),

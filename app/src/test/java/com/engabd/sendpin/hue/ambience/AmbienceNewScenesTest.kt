@@ -103,7 +103,7 @@ class AmbienceNewScenesTest {
             val frame = HashMap<Int, Rgb>()
             script.renderLights(100.0, arrayOfNulls(1), 0, frame)
             val levels = frame.mapValues { Perceptual.levelOf(it.value) }
-            val bright = levels.filter { it.value > 0.25f }.keys
+            val bright = levels.filter { it.value > 0.35f }.keys
             assertEquals(expected, bright.size, "$n lamps")
             for (id in bright) {
                 val c = frame.getValue(id)
@@ -111,8 +111,8 @@ class AmbienceNewScenesTest {
                 assertTrue(c.first > c.second && c.third < c.second * 0.45f, "candle colour $c")
             }
             if (n > 1) {
-                val dim = levels.filter { it.value <= 0.25f }.values
-                assertTrue(dim.all { it in 0.04f..0.2f }, "reflected light $dim")
+                val dim = levels.filter { it.value <= 0.35f }.values
+                assertTrue(dim.all { it in 0.04f..0.33f }, "reflected light $dim")
             }
             // Candles are the ones closest to the centre.
             val centre = room.centre()
@@ -141,9 +141,10 @@ class AmbienceNewScenesTest {
         assertTrue(mid.first > mid.second && mid.first > mid.third && mid.third > 0.3f * mid.first, "pink expected: $mid")
         assertTrue(end.first > end.second && end.second > end.third * 1.4f, "gold expected: $end")
         assertTrue(r.mean(1500) > 2.5f * r.mean(12), "dawn did not brighten: ${r.mean(12)} to ${r.mean(1500)}")
-        // After the ramp it holds: the room's brightness drifts by only a few points.
+        // After the ramp it holds: the room's brightness drifts by only a few points. The
+        // bound was 0.06 when the morning sat at 0.46; it scales with the brighter 0.68.
         val held = (1300..1790 step 10).map { r.mean(it) }
-        assertTrue(held.max() - held.min() < 0.06f, "held range ${held.max() - held.min()}")
+        assertTrue(held.max() - held.min() < 0.06f * 0.68f / 0.46f, "held range ${held.max() - held.min()}")
         // Shade drifts: lamps are not all equally bright mid-morning.
         val mornings = r.lamps[1500].values.map { Perceptual.levelOf(it) }
         assertTrue(mornings.max() - mornings.min() > 0.01f, "no dappling")

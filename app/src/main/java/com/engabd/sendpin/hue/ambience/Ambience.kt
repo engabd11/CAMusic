@@ -75,7 +75,7 @@ enum class AmbienceEffect(
     ),
     LIGHT_TRAIN(
         "light_train", "Light train",
-        "A beam that runs the length of the room and away into the distance.",
+        "A night train going by: warm windows, one carriage after another.",
     ),
     AURORA(
         "aurora", "Aurora",

@@ -566,8 +566,8 @@ class CoastalRainScript : AmbienceScript {
         const val MOOD_TAU_S = 3f
 
         /** Perceived brightness of the overcast, at intensity 0 and 1. */
-        const val BASE_MIN = 0.12f
-        const val BASE_MAX = 0.20f
+        const val BASE_MIN = 0.15f
+        const val BASE_MAX = 0.25f
 
         /** The lighthouse: seconds per rotation at intensity 0 and 1, and the share of it that is lit. */
         const val LIGHTHOUSE_SLOW_S = 20f

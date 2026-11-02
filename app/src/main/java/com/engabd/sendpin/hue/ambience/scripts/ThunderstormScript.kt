@@ -725,7 +725,7 @@ class ThunderstormScript(
          * How much of the room's brightness the audible roll is allowed to move, in
          * perceived units. A hint of sky, never a second flash.
          */
-        const val ROLL_GLOW = 0.10f
+        const val ROLL_GLOW = 0.14f
 
         /**
          * How much of a rumble there has to be before the room answers it.
@@ -770,8 +770,8 @@ class ThunderstormScript(
         const val FAR_PEAK = 0.30f
 
         /** The dim base: perceived brightness of the rain light, at intensity 0 and 1. */
-        const val BASE_MIN = 0.13f
-        const val BASE_MAX = 0.19f
+        const val BASE_MIN = 0.17f
+        const val BASE_MAX = 0.25f
 
         /** How fast cloud moves along the room's axis, and how many cloud cells span it. */
         const val CLOUD_SPEED = 0.025
