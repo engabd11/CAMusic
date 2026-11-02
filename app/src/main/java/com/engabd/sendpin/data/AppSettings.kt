@@ -3063,6 +3063,18 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[GAME_LEAD_PROMPT_SHOWN] = true }
     }
 
+    private val GAME_HINTS_SEEN = intPreferencesKey("game_hints_seen")
+
+    /**
+     * Which rhythm-game first-time hints have been shown, as bits (1 = hold,
+     * 2 = slam), so each new kind of note is explained once and never again.
+     */
+    val gameHintsSeen: Flow<Int> = pref { it[GAME_HINTS_SEEN] ?: 0 }
+
+    suspend fun markGameHintSeen(bit: Int) {
+        context.dataStore.edit { it[GAME_HINTS_SEEN] = (it[GAME_HINTS_SEEN] ?: 0) or bit }
+    }
+
     /**
      * Judgement-window difficulty: easy widens every window by 1.5x, normal is
      * as shipped, expert narrows them to 2/3. The windows exist to absorb the

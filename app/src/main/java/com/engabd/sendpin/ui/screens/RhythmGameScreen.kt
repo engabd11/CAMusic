@@ -44,6 +44,8 @@ import com.engabd.sendpin.game.GameNote
 import com.engabd.sendpin.game.GameTiming
 import com.engabd.sendpin.game.LANE_RGB
 import com.engabd.sendpin.game.Judgement
+import com.engabd.sendpin.game.Role
+import com.engabd.sendpin.ui.viewmodel.EventKind
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.TitleGap
@@ -86,11 +88,10 @@ import kotlin.math.sin
  *
  * ## What the lights do here
  *
- * The player's taps are the only light. The music show is switched off for as long as
- * this screen is open (see [com.engabd.sendpin.hue.DirectLightSync.setGameMode]), the
- * room rests in a soft glow of the album's colour, and each hit flashes the lamps of its
- * lane in the colour that lane wears on this board. The glass and the room speak the
- * same colours, so a Perfect on the red lane is a red flash in both places at once.
+ * The room plays the music's own light show, but only while the player keeps time:
+ * the show runs behind a gate (see [com.engabd.sendpin.hue.DirectLightSync.setGameMode])
+ * that rests at a soft album-colour glow, opens on hits, and shuts on a miss. The lane
+ * colours are the glass's own; the room wears the show's.
  *
  * This screen's own effects are free to be as busy as they like; the promise is
  * about the room, not the glass.
@@ -187,6 +188,7 @@ fun RhythmGameScreen(
     // Deliberately the State, not its value: read inside the draw lambda below so a
     // note appearing invalidates the draw phase rather than recomposing the screen.
     val notesState = viewModel.notes.collectAsStateWithLifecycle()
+    val holdsState = viewModel.holds.collectAsStateWithLifecycle()
     val hud by viewModel.hud.collectAsStateWithLifecycle()
     val judgement by viewModel.judgement.collectAsStateWithLifecycle()
     val result by viewModel.result.collectAsStateWithLifecycle()
@@ -281,11 +283,40 @@ fun RhythmGameScreen(
     // When the last multiplier step happened, on the game's clock. Read inside
     // draw lambdas only; writing it recomposes nothing.
     val milestoneAtState = remember { mutableLongStateOf(0L) }
+    // When the last drop was slammed, on the game's clock: the flash, the shockwave
+    // and the shake all read it inside draw and layer lambdas.
+    val dropAtState = remember { mutableLongStateOf(Long.MIN_VALUE / 2) }
+    val reducedMotion = com.engabd.sendpin.ui.design.rememberReducedMotion()
 
     LaunchedEffect(judgement?.id) {
         val event = judgement ?: return@LaunchedEffect
         if (bursts.size > MAX_BURSTS) bursts.subList(0, bursts.size - MAX_BURSTS).clear()
         bursts.add(Burst(event.lane, event.atMs, event.judgement))
+        if (event.kind == EventKind.SLAM) dropAtState.value = event.atMs
+    }
+
+    // Recomposes only when the answer flips, not every time the board changes.
+    val building by remember { derivedStateOf { notesState.value.any { it.role == Role.BUILD } } }
+
+    // Each new kind of note is explained the first time it reaches the board, once.
+    val hintsSeen by settings.gameHintsSeen.collectAsStateWithLifecycle(initialValue = HINT_HOLD or HINT_SLAM)
+    var hint by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(hintsSeen) {
+        snapshotFlow { notesState.value }.collect { notes ->
+            val bit = when {
+                hintsSeen and HINT_HOLD == 0 && notes.any { it.holdMs > 0L } -> HINT_HOLD
+                hintsSeen and HINT_SLAM == 0 && notes.any { it.slam } -> HINT_SLAM
+                else -> return@collect
+            }
+            hint = if (bit == HINT_HOLD) "HOLD · keep your thumb down to the end of the tail" else "BOTH THUMBS · hit the two outer lanes together"
+            settings.markGameHintSeen(bit)
+        }
+    }
+    LaunchedEffect(hint) {
+        if (hint != null) {
+            kotlinx.coroutines.delay(GAME_HINT_MS)
+            hint = null
+        }
     }
 
     // Stamp the milestone when the multiplier steps up - the ripple is the
@@ -344,9 +375,25 @@ fun RhythmGameScreen(
                 multiplier = hud.multiplier,
                 accuracy = hud.accuracy,
                 accent = accent,
+                fever = hud.fever,
             )
 
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        // A short decaying shake when a drop lands. Read here, in the
+                        // layer block, so it re-runs the layer and nothing above it.
+                        if (reducedMotion) return@graphicsLayer
+                        val age = (nowMs - dropAtState.value).toFloat()
+                        if (age in 0f..SHAKE_MS) {
+                            val d = 1f - age / SHAKE_MS
+                            translationX = sin(age * 0.09f) * 14f * d * d
+                            translationY = sin(age * 0.13f + 1f) * 8f * d * d
+                        }
+                    },
+            ) {
                 Canvas(
                     Modifier
                         .fillMaxSize()
@@ -391,6 +438,7 @@ fun RhythmGameScreen(
                         now = nowMs,
                         noteNow = nowMs + displayLatencyMs,
                         notes = notesState.value,
+                        holds = holdsState.value,
                         bursts = bursts,
                         lanePress = lanePress,
                         lookAheadMs = viewModel.lookAheadMs,
@@ -398,16 +446,49 @@ fun RhythmGameScreen(
                         combo = hud.combo,
                         multiplier = hud.multiplier,
                         milestoneAt = milestoneAtState.value,
+                        charge = hud.charge,
+                        fever = hud.fever,
+                        building = building,
+                        dropAt = dropAtState.value,
                     )
                 }
 
                 JudgementBanner(
                     eventId = judgement?.id,
                     judgement = judgement?.judgement,
+                    kind = judgement?.kind ?: EventKind.TAP,
                     combo = judgement?.comboAfter ?: 0,
                     accent = accent,
                     modifier = Modifier.align(Alignment.Center),
                 )
+
+                // The song's arc, called out as the board reaches it.
+                val callout = when {
+                    building -> "BUILD UP"
+                    hud.fever -> "DROP  ×2"
+                    else -> null
+                }
+                if (callout != null && result == null && !paused) {
+                    Text(
+                        callout,
+                        color = accent.copy(alpha = 0.85f), fontFamily = AppFont,
+                        fontWeight = FontWeight.ExtraBold, fontSize = 14.sp,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 36.dp),
+                    )
+                }
+
+                hint?.let {
+                    Text(
+                        it,
+                        color = TextPrimary, fontFamily = AppFont,
+                        fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 60.dp, start = 16.dp, end = 16.dp)
+                            .background(Color.Black.copy(alpha = 0.6f), androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
 
                 // Results sheet: published when the player backs out with a score
                 // on the board. Dismiss = leave the game (the run is already saved).
@@ -500,13 +581,17 @@ private fun HudRow(
     multiplier: Int,
     accuracy: Float?,
     accent: Color,
+    fever: Boolean = false,
 ) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text("SCORE", color = TextFaint, fontFamily = AppFont, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            Text(
+                if (fever) "SCORE  ×2" else "SCORE",
+                color = if (fever) accent else TextFaint, fontFamily = AppFont, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+            )
             Text(
                 score.toString(),
                 color = TextPrimary, fontFamily = AppFont,
@@ -561,6 +646,7 @@ private fun HudRow(
 private fun JudgementBanner(
     eventId: Long?,
     judgement: Judgement?,
+    kind: EventKind,
     combo: Int,
     accent: Color,
     modifier: Modifier = Modifier,
@@ -577,11 +663,20 @@ private fun JudgementBanner(
     val t = anim.value
     if (t <= 0.01f || judgement == null) return
 
-    val colour = when (judgement) {
-        Judgement.PERFECT -> accent
-        Judgement.GREAT -> Color(0xFF6FD3FF)
-        Judgement.GOOD -> Color(0xFFBFC7D4)
-        Judgement.MISS -> Color(0xFFE05656)
+    val colour = when {
+        kind == EventKind.SLAM -> Color.White
+        kind == EventKind.DROP_MISSED || kind == EventKind.HOLD_DROPPED -> TextMuted
+        judgement == Judgement.PERFECT -> accent
+        judgement == Judgement.GREAT -> Color(0xFF6FD3FF)
+        judgement == Judgement.GOOD -> Color(0xFFBFC7D4)
+        else -> Color(0xFFE05656)
+    }
+    val word = when (kind) {
+        EventKind.SLAM -> "DROP!"
+        EventKind.DROP_MISSED -> "DROP MISSED"
+        EventKind.HOLD_DONE -> "HOLD!"
+        EventKind.HOLD_DROPPED -> "DROPPED"
+        EventKind.TAP -> judgement.label.uppercase()
     }
     Column(
         modifier.graphicsLayer(
@@ -595,9 +690,9 @@ private fun JudgementBanner(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            judgement.label.uppercase(),
+            word,
             color = colour, fontFamily = AppFont,
-            fontWeight = FontWeight.ExtraBold, fontSize = 30.sp,
+            fontWeight = FontWeight.ExtraBold, fontSize = if (kind == EventKind.SLAM) 46.sp else 30.sp,
         )
         if (judgement != Judgement.MISS && combo >= COMBO_CALLOUT) {
             Text(
@@ -625,6 +720,7 @@ private fun DrawScope.drawHighway(
     now: Long,
     noteNow: Long,
     notes: List<GameNote>,
+    holds: List<GameNote>,
     bursts: List<Burst>,
     lanePress: LongArray,
     lookAheadMs: Long,
@@ -632,6 +728,10 @@ private fun DrawScope.drawHighway(
     combo: Int,
     multiplier: Int,
     milestoneAt: Long,
+    charge: Float,
+    fever: Boolean,
+    building: Boolean,
+    dropAt: Long,
 ) {
     val w = size.width
     val h = size.height
@@ -658,6 +758,8 @@ private fun DrawScope.drawHighway(
     // How much light the frets are throwing right now, from the most recent press in
     // each lane. Also drives the rail glow, so the whole board answers a tap.
     fun pressGlow(lane: Int): Float {
+        // A carried hold keeps its fret lit for as long as it lasts.
+        if (holds.any { it.lane == lane }) return 1f
         val age = (now - lanePress[lane]).toFloat()
         if (age < 0f || age > PRESS_GLOW_MS) return 0f
         return 1f - age / PRESS_GLOW_MS
@@ -678,7 +780,7 @@ private fun DrawScope.drawHighway(
     val heat = ((multiplier - 1) / 3f).coerceIn(0f, 1f)
     drawCircle(
         brush = Brush.radialGradient(
-            colors = listOf(accent.copy(alpha = 0.20f + heat * 0.22f), Color.Transparent),
+            colors = listOf(accent.copy(alpha = (0.20f + heat * 0.22f + charge * 0.3f).coerceAtMost(0.8f)), Color.Transparent),
             center = Offset(centreX, yAt(0f)),
             radius = w * 0.8f,
         ),
@@ -755,6 +857,46 @@ private fun DrawScope.drawHighway(
         )
     }
 
+    // ── The song's arc on the deck ───────────────────────────────────────────
+
+    // A drop section: the highway's edges burn in the outer lanes' colours.
+    if (fever) {
+        val pulse = 0.55f + 0.25f * sin(now / 90f)
+        for ((lane, edge) in listOf(0 to -1f, LANES - 1 to 1f)) {
+            drawLine(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color.Transparent, laneColour(lane).copy(alpha = pulse)),
+                    startY = yAt(farP),
+                    endY = yAt(nearP),
+                ),
+                start = Offset(xAt(lane, farP) + edge * laneHalfWidth(w) * perspAt(farP), yAt(farP)),
+                end = Offset(xAt(lane, nearP) + edge * laneHalfWidth(w) * perspAt(nearP), yAt(nearP)),
+                strokeWidth = 7f,
+                blendMode = BlendMode.Plus,
+            )
+        }
+    }
+
+    // A build: dashes race down the rails, faster as the charge climbs.
+    if (building) {
+        val speed = 1f + charge * 2.5f
+        for (i in 0..LANES) {
+            val lane = i.coerceAtMost(LANES - 1)
+            val edge = if (i == LANES) 1f else -1f
+            for (k in 0 until STREAKS) {
+                val p0 = ((now * speed / 1400f + k.toFloat() / STREAKS) % 1f)
+                val p1 = (p0 + 0.06f).coerceAtMost(1f)
+                drawLine(
+                    color = Color.White.copy(alpha = 0.18f + 0.4f * p0),
+                    start = Offset(xAt(lane, p0) + edge * laneHalfWidth(w) * perspAt(p0), yAt(p0)),
+                    end = Offset(xAt(lane, p1) + edge * laneHalfWidth(w) * perspAt(p1), yAt(p1)),
+                    strokeWidth = 1.5f + 2f * p0,
+                    blendMode = BlendMode.Plus,
+                )
+            }
+        }
+    }
+
     // ── Bar lines ───────────────────────────────────────────────────────────
     //
     // Drawn from the downbeats already in the chart rather than from a second copy
@@ -774,6 +916,54 @@ private fun DrawScope.drawHighway(
         )
     }
 
+    // ── Hold tails ──────────────────────────────────────────────────────────
+    //
+    // Under the gems. A hold still coming has its tail from the gem back up the
+    // lane; one being carried burns down from the fret.
+    for (note in notes) {
+        if (note.holdMs <= 0L) continue
+        drawTail(note, progressOf(note, noteNow, lookAheadMs), tailProgress(note, noteNow, lookAheadMs), carried = false, ::xAt, ::yAt, ::perspAt, w, now)
+    }
+    for (note in holds) {
+        val tail = tailProgress(note, noteNow, lookAheadMs)
+        if (tail >= 1f) continue
+        drawTail(note, 1f, tail, carried = true, ::xAt, ::yAt, ::perspAt, w, now)
+        // Sparks streaming off the fret while it burns.
+        val cx = xAt(note.lane, 1f)
+        for (i in 0 until 5) {
+            val t = ((now + i * 97L) % 420L) / 420f
+            val sx = cx + sin((now / 60f) + i * 1.7f) * laneHalfWidth(w) * 0.5f * t
+            drawCircle(
+                color = laneColour(note.lane).copy(alpha = (1f - t) * 0.9f),
+                radius = (1f - t) * laneHalfWidth(w) * 0.1f + 1f,
+                center = Offset(sx, hitY - t * h * 0.09f),
+                blendMode = BlendMode.Plus,
+            )
+        }
+    }
+
+    // ── Slams ───────────────────────────────────────────────────────────────
+    //
+    // A white-hot bar joining a drop's two gems, so the chord reads as one thing.
+    for (note in notes) {
+        if (!note.slam || note.lane != 0) continue
+        val p = progressOf(note, noteNow, lookAheadMs)
+        if (p < -0.05f || p > nearP) continue
+        val y = yAt(p)
+        val persp = perspAt(p)
+        drawLine(
+            brush = Brush.horizontalGradient(
+                colors = listOf(laneColour(0), Color.White, laneColour(LANES - 1)),
+                startX = xAt(0, p),
+                endX = xAt(LANES - 1, p),
+            ),
+            start = Offset(xAt(0, p), y),
+            end = Offset(xAt(LANES - 1, p), y),
+            strokeWidth = 4f + 8f * persp,
+            blendMode = BlendMode.Plus,
+        )
+    }
+
     // ── Notes ───────────────────────────────────────────────────────────────
     //
     // Far ones first, so a near note overlaps the one behind it rather than the
@@ -787,6 +977,19 @@ private fun DrawScope.drawHighway(
     // ── Frets ───────────────────────────────────────────────────────────────
 
     val fretR = laneHalfWidth(w) * FRET_RADIUS
+    val slamNear = notes.filter { it.slam }.maxOfOrNull { progressOf(it, noteNow, lookAheadMs) }?.takeIf { it in 0.6f..1.05f }
+    if (slamNear != null) {
+        val k = ((slamNear - 0.6f) / 0.4f).coerceIn(0f, 1f)
+        for (lane in listOf(0, LANES - 1)) {
+            drawCircle(
+                color = Color.White.copy(alpha = 0.25f + 0.6f * k),
+                radius = fretR * (1.9f - 0.7f * k),
+                center = Offset(xAt(lane, 1f), hitY),
+                style = Stroke(width = 2f + 3f * k),
+                blendMode = BlendMode.Plus,
+            )
+        }
+    }
     for (lane in 0 until LANES) {
         val cx = xAt(lane, 1f)
         val glow = pressGlow(lane)
@@ -825,6 +1028,8 @@ private fun DrawScope.drawHighway(
     // The hit line itself, brightening with the combo so a long run is visible in
     // peripheral vision while the player is watching the notes.
     val lineHeat = (combo / 40f).coerceIn(0f, 1f)
+    val beatPulse = notes.filter { it.downbeat }.minOfOrNull { abs(it.triggerTimeMs - noteNow) }
+        ?.let { (1f - it / BEAT_PULSE_MS).coerceIn(0f, 1f) } ?: 0f
     drawLine(
         brush = Brush.horizontalGradient(
             colors = listOf(
@@ -835,9 +1040,20 @@ private fun DrawScope.drawHighway(
         ),
         start = Offset(xAt(0, 1f) - fretR * 2f, hitY),
         end = Offset(xAt(LANES - 1, 1f) + fretR * 2f, hitY),
-        strokeWidth = 2f + lineHeat * 3f,
+        strokeWidth = 2f + lineHeat * 3f + beatPulse * 4f,
         blendMode = BlendMode.Plus,
     )
+
+    // The build's charge, as a meter up the board's right edge.
+    if (charge > 0f) {
+        val top = hitY - h * 0.55f * charge
+        drawLine(
+            brush = Brush.verticalGradient(listOf(Color.White, accent), startY = top, endY = hitY),
+            start = Offset(w - 10f, hitY),
+            end = Offset(w - 10f, top),
+            strokeWidth = 6f,
+        )
+    }
 
     // At a multiplier step (10/20/30 combo) an accent ripple washes out from the
     // hit line's centre. Stamped when the multiplier steps and drawn here entirely
@@ -857,6 +1073,21 @@ private fun DrawScope.drawHighway(
             ),
             radius = w * (0.25f + mt * 0.65f),
             center = Offset(centreX, hitY),
+            blendMode = BlendMode.Plus,
+        )
+    }
+
+    // ── The drop ────────────────────────────────────────────────────────────
+
+    val dropAge = (now - dropAt).toFloat()
+    if (dropAge in 0f..DROP_FX_MS) {
+        val t = dropAge / DROP_FX_MS
+        if (t < 0.35f) drawRect(Color.White.copy(alpha = 0.55f * (1f - t / 0.35f)), blendMode = BlendMode.Plus)
+        drawCircle(
+            color = Color.White.copy(alpha = 0.8f * (1f - t)),
+            radius = w * (0.1f + 1.1f * t),
+            center = Offset(centreX, hitY),
+            style = Stroke(width = 18f * (1f - t) + 2f),
             blendMode = BlendMode.Plus,
         )
     }
@@ -986,6 +1217,50 @@ private fun DrawScope.drawNote(
     )
 }
 
+/**
+ * A hold's tail, from progress [from] (the gem, or the fret while carried) back up
+ * the lane to [to] (where the hold lets go). A ribbon in the lane's colour, brighter
+ * and shimmering while it is being carried.
+ */
+private fun DrawScope.drawTail(
+    note: GameNote,
+    from: Float,
+    to: Float,
+    carried: Boolean,
+    xAt: (Int, Float) -> Float,
+    yAt: (Float) -> Float,
+    perspAt: (Float) -> Float,
+    boardWidth: Float,
+    now: Long,
+) {
+    val near = from.coerceAtMost(1.12f)
+    val far = to.coerceAtLeast(0f)
+    if (near <= far) return
+    val colour = laneColour(note.lane)
+    val half = laneHalfWidth(boardWidth) * TAIL_WIDTH
+    val ribbon = Path().apply {
+        moveTo(xAt(note.lane, far) - half * perspAt(far), yAt(far))
+        lineTo(xAt(note.lane, far) + half * perspAt(far), yAt(far))
+        lineTo(xAt(note.lane, near) + half * perspAt(near), yAt(near))
+        lineTo(xAt(note.lane, near) - half * perspAt(near), yAt(near))
+        close()
+    }
+    val shimmer = if (carried) 0.15f * sin(now / 45f) else 0f
+    drawPath(
+        ribbon,
+        brush = Brush.verticalGradient(
+            colors = listOf(colour.copy(alpha = 0.15f), colour.copy(alpha = (if (carried) 0.85f else 0.55f) + shimmer)),
+            startY = yAt(far),
+            endY = yAt(near),
+        ),
+        blendMode = BlendMode.Plus,
+    )
+}
+
+/** Where a hold's tail end sits on the board, in the same terms as [progressOf]. */
+private fun tailProgress(note: GameNote, now: Long, lookAheadMs: Long): Float =
+    1f - (note.triggerTimeMs + note.holdMs - now).toFloat() / lookAheadMs
+
 // ── Results ─────────────────────────────────────────────────────────────────
 
 /**
@@ -1004,11 +1279,28 @@ private fun ResultsSheet(
     onApplyOffset: (Int) -> Unit,
 ) {
     val hud = result.hud
+    // The grade lands like a stamp: big, then settling into place.
+    val stamp = remember { Animatable(1.8f) }
+    LaunchedEffect(result) { stamp.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = 0.45f, stiffness = 300f)) }
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            Text(
+                result.grade,
+                color = if (result.grade == "S") accent else TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.Black, fontSize = 64.sp,
+                modifier = Modifier.graphicsLayer(scaleX = stamp.value, scaleY = stamp.value, alpha = (2f - stamp.value).coerceIn(0f, 1f)),
+            )
+            if (result.fullCombo) {
+                Text(
+                    "FULL COMBO",
+                    color = accent, fontFamily = AppFont,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
             if (result.newRecord) {
                 Text(
                     "NEW RECORD",
@@ -1026,7 +1318,10 @@ private fun ResultsSheet(
                 buildString {
                     append("${hud.perfect} perfect · ${hud.great} great · ${hud.good} good")
                     if (hud.missed > 0) append(" · ${hud.missed} missed")
+                    if (hud.holdsTotal > 0) append("\n${hud.holdsDone}/${hud.holdsTotal} holds")
+                    if (hud.dropsTotal > 0) append(if (hud.holdsTotal > 0) " · " else "\n").append("${hud.dropsHit}/${hud.dropsTotal} drops")
                 },
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 color = TextMuted, fontFamily = AppFont,
                 fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                 modifier = Modifier.padding(top = 4.dp),
@@ -1203,3 +1498,22 @@ private const val MAX_BURSTS = 24
 
 /** Combo at which the banner starts calling it out. */
 private const val COMBO_CALLOUT = 5
+
+/** A hold's tail, as a fraction of a lane's half width. */
+private const val TAIL_WIDTH = 0.38f
+
+/** Dashes per rail while a build runs. */
+private const val STREAKS = 6
+
+/** How long the drop's flash and shockwave run, and its shake. */
+private const val DROP_FX_MS = 650f
+private const val SHAKE_MS = 420f
+
+/** How wide, either side of a downbeat, the hit line's pulse is. */
+private const val BEAT_PULSE_MS = 110f
+
+/** First-time hint bits, as stored in `AppSettings.gameHintsSeen`. */
+private const val HINT_HOLD = 1
+private const val HINT_SLAM = 2
+
+private const val GAME_HINT_MS = 3500L
