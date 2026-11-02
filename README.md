@@ -29,51 +29,101 @@ CAMusic is short for Cyborg Automation Music, built by [Cyborg Automation AU](ht
 
 <p align="center">
   <img src="docs/screenshots/now-playing.jpg" alt="Now Playing" width="30%" />
+  <img src="docs/screenshots/library-home.jpg" alt="Library home" width="30%" />
   <img src="docs/screenshots/light-sync.jpg" alt="Light Sync" width="30%" />
-  <img src="docs/screenshots/library.jpg" alt="Library" width="30%" />
-</p>
-<p align="center">
-  <img src="docs/screenshots/artist.jpg" alt="Artist page" width="18%" />
-  <img src="docs/screenshots/dj-radio.jpg" alt="DJ Radio" width="18%" />
-  <img src="docs/screenshots/library-home.jpg" alt="Library home" width="18%" />
-  <img src="docs/screenshots/speakers.jpg" alt="Speakers" width="18%" />
-  <img src="docs/screenshots/settings.jpg" alt="Settings" width="18%" />
-</p>
-<p align="center">
-  <img src="docs/screenshots/light-sync-tuning.jpg" alt="Light Sync tuning" width="24%" />
-  <img src="docs/screenshots/light-sync-extras.jpg" alt="Light Sync extras" width="24%" />
-  <img src="docs/screenshots/light-sync-colors.jpg" alt="Light Sync colours" width="24%" />
-  <img src="docs/screenshots/light-sync-shows.jpg" alt="Light Sync saved shows" width="24%" />
-</p>
-<p align="center">
-  <em>Android Auto and Android Automotive</em><br>
-  <img src="docs/screenshots/android-auto-library.jpg" alt="Library in the car" width="21%" />
-  <img src="docs/screenshots/android-auto-now-playing.jpg" alt="Now Playing in the car" width="21%" />
-  <img src="docs/screenshots/android-automotive-library.jpg" alt="Library on an Android Automotive screen" width="50%" />
-</p>
-<p align="center">
-  <em>Android TV and tablet</em><br>
-  <img src="docs/screenshots/tv-now-playing.jpg" alt="Now Playing on Android TV" width="45%" />
-  <img src="docs/screenshots/tablet-now-playing.jpg" alt="Now Playing on a tablet" width="35%" />
 </p>
 
 ---
 
 ## What you get
 
-- **Sendspin and multi-room.** CAMusic registers as a Sendspin player, so Music Assistant can stream to the phone like any other speaker, and it stays in step with the other Sendspin speakers in a group song after song. The connection is encrypted and pairs with Music Assistant by PIN. The phone offers every codec at every sample rate it can play, and you choose what it gets in Music Assistant. Home Assistant announcements reach it in the background. As a controller it groups speakers, sets per-player offsets and drives the queue. See [multi-room](docs/multi-room.md).
-- **Your own libraries.** Navidrome and Subsonic-compatible servers (Gonic, Airsonic, Ampache, Funkwhale, LMS), Jellyfin, Emby, Plex, MPD (moOde, Volumio, piCorePlayer and Mopidy are MPD underneath), Music Assistant and files on the device. Spotify, Qobuz and Tidal accounts and foobar2000 over Beefweb are experimental. Add as many libraries as you like, switch between them freely, or search them all at once. See [libraries](docs/libraries.md).
-- **A library you can work in.** Browse by folder, sort and filter every category, edit playlists and rate tracks, and give the category buttons one of five looks. Downloads keep playlists as playlists, a fetch-ahead cache rides out a weak signal, and a separate stream quality can apply on mobile data.
-- **A Philips Hue light show.** Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. Lamp positions come from your entertainment area, colours come from the album art, and shows can be saved, tied to a genre and shared. See [light sync](docs/light-sync.md).
-- **Sound built for good hardware.** A ten-band or parametric equaliser with AutoEQ headphone import and a curve for each output, gapless playback, a real crossfade on any queue, ReplayGain that lifts quiet masters cleanly, and a loudness scan (EBU R128) that levels files with no ReplayGain tags. Headphone crossfeed makes headphones sound more like speakers. High resolution output and USB bit-perfect (experimental) to a USB DAC. Vinyl, Lo-fi and Old Radio sound modes, and a sleep timer. Lyrics highlight word by word as they are sung, with tap-to-seek and an optional translation under each line that runs on the phone. See [sound](docs/sound.md).
+### Play everything you own, in one place
+
+<p align="center">
+  <img src="docs/screenshots/switch-library.jpg" alt="Switching between libraries" width="23%" />
+  <img src="docs/screenshots/library-home.jpg" alt="Library home with Spotlight and DJ Radio" width="23%" />
+  <img src="docs/screenshots/favourites.jpg" alt="Favourite albums and artists" width="23%" />
+  <img src="docs/screenshots/album.jpg" alt="Album page with per-track format" width="23%" />
+</p>
+
+- **Your own libraries.** Navidrome and Subsonic-compatible servers (Gonic, Airsonic, Ampache, Funkwhale, LMS), Jellyfin, Emby, Plex, MPD (moOde, Volumio, piCorePlayer and Mopidy are MPD underneath), Music Assistant and files on the device. Spotify, Qobuz and Tidal accounts and foobar2000 over Beefweb are experimental. Add as many libraries as you like, switch between them from the Library title, or search them all at once. See [libraries](docs/libraries.md).
+- **Downloads.** Keep songs, albums and playlists on the phone and play them with no signal. Downloads is a library of its own, with its own Favourites, and playlists stay playlists.
+- **A library you can work in.** Artists, Albums, Tracks, Playlists, Genres, Folders, Favourites and Recently Added, a Spotlight album on the home page, and a shuffle-all button. Sort and filter every category, edit playlists, rate tracks and give the category buttons one of five looks. Album pages show the format of every track. A fetch-ahead cache rides out a weak signal, and a separate stream quality can apply on mobile data.
+
+### Sound built for good hardware
+
+<p align="center">
+  <img src="docs/screenshots/now-playing.jpg" alt="Now Playing with the format badge" width="30%" />
+  <img src="docs/screenshots/lyrics.jpg" alt="Translated lyrics with a note about the song" width="30%" />
+</p>
+
+- **Now Playing.** Large artwork with colours taken from the cover, a format badge (codec, sample rate, bit depth, bitrate) on every track, and one-tap buttons for favourite, sleep timer, lyrics, queue, equaliser, the signal path and the visualiser.
+- **Equaliser and levelling.** A ten-band or parametric equaliser with AutoEQ headphone import and a curve for each output, gapless playback, a real crossfade on any queue, ReplayGain that lifts quiet masters cleanly, and a loudness scan (EBU R128) for files with no ReplayGain tags. Headphone crossfeed makes headphones sound more like speakers.
+- **High resolution output.** High resolution output, and USB bit-perfect (experimental) to a USB DAC. Vinyl, Lo-fi and Old Radio sound modes, and a sleep timer. See [sound](docs/sound.md).
 - **See what the audio goes through.** The quality card shows what arrived, every processing step, and each output with Music Assistant's LQ, SQ, HQ or HR grade: every speaker in a group, or the USB DAC with the rate it confirmed.
-- **Music that keeps going.** DJ Radio builds and mixes a set by genre, energy, tempo and key, the Set Builder shapes your own tracks into a warm-up, peak or wind-down, and "more like this" works even where a server has none. Rediscover shelves bring back what you played on this day in earlier years, forgotten favourites, albums you have never played and deep cuts from the artists you love. Scrobbling to ListenBrainz and Last.fm, listening stats and a shareable recap. See [listening](docs/listening.md).
+- **Lyrics that follow the singer.** Words highlight as they are sung, with tap-to-seek. An optional translation sits under each line and runs on the phone, or through your own AI (Ollama, LM Studio, Gemini, OpenRouter or any OpenAI-compatible service), which can add a short "About this song" note on meaning and idiom.
+
+### A Philips Hue light show
+
+<p align="center">
+  <img src="docs/screenshots/light-sync.jpg" alt="Light Sync: room, level and colour" width="30%" />
+  <img src="docs/screenshots/light-sync-tuning.jpg" alt="Light Sync tuning sliders" width="30%" />
+  <img src="docs/screenshots/light-sync-extras.jpg" alt="Light Sync saved shows and layers" width="30%" />
+</p>
+
+Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. Lamp positions come from your entertainment area. The Light Sync page has four tabs:
+
+- **Look.** Pick the room and an intensity level (five levels plus Auto), then the colour: album art (weighted or even), a song-driven palette that changes on the beat, or a fixed palette such as Sunset or Ocean. An editor lets you correct how colours are taken from an album.
+- **Shows.** Save the room as a show, remember a show for one song, or pick a show by genre. Shows can be shared.
+- **Tuning.** Reactivity, Glow, Movement, Contrast and Colour speed, each with a plain-English description and a reset.
+- **Extras.** Four optional layers that sit on top of the show and are off by default: Music DNA (a visual fingerprint of each track), Emotional arc (colour temperature follows the song's shape), Phantom stage (each part of the mix gets its own lamp) and Phone conductor (move the phone to conduct the room).
+
+Also in the show: ambience scenes (fireplace, candlelight, rain on a tin roof, coastal rain, thunderstorm, forest dawn, golden hour, aurora, underwater, light train and fireworks, each built to stay comfortable to sit in), Wake & Sleep (a sunrise alarm that fades the room from deep red to daylight while music fades in, and a sleep timer that dims it to warm amber), and Rhythm Lights, a tap-along game. See [light sync](docs/light-sync.md).
+
+<p align="center">
+  <img src="docs/screenshots/track-analysis.jpg" alt="Track analysis" width="30%" />
+</p>
+
+**Track analysis.** CAMusic can read tracks ahead of time, on Wi-Fi only if you like, so a song is exact from its first bar: its tempo, beat grid, sections and drops are known before it plays. Downloaded songs are always analysed. Settings show what has been analysed and let you stop, skip or redo it.
+
+### Music that keeps going
+
+<p align="center">
+  <img src="docs/screenshots/dj-radio.jpg" alt="Set Builder moods and suggestions" width="30%" />
+  <img src="docs/screenshots/listening-stats.jpg" alt="Your listening: all-time stats card" width="30%" />
+</p>
+
+- **DJ Radio and the Set Builder.** Pick a mood (Surprise me, Morning, Focus, Workout, Party and more) and a first song. CAMusic builds and mixes a set by genre, energy, tempo and key, shaped as a warm-up, peak or wind-down. "More like this" works even where a server has none.
+- **Rediscover.** Shelves bring back what you played on this day in earlier years, forgotten favourites, albums you have never played and deep cuts from the artists you love.
+- **Your listening.** Time listened, plays, top artists, your usual key and tempo, your streak and how much of it was lossless, for a week, a month, 90 days, a year or all time, as a card you can share. Scrobbling to ListenBrainz and Last.fm. See [listening](docs/listening.md).
 - **Listening party.** Friends on your Wi-Fi scan a QR code and add songs to your queue from their own phone's browser, with no app and no account. You can approve songs first and let the room vote to skip.
-- **Ambience scenes.** Fireplace, candlelight, rain on a tin roof, coastal rain, thunderstorm, forest dawn, golden hour, aurora, underwater, light train and fireworks. Each is built to feel like the real thing and stay comfortable to sit in: a fire glows and settles with the odd soft pop, and lightning flashes before its thunder arrives.
-- **Wake & Sleep.** A sunrise alarm fades your Hue room from deep red to daylight before the alarm while your music fades in, and the sleep timer can dim the room to warm amber as the music winds down.
+
+### Multi-room and casting
+
+- **Sendspin and Music Assistant.** CAMusic registers as a Sendspin player, so Music Assistant can stream to the phone like any other speaker, and it stays in step with the other Sendspin speakers in a group song after song. The connection is encrypted and pairs with Music Assistant by PIN. The phone offers every codec at every sample rate it can play, and you choose what it gets in Music Assistant. Home Assistant announcements reach it in the background. As a controller it groups speakers, sets per-player offsets and drives the queue. See [multi-room](docs/multi-room.md).
 - **AirPlay output.** Whatever the phone plays itself can go to an Apple TV, a HomePod or an AirPlay speaker from the top-left of Now Playing.
-- **Everywhere you listen.** Phones and tablets, Android Auto, Android Automotive and Android TV, plus an LG webOS app where the TV panel itself becomes the light show. A home screen widget, app shortcuts and favourite, shuffle and repeat in the system media controls. Driving mode adds large targets and GPS speed-limit alerts. See [platforms](docs/platforms.md).
-- **Yours to keep.** Your library, history and sign-ins stay on your phone and your own servers. Online lyrics, lyric translation, scrobbling and streaming accounts connect only when you switch them on. The one check that is on from the start asks GitHub once a day whether a new version is out, so the app can tell you, and it can be switched off in About. An encrypted backup carries your servers, playlists, favourites and history to a new phone, and onboarding can restore it.
+
+### Everywhere you listen
+
+<p align="center">
+  <img src="docs/screenshots/speed-safety.jpg" alt="Speed and safety settings" width="23%" />
+  <img src="docs/screenshots/android-auto-library.jpg" alt="Library in the car" width="23%" />
+  <img src="docs/screenshots/android-auto-now-playing.jpg" alt="Now Playing in the car" width="23%" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/android-automotive-library.jpg" alt="Library on an Android Automotive screen" width="45%" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/tv-now-playing.jpg" alt="Now Playing on Android TV" width="45%" />
+  <img src="docs/screenshots/tablet-now-playing.jpg" alt="Now Playing on a tablet" width="35%" />
+</p>
+
+- **Phones, tablets, cars and TVs.** Android Auto, Android Automotive and Android TV, plus an LG webOS app where the TV panel itself becomes the light show. A home screen widget, app shortcuts, and favourite, shuffle and repeat in the system media controls. See [platforms](docs/platforms.md).
+- **Speed & safety.** Optionally pause for calls, and get an alert over the music when you pass the speed limit, with a tolerance you set. The limit is read from bundled map data (Victoria, Australia today) or typed in by hand where the map has no answer. Speed-adaptive volume nudges the level up at speed and back down when you slow. Driving mode adds large targets.
+
+### Yours to keep
+
+Your library, history and sign-ins stay on your phone and your own servers. Online lyrics, lyric translation, scrobbling and streaming accounts connect only when you switch them on. The one check that is on from the start asks GitHub once a day whether a new version is out, so the app can tell you, and it can be switched off in About. An encrypted backup carries your servers, playlists, favourites and history to a new phone, and onboarding can restore it.
 
 ## Light Sync
 
