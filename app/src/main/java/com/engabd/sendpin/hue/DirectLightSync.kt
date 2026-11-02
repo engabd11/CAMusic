@@ -25,7 +25,6 @@ import com.engabd.sendpin.audio.TrackScanRepository
 import com.engabd.sendpin.game.GameLightField
 import com.engabd.sendpin.game.GameOnset
 import com.engabd.sendpin.game.GameOnsetBuffer
-import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.GameChartSource
 import androidx.core.graphics.drawable.toBitmap
 import coil.imageLoader
@@ -428,7 +427,7 @@ class DirectLightSync(
 
     /**
      * True while the rhythm game owns the room — see [setGameMode]. The music show
-     * does not render then; [gameField] paints the room.
+     * renders as usual and [gameField] gates what of it reaches the room.
      */
     @Volatile private var gameMode = false
 
@@ -1487,31 +1486,6 @@ class DirectLightSync(
             val enc = encoder ?: continue
             val client = dtls ?: continue
 
-            // The rhythm game paints the room itself and outranks everything below:
-            // no music engine, no delay queue, no layers. Only the player's taps are
-            // light. Its frame goes straight out, because a hit is already timed for
-            // the moment it should be seen (see [GameLightField]). The user's flash
-            // safety and the rate limiter still apply.
-            val game = gameField
-            if (gameMode && game != null) {
-                if (idlePacer.onFrame(false, now)) acquireLocks()
-                game.bindChannels(channels)
-                val scene = game.render(
-                    nowMs = SystemClock.elapsedRealtime(),
-                    ceiling = layerBrightness,
-                    idle = lastAlbumColours?.colors?.firstOrNull(),
-                )
-                val gameGuarded = safety?.process(scene, dt) ?: scene
-                val gameDue = rateLimiter.process(gameGuarded, dt)
-                if (isUnchanged(gameDue) && (now - lastSendAt) < RESEND_INTERVAL_NANOS) continue
-                when (emitFrame(gameDue, now, enc, client)) {
-                    EmitResult.ABORT -> return
-                    EmitResult.RETRY -> continue@render
-                    EmitResult.OK -> lastSent = gameDue
-                }
-                continue@render
-            }
-
             // An ambience show, if one is running, takes the room outright — unless
             // the game is up, which outranks it. A scripted effect is a show of its
             // own and would paint the room on its own schedule, which is the one
@@ -1639,10 +1613,20 @@ class DirectLightSync(
                 )
             }
 
+            // The rhythm game lets this very show through a gate the player's hits
+            // open (see [GameLightField]): the show renders as usual, and the room
+            // only shows it while the player keeps time.
+            val game = gameField
+            val shown = if (gameMode && game != null) {
+                game.composite(layered, SystemClock.elapsedRealtime(), layerBrightness, lastAlbumColours?.colors?.firstOrNull())
+            } else {
+                layered
+            }
+
             // Safety runs on what is about to be sent, at the moment it is sent —
             // its flash budget is measured in wall-clock seconds, so it has to
             // sit after the delay queue rather than before it.
-            val guarded = safety?.process(layered, dt) ?: layered
+            val guarded = safety?.process(shown, dt) ?: shown
             val due = rateLimiter.process(guarded, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
@@ -2559,14 +2543,10 @@ class DirectLightSync(
     /**
      * Hand the room to the rhythm game, or take it back.
      *
-     * While this is on, the music show does not render at all: a [GameLightField]
-     * paints a dim album-colour glow, and the only brighter light is what the player's
-     * taps ask for through [receiveGameHit] and [receiveGameMiss]. The analysis keeps
-     * running, because the chart is written from its beat grid.
-     *
-     * An earlier version kept the show running and gated its output, which meant the
-     * lights were already reacting to the music and the taps only added to them. The
-     * taps are the reaction now.
+     * While this is on, the music show renders exactly as usual but reaches the room
+     * through a [GameLightField] gate: shut, the room is a dim album-colour glow, and
+     * the player's hits open it through [receiveGameOpen], so what the room shows is
+     * the show's own light, let in only while the player keeps time.
      */
     fun setGameMode(on: Boolean) {
         if (gameMode == on) return
@@ -2588,26 +2568,22 @@ class DirectLightSync(
     }
 
     /**
-     * A note was struck in the rhythm game: flash its lane.
-     *
-     * [startMs] is when the flash should begin, on `SystemClock.elapsedRealtime()`.
-     * That is the tap's own time for a tap on or after the beat, and later for an early
-     * tap, held back so the light and the beat arrive together (the lamps take
-     * [com.engabd.sendpin.game.GameTiming.LIGHT_PIPELINE_MS] to show a command).
-     * Called from the main thread; the field takes it through a queue.
+     * The rhythm game earned some light: let the show through from [fromMs] until
+     * [untilMs], at [level] of its brightness. Both on `SystemClock.elapsedRealtime()`
+     * send time. Called from the main thread; the gate takes it through a queue.
      */
-    fun receiveGameHit(lane: Int, judgement: Judgement, combo: Int, startMs: Long) {
-        gameField?.postHit(lane, judgement, combo, startMs)
+    fun receiveGameOpen(fromMs: Long, untilMs: Long, level: Float) {
+        gameField?.postOpen(fromMs, untilMs, level)
     }
 
-    /** A note on [lane] fell past the line untouched: a dim ember, never a flash. */
-    fun receiveGameMiss(lane: Int, atMs: Long) {
-        gameField?.postMiss(lane, atMs)
+    /** A miss, a combo break or a dropped hold: shut the gate from [atMs]. */
+    fun receiveGameClose(atMs: Long) {
+        gameField?.postClose(atMs)
     }
 
-    /** The combo broke: the lane colours fade back over 400 ms. */
-    fun receiveGameComboBreak(atMs: Long) {
-        gameField?.postComboBreak(atMs)
+    /** The build charge the player has earned, 0..1. */
+    fun receiveGameCharge(level: Float) {
+        gameField?.postCharge(level)
     }
 
     // ── Track scans ─────────────────────────────────────────────────────────

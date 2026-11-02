@@ -6,6 +6,8 @@ import com.engabd.sendpin.audio.OnsetGrid
 import com.engabd.sendpin.audio.ScanSection
 import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.ui.viewmodel.GameRecord
+import com.engabd.sendpin.ui.viewmodel.RhythmHud
+import com.engabd.sendpin.ui.viewmodel.gradeFor
 import com.engabd.sendpin.ui.viewmodel.mergeRecord
 import kotlin.math.roundToLong
 import kotlin.test.Test
@@ -588,6 +590,14 @@ class NoteGeneratorTest {
     }
 
         // ── Run records (A5) ─────────────────────────────────────────────────────
+
+        @Test
+        fun `the grade weighs every note reached and S forgives no miss`() {
+            assertEquals("-", gradeFor(RhythmHud()))
+            assertEquals("S", gradeFor(RhythmHud(perfect = 20, great = 2)))
+            assertEquals("A", gradeFor(RhythmHud(perfect = 20, great = 2, missed = 1)))
+            assertEquals("D", gradeFor(RhythmHud(good = 5, missed = 5)))
+        }
 
         @Test
         fun `a first run becomes the record and counts the play`() {

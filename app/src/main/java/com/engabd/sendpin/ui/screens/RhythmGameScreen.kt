@@ -134,9 +134,14 @@ fun RhythmGameScreen(
             s.gameDifficulty,
             s.gameHaptics,
         ) { offset, difficulty, haptics ->
-            Triple(offset, com.engabd.sendpin.game.DIFFICULTY_SCALE[difficulty] ?: 1f, haptics)
-        }.collect { (offset, scale, haptics) ->
-            viewModel.applyTiming(offset, scale, haptics)
+            Triple(offset, difficulty, haptics)
+        }.collect { (offset, difficulty, haptics) ->
+            viewModel.applyTiming(
+                offset,
+                com.engabd.sendpin.game.DIFFICULTY_SCALE[difficulty] ?: 1f,
+                haptics,
+                com.engabd.sendpin.game.DIFFICULTY_DENSITY[difficulty] ?: 2,
+            )
         }
     }
 
@@ -352,12 +357,13 @@ fun RhythmGameScreen(
                             // penalty — and needs two lanes struck at once to both
                             // count. Initial pass, so the press is seen before any
                             // ancestor can claim it.
+                            // Each finger keeps the lane it pressed in, so a thumb that
+                            // drifts sideways during a hold does not let go of it.
+                            val pointerLane = HashMap<androidx.compose.ui.input.pointer.PointerId, Int>()
                             awaitPointerEventScope {
                                 while (true) {
                                     val event = awaitPointerEvent(PointerEventPass.Initial)
                                     for (change in event.changes) {
-                                        if (!change.pressed || change.isConsumed) continue
-                                        if (change.previousPressed) continue
                                         // The touch's own stamp, not the moment this handler
                                         // ran. One value for both, so the pad lights at
                                         // exactly the instant the tap is judged.
@@ -366,7 +372,13 @@ fun RhythmGameScreen(
                                             android.os.SystemClock.uptimeMillis(),
                                             change.uptimeMillis,
                                         )
+                                        if (!change.pressed) {
+                                            if (change.previousPressed) pointerLane.remove(change.id)?.let { viewModel.release(it, at) }
+                                            continue
+                                        }
+                                        if (change.isConsumed || change.previousPressed) continue
                                         val lane = laneAt(change.position.x, size.width.toFloat())
+                                        pointerLane[change.id] = lane
                                         lanePress[lane] = at
                                         viewModel.tap(lane, at)
                                         change.consume()

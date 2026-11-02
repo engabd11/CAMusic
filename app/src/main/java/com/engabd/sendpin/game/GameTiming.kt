@@ -71,17 +71,6 @@ object GameTiming {
         if (refreshHz < 24f) 17L else (1000f / refreshHz).roundToLong()
 
     /**
-     * How long to hold a hit's flash so the light and the beat arrive together.
-     *
-     * [earlyByMs] is how far before the note's audible moment the tap was judged. The
-     * lamp takes [pipelineMs] to show a command, so a tap early by more than that
-     * waits the difference; anything else goes out at once, because it can no longer
-     * be earlier.
-     */
-    fun flashDelayMs(earlyByMs: Long, pipelineMs: Long = LIGHT_PIPELINE_MS): Long =
-        (earlyByMs - pipelineMs).coerceAtLeast(0L)
-
-    /**
      * The game-clock time the next beat of an analysis snapshot is heard at.
      *
      * [frameGameMs] is when the frame was analysed, [timeToNextBeatS] the grid's
