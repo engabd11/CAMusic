@@ -483,7 +483,8 @@ class TrackScanRepository(
         } else {
             val urls = analysisUrls(request.track)
             if (urls.isEmpty()) return Outcome.DONE
-            if (settings.lightSyncPrescanWifiOnly.first() && isMetered()) {
+            val onDevice = urls.all { it.startsWith("content:") }
+            if (!onDevice && settings.lightSyncPrescanWifiOnly.first() && isMetered()) {
                 // Not a failure — the setting is being honoured. Held until the
                 // connection is unmetered, and counted so the screen can say so.
                 park(request)
@@ -627,6 +628,16 @@ class TrackScanRepository(
         val dir = File(context.cacheDir, TEMP_DIR).apply { mkdirs() }
         val file = File(dir, "scan-${System.nanoTime()}.audio")
         try {
+            // The "This device" library hands out MediaStore content URIs, which no
+            // HTTP client can open; they are copied through the resolver instead.
+            if (url.startsWith("content:")) {
+                val input = context.contentResolver.openInputStream(android.net.Uri.parse(url)) ?: run {
+                    file.delete()
+                    return@withContext null
+                }
+                input.use { src -> file.outputStream().use { out -> src.copyTo(out, 64 * 1024) } }
+                return@withContext file
+            }
             http.newCall(Request.Builder().url(url).build()).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.i(TAG, "Fetch for analysis refused: HTTP ${response.code}")
