@@ -15,11 +15,11 @@ import kotlin.test.assertTrue
 
 class FrameShaperLevelTest {
 
-    private fun settled(intensity: Float, ceiling: Float): Rgb {
+    private fun settled(ceiling: Float): Rgb {
         val shaper = AmbienceFrameShaper(scriptFor(AmbienceEffect.FIREPLACE))
         var out: Map<Int, Rgb> = emptyMap()
         // Long enough for the comfort limiter to finish fading the lamp up from dark.
-        repeat(3600) { out = shaper.shape(mutableMapOf(1 to Rgb(0.6f, 0.3f, 0f)), 1f / 60f, 1f, ceiling, intensity) }
+        repeat(3600) { out = shaper.shape(mutableMapOf(1 to Rgb(0.6f, 0.3f, 0f)), 1f / 60f, 1f, ceiling) }
         return out.getValue(1)
     }
 
@@ -27,7 +27,7 @@ class FrameShaperLevelTest {
     fun `a scene's level reaches the bridge as painted`() {
         // No second perceptual curve: the bulbs already dim perceptually, and squaring the
         // level down first is what left every scene dim at 100 percent.
-        val c = settled(intensity = 1f, ceiling = 1f)
+        val c = settled(ceiling = 1f)
         assertEquals(AmbienceFrameShaper.lift(0.6f), c.first, 1e-3f)
         assertTrue(c.first > 0.7f, "a 0.6 scene reaches the bridge at ${c.first}")
         assertEquals(2f, c.first / c.second, 1e-3f)
@@ -35,9 +35,20 @@ class FrameShaperLevelTest {
     }
 
     @Test
-    fun `intensity and the brightness ceiling both dim the room`() {
-        assertEquals(AmbienceFrameShaper.lift(0.6f * 0.55f), settled(intensity = 0f, ceiling = 1f).first, 1e-3f)
-        assertEquals(AmbienceFrameShaper.lift(0.6f) * 0.5f, settled(intensity = 1f, ceiling = 0.5f).first, 1e-3f)
+    fun `a brightness change eases in rather than stepping`() {
+        val shaper = AmbienceFrameShaper(scriptFor(AmbienceEffect.FIREPLACE))
+        var out: Map<Int, Rgb> = emptyMap()
+        repeat(3600) { out = shaper.shape(mutableMapOf(1 to Rgb(0.6f, 0.3f, 0f)), 1f / 60f, 1f, 1f) }
+        val full = out.getValue(1).first
+        out = shaper.shape(mutableMapOf(1 to Rgb(0.6f, 0.3f, 0f)), 1f / 60f, 1f, 0.2f)
+        assertTrue(out.getValue(1).first > 0.8f * full, "the room stepped down in one frame")
+        repeat(60) { out = shaper.shape(mutableMapOf(1 to Rgb(0.6f, 0.3f, 0f)), 1f / 60f, 1f, 0.2f) }
+        assertEquals(0.2f * full, out.getValue(1).first, 0.01f)
+    }
+
+    @Test
+    fun `the brightness ceiling dims the room`() {
+        assertEquals(AmbienceFrameShaper.lift(0.6f) * 0.5f, settled(ceiling = 0.5f).first, 1e-3f)
     }
 }
 
@@ -256,17 +267,16 @@ class AmbiencePlanSessionTest {
     }
 
     @Test
-    fun `the session sends the painted level, scaled by intensity, and fades`() {
+    fun `the session sends the painted level and fades`() {
         val tl = AmbienceBedTimeline.synthetic(60.0, emptyList())
         val a = FakeAnalysis(); val spy = Spy(); val s = session(spy, a, tl)
         var out: Map<Int, Rgb>? = null
         // The script paints 0.2 perceived; the limiter fades up from dark, so wait.
         var t = 0.0
         while (t < 5.0) { a.media = t; out = s.renderLights(1f / 60f); t += 1.0 / 60 }
-        val level = AmbienceFrameShaper.levelFor(AmbienceParams().intensity)
-        assertEquals(AmbienceFrameShaper.lift(0.2f * level), out!!.getValue(0).first, 1e-3f)
+        assertEquals(AmbienceFrameShaper.lift(0.2f), out!!.getValue(0).first, 1e-3f)
         s.setFade(0.5f)
         while (t < 15.0) { a.media = t; out = s.renderLights(1f / 60f); t += 1.0 / 60 }
-        assertEquals(AmbienceFrameShaper.lift(0.1f * level), out!!.getValue(0).first, 1e-3f)
+        assertEquals(AmbienceFrameShaper.lift(0.1f), out!!.getValue(0).first, 1e-3f)
     }
 }

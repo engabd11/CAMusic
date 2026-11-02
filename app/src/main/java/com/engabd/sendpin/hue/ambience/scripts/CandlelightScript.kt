@@ -30,10 +30,12 @@ import com.engabd.sendpin.hue.ambience.smoothstep
  * at 1700 to 1850 K, a little redder and dimmer than the fireplace's coals, and that
  * colour temperature drifts by a few tens of kelvin over minutes rather than flickering.
  *
- * **The flicker is small and smooth.** A real flame moves a lot, but a lamp that did the
- * same would be a strobe in a dark room. Each candle carries three octaves of smooth
- * noise ([SmoothNoise], 0.12 to 1.1 Hz) at about 7 to 10 percent of its level, so it
- * reads as a living flame at a distance and never as a flicker you can count.
+ * **The flicker is a flame's, and smooth.** Each candle carries three octaves of smooth
+ * noise ([SmoothNoise], 0.35 to about 3 Hz). The summed noise only swings about a third
+ * of its range, so its depth is large: at full intensity the flame reaches the top of the
+ * lamp and dips to about half, which is what a candle does across a dark room. The
+ * intensity slider runs from a near-still flame to that, and the old, near-invisible
+ * flicker is what the bottom of the slider now looks like.
  *
  * **A draught, now and then.** Every one to four minutes a breath of air crosses one
  * candle: for a few seconds its flicker is more than twice as lively and faster, and
@@ -52,8 +54,8 @@ class CandlelightScript : AmbienceScript {
 
     override val effect = AmbienceEffect.CANDLELIGHT
 
-    /** Nothing here moves faster than 0.2 a second; the limiter is a backstop. */
-    override val comfort = ComfortProfile(risePerS = 0.25f, fallPerS = 0.25f, roomSwingPerS = 0.10f)
+    /** A flame dances, so a lamp may move a few units a second; the room far less. */
+    override val comfort = ComfortProfile(risePerS = 3.0f, fallPerS = 3.0f, roomSwingPerS = 1.2f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -167,24 +169,24 @@ class CandlelightScript : AmbienceScript {
             // because scaling time would move the whole pattern at once.
             val wander = SmoothNoise.fractal(s, tS, FLAME_BASE_HZ, 3, 2.9f, 0.6f) +
                 0.7f * unrest * SmoothNoise.fractal(s + 5, tS, 0.6f, 2, 2f, 0.6f)
-            val depth = (FLAME_DEPTH + 0.03f * intensity) * (1f + 1.4f * unrest)
+            val depth = (FLAME_DEPTH + FLAME_DEPTH_GAIN * intensity) * (1f + 0.5f * unrest)
             // The flame leans away from the draught: a small dip, not a flash.
             val lean = 1f - 0.10f * unrest
-            flicker[ci] = (1f + depth * wander) * lean
+            flicker[ci] = ((1f + depth * wander) * lean).coerceIn(0.25f, 1.6f)
         }
 
         for ((i, id) in room.ids.withIndex()) {
             val s = lampSeed[i]
             val ci = candleOf[i]
             if (ci >= 0) {
-                val base = CANDLE_BASE + CANDLE_GAIN * intensity
+                val base = CANDLE_LEVEL
                 val slow = 1f + 0.03f * SmoothNoise.value(s + 17, tS / 60.0)
                 val level = (base * flicker[ci] * slow).coerceIn(0f, 1f)
                 val kelvin = 1775f + 75f * SmoothNoise.value(s + 53, tS / 90.0)
                 val c = Blackbody.rgb(kelvin)
                 out[id] = Rgb(c.first * level, c.second * level, c.third * level)
             } else {
-                val glow = ROOM_BASE + ROOM_GAIN * intensity
+                val glow = ROOM_LEVEL
                 val lift = 0.55f + 0.9f * nearness[i]
                 val drift = 1f + 0.08f * SmoothNoise.fractal(s, tS, 1f / 70f, 2, 2.2f)
                 val lit = flicker.getOrElse(nearestCandle[i]) { 1f }
@@ -251,16 +253,15 @@ class CandlelightScript : AmbienceScript {
         const val DRAUGHT_MIN_S = 60.0
         const val DRAUGHT_MAX_S = 240.0
 
-        /** Perceived brightness of a candle lamp at intensity 0 and 1. */
-        const val CANDLE_BASE = 0.46f
-        const val CANDLE_GAIN = 0.16f
+        /** Perceived brightness of a candle lamp. Intensity moves the flame, never this. */
+        const val CANDLE_LEVEL = 0.82f
 
         /** And of the reflected light, before it is lifted by nearness to a candle. */
-        const val ROOM_BASE = 0.16f
-        const val ROOM_GAIN = 0.08f
+        const val ROOM_LEVEL = 0.30f
 
         /** Flame flicker: slowest octave in Hz, and depth as a fraction of the level. */
-        const val FLAME_BASE_HZ = 0.12f
-        const val FLAME_DEPTH = 0.07f
+        const val FLAME_BASE_HZ = 0.35f
+        const val FLAME_DEPTH = 0.25f
+        const val FLAME_DEPTH_GAIN = 0.85f
     }
 }

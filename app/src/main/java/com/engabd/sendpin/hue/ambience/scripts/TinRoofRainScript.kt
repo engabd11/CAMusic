@@ -59,7 +59,7 @@ class TinRoofRainScript : AmbienceScript {
 
     override val effect = AmbienceEffect.TIN_ROOF_RAIN
 
-    override val comfort = ComfortProfile(risePerS = 0.20f, fallPerS = 0.20f, roomSwingPerS = 0.08f)
+    override val comfort = ComfortProfile(risePerS = 1.2f, fallPerS = 1.2f, roomSwingPerS = 0.4f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -184,8 +184,10 @@ class TinRoofRainScript : AmbienceScript {
             val windowSide = 0.55f + 0.45f * axis
             // Water running down one pane: the slow layer is shared along the window, so
             // neighbouring lamps ripple together, and only the fast one is the lamp's own.
-            val shimmer = 0.6f * SmoothNoise.value(SHIMMER_SEED, tS * 0.33 + axis * 1.2) + 0.4f * SmoothNoise.value(s + 9, tS * 0.85)
-            val depth = 0.03f + 0.07f * rain
+            val intensity = params.intensity.coerceIn(0f, 1f)
+            val shimmer = 0.6f * SmoothNoise.fractal(SHIMMER_SEED, tS * (0.5 + 0.9 * intensity) + axis * 1.2, 1f, 3) +
+                0.4f * SmoothNoise.fractal(s + 9, tS, 0.6f + 0.9f * intensity, 3)
+            val depth = (0.7f + 0.5f * rain) * (0.25f + 0.75f * intensity)
             var level = (WINDOW_BASE + WINDOW_GAIN * rain) * windowSide * (1f + depth * shimmer)
             level += flash * windowSide
             level = level.coerceIn(0f, 1f)

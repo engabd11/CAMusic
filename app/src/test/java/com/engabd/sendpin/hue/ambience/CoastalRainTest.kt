@@ -42,7 +42,7 @@ class CoastalRainTest {
         assertEquals(6, out.size, "painted ${out.size} of 6 lamps")
         for ((_, c) in out) {
             val level = max(c.first, max(c.second, c.third))
-            assertTrue(level <= 0.35f, "base too bright: $c")
+            assertTrue(level <= 0.5f, "base too bright: $c")
             assertTrue(level >= 0.05f, "base too dark to read as rain: $c")
             // Cool lean: green at least red, blue at least green.
             assertTrue(c.second >= c.first, "warm cast in the base: $c")

@@ -19,7 +19,9 @@ import com.engabd.sendpin.hue.ambience.AudioFocusGate
 import com.engabd.sendpin.hue.ambience.AudioTrackSink
 import com.engabd.sendpin.hue.ambience.SharedOutputGate
 import com.engabd.sendpin.service.EffectsService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +30,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -77,6 +80,9 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, "synth")
     val volume: StateFlow<Int> = settings.effectsVolume
         .stateIn(viewModelScope, SharingStarted.Eagerly, 70)
+    /** The lights' brightness ceiling, shared with Light Sync; a running scene follows it live. */
+    val brightness: StateFlow<Int> = settings.lightSyncBrightness
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 100)
     val intensities: StateFlow<Map<String, Float>> = settings.effectsIntensity
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
     val clips: StateFlow<Map<String, String>> = settings.effectsClips
@@ -240,9 +246,23 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
      * of over it. Rain under an album, a storm under a film score - the reason anybody
      * wanted a room with its own sound in the first place.
      */
+    /**
+     * The scene a tap has asked for and that is still getting its sound ready, so the
+     * tile can say so at once. Without it a second or two passed with nothing on screen,
+     * and a second tap landed on a scene that had by then started, and stopped it.
+     */
+    private val _starting = MutableStateFlow<String?>(null)
+    val starting: StateFlow<String?> = _starting
+
     fun start(effect: AmbienceEffect) {
+        if (_starting.value == effect.wire) return
+        _starting.value = effect.wire
         viewModelScope.launch {
-            gate.withLock { startLocked(effect) }
+            try {
+                gate.withLock { startLocked(effect) }
+            } finally {
+                if (_starting.value == effect.wire) _starting.value = null
+            }
         }
     }
 
@@ -279,7 +299,10 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
             // two begin together; a first-ever run that takes too long goes without and
             // reacts live, and the analysis finishes in the background for next time.
             val bedPlan = if (mode != "off" && mode != "clip") {
-                AmbienceAssets.bedAssetPath(app, effect)?.let { AmbienceBedTimelineStore.load(app, it) }
+                // Off the main thread: a cached plan is still a file read.
+                withContext(Dispatchers.IO) {
+                    AmbienceAssets.bedAssetPath(app, effect)?.let { AmbienceBedTimelineStore.load(app, it) }
+                }
             } else null
             val newActive = buildActiveAudio(app, effect, mode, vol)
             audio.install(newActive)
@@ -440,6 +463,10 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
             // a different and much worse kind of surprise.
             AmbienceEffect.fromWire(running.value)?.let { start(it) }
         }
+    }
+
+    fun setBrightness(pct: Int) {
+        viewModelScope.launch { settings.setLightSyncBrightness(pct.coerceIn(5, 100)) }
     }
 
     fun setVolume(v: Int) {

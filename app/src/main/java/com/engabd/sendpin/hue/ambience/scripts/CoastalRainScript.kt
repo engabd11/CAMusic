@@ -61,7 +61,7 @@ class CoastalRainScript : AmbienceScript {
      * room mean at a sixth. The lighthouse's beam, the headlights and the distant glows
      * are all slower than that by construction, so this is a backstop.
      */
-    override val comfort = ComfortProfile(risePerS = 0.35f, fallPerS = 0.30f, roomSwingPerS = 0.25f)
+    override val comfort = ComfortProfile(risePerS = 1.2f, fallPerS = 1.2f, roomSwingPerS = 0.4f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -261,7 +261,7 @@ class CoastalRainScript : AmbienceScript {
         val haveBed = r != null && r.sampleAt(tS, bedNow)
         val mood = moodFollow.step(haveBed || r == null, if (haveBed) bedNow.level else gustAt(tS), dt)
         val level = 0.85f + 0.30f * mood
-        val base = (BASE_MIN + (BASE_MAX - BASE_MIN) * intensity) * level
+        val base = BASE * level
 
         for ((i, id) in ids.withIndex()) {
             val h = room.heightOf(id)
@@ -269,7 +269,13 @@ class CoastalRainScript : AmbienceScript {
             // overcast has depth and is never perfectly even. Sky through a tall window
             // reads a touch brighter on the higher lamps.
             val cloud = 0.88f + 0.24f * (0.5f + 0.5f * SmoothNoise.fractal(lampSeed[i], tS, 0.02f, 2))
-            val v = base * cloud * (0.88f + 0.24f * h)
+            // Water running down the glass: shared along the window so neighbours ripple
+            // together, a little of each lamp's own, faster and deeper with intensity.
+            val axis = room.axisPos[id] ?: 0.5f
+            val run = 0.6f * SmoothNoise.fractal(GLASS_SEED, tS * (0.5 + 0.9 * intensity) + axis * 1.3, 1f, 3) +
+                0.4f * SmoothNoise.fractal(lampSeed[i] + 7, tS, 0.6f + 0.9f * intensity, 3)
+            val glass = 1f + GLASS_DEPTH * (0.25f + 0.75f * intensity) * run
+            val v = base * cloud * (0.88f + 0.24f * h) * glass
             out[id] = Rgb(OVERCAST.first * v, OVERCAST.second * v, OVERCAST.third * v)
         }
 
@@ -565,9 +571,10 @@ class CoastalRainScript : AmbienceScript {
         /** Time constant the recording's level is followed at. */
         const val MOOD_TAU_S = 3f
 
-        /** Perceived brightness of the overcast, at intensity 0 and 1. */
-        const val BASE_MIN = 0.15f
-        const val BASE_MAX = 0.25f
+        /** Perceived brightness of the overcast. Intensity changes the weather, not this. */
+        const val BASE = 0.25f
+        const val GLASS_DEPTH = 0.55f
+        const val GLASS_SEED = 0x6A_55
 
         /** The lighthouse: seconds per rotation at intensity 0 and 1, and the share of it that is lit. */
         const val LIGHTHOUSE_SLOW_S = 20f

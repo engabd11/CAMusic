@@ -1,6 +1,7 @@
 package com.engabd.sendpin.hue.ambience
 
 import com.engabd.sendpin.hue.Rgb
+import kotlin.math.exp
 import kotlin.math.pow
 
 /**
@@ -12,15 +13,17 @@ import kotlin.math.pow
  *
  * In order:
  *
- * 1. **Fade and intensity.** The sleep timer's last minute, and the intensity slider's
- *    level share ([levelFor]), scale the scene's perceived brightness. Before the comfort
- *    limit, so a slider move or the fade eases in at the scene's own pace.
+ * 1. **Fade.** The sleep timer's last minute scales the scene's perceived brightness.
+ *    Before the comfort limit, so the room eases out at the scene's own pace. Intensity
+ *    is not applied here or anywhere as brightness: it is how lively a scene is, and the
+ *    scripts read it for that alone.
  * 2. **Comfort limit.** [ComfortLimiter] holds every lamp, and the room mean, to the
  *    scene's own speed limit, in perceived units. A scene's named events (see
  *    [AmbienceScript.burstActive]) get the generous burst limits instead.
  * 3. **Lift and brightness ceiling.** The level is lifted by [lift] on its way to the
  *    bridge, then the user's master brightness applies, last, so the slider means what
- *    it means everywhere else in the app.
+ *    it means everywhere else in the app. A slider move eases in over about a third of
+ *    a second rather than stepping the room.
  *
  * There is no perceptual-to-linear step. The lamps already dim on a perceptual curve of
  * their own (see `HueStreamEncoder`), so converting L* to luminance first darkened every
@@ -34,6 +37,7 @@ class AmbienceFrameShaper(private val script: AmbienceScript) {
 
     private val comfort = ComfortLimiter(script.comfort)
     private val encoded = HashMap<Int, Rgb>()
+    private var ceilingNow = Float.NaN
 
     /**
      * The frame as the comfort limiter left it, still in perceived brightness. For tests
@@ -55,16 +59,16 @@ class AmbienceFrameShaper(private val script: AmbienceScript) {
         dtS: Float,
         fade: Float,
         ceiling: Float,
-        intensity: Float = 1f,
     ): Map<Int, Rgb> {
-        val g = fade * levelFor(intensity)
-        if (g < 1f) {
-            for ((k, v) in frame) frame[k] = Rgb(v.first * g, v.second * g, v.third * g)
+        if (fade < 1f) {
+            for ((k, v) in frame) frame[k] = Rgb(v.first * fade, v.second * fade, v.third * fade)
         }
         burst = script.burstActive
         val limited = comfort.process(frame, dtS, burst)
         perceived = limited
-        val c = ceiling.coerceIn(0f, 1f)
+        val target = ceiling.coerceIn(0f, 1f)
+        ceilingNow = if (ceilingNow.isNaN()) target else ceilingNow + (target - ceilingNow) * (1f - exp(-dtS / CEILING_TAU_S))
+        val c = ceilingNow
         encoded.clear()
         for ((k, v) in limited) {
             val m = Perceptual.levelOf(v)
@@ -75,12 +79,7 @@ class AmbienceFrameShaper(private val script: AmbienceScript) {
     }
 
     companion object {
-        /**
-         * How much of the scene's level the intensity slider allows: full at the top,
-         * a little over half at the bottom. The scripts already use intensity for event
-         * rate and depth; this makes the slider visibly dim and brighten the room too.
-         */
-        fun levelFor(intensity: Float): Float = 0.55f + 0.45f * intensity.coerceIn(0f, 1f)
+        private const val CEILING_TAU_S = 0.12f
 
         /** A scene's level as the bridge gets it: 0.1 becomes 0.25, 0.5 becomes 0.66. */
         fun lift(level: Float): Float = level.coerceIn(0f, 1f).pow(0.6f)

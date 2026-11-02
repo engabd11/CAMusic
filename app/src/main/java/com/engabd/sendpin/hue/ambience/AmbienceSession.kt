@@ -125,7 +125,10 @@ class AmbienceSession(
      * lightning strike is allowed to be a lightning strike. This is the same escape the
      * Extreme rung already gets, and here the listener has asked for lightning by name.
      */
-    val safety = FieldSafety(calmGated = false)
+    val safety = FieldSafety(
+        if (script.flashy) com.engabd.sendpin.hue.RELAXED_MAX_FLASHES_PER_S else com.engabd.sendpin.hue.MAX_FLASHES_PER_S,
+        calmGated = false,
+    )
 
     /**
      * The scene's own speed limit, standing in for `EffectRateLimiter` on this path.
@@ -505,7 +508,7 @@ class AmbienceSession(
         frame.clear()
         script.renderLights(t, lightScratch, n, frame)
         if (frame.isEmpty()) return null
-        return shaper.shape(frame, dtS, fade, params.brightness, params.intensity)
+        return shaper.shape(frame, dtS, fade, params.brightness)
     }
 
     private fun generatorLoop() {

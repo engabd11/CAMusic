@@ -23,40 +23,47 @@ import com.engabd.sendpin.hue.ambience.Svf
 import com.engabd.sendpin.hue.ambience.VoicePool
 import com.engabd.sendpin.hue.ambience.azimuthOfPan
 import com.engabd.sendpin.hue.ambience.panGains
+import com.engabd.sendpin.hue.ambience.mix
 import com.engabd.sendpin.hue.ambience.smoothstep
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
- * Shells climbing, bursting overhead, and crackling away into the dark.
+ * Shells climbing, bursting overhead, and burning out into the dark.
  *
- * The burst model is the one `FireworksEffect` already uses for the music-reactive
- * effect — an expanding Gaussian shell, `EXPAND` metres a second, fading on its own
- * lifetime — but sourced from scheduled events rather than from beat detection, and in
- * real 3D rather than the (xrank, height) plane the music version works in.
+ * The burst follows how a shell actually burns, and how established LED fireworks (WLED's
+ * Starburst and Exploding Fireworks) draw one: a brief white-hot ignition that turns to
+ * the star colour, stars thrown out from the break and slowing fast, then the whole patch
+ * of stars burning down together over a couple of seconds, warming as it cools. One
+ * shell, one colour, one pop. An earlier version swept a thin ring outwards, so each lamp
+ * blinked once as it passed, which read as random flashes rather than a burst.
  *
  * ## What the room does
  *
- * **The flash leads the bang.** Light crosses the distance instantly and sound takes a
- * few tenths of a second, so the sky lights up and then it thumps. On the scheduled path
- * that is the sound's own air delay. With a bundled recording the shell is stamped that
- * long before the bang the recording will play, because the plan is read ahead of the
- * playhead (see `AmbienceBedTimeline`).
+ * **The pop lands on the bang.** Outdoors the flash leads the thump by the sound's travel
+ * time, and this once modelled that, up to two thirds of a second; in a room it only read
+ * as the lights and the sound being out of step. Now the two land together, on both the
+ * scheduled path and a bundled recording (whose plan is read ahead of the playhead, see
+ * `AmbienceBedTimeline`).
  *
- * **A burst blooms and then trails.** The ring opens and is gone in about a second, and
- * the shell's embers drift down over a second and a half to three, twinkling slowly
- * (under 2 Hz) so they read as sparks and not as flicker.
+ * **A burst lights the part of the room it broke over.** The lit patch grows to about
+ * half the room in a quarter of a second and holds there, so two shells in different
+ * places light different lamps, the way they fill different parts of the sky. The pop is
+ * the ignition, at full brightness; the stars that follow are a third as bright,
+ * twinkling softly, and burn out over 1.6 to 2.6 s by shell size.
  *
- * **Between shells there is smoke.** Each burst leaves a faint warm-grey veil that clears
- * over about ten seconds, so a busy display sits a little brighter and hazier than a lull.
+ * **The night is dark.** Between shells the room is close to black, a faint blue sky and
+ * a little smoke that clears over about ten seconds, so every burst stands out against it.
  *
- * **Distance shows.** The furthest shells are about 40 percent dimmer than the nearest.
+ * **Distance shows, a little.** The furthest shells are about 15 percent dimmer than the
+ * nearest; a burst is the brightest thing in the night wherever it is.
  *
- * **Not a finale.** Shells come a few seconds apart, never closer than 0.8 s, and the
- * room answers a recording's bangs no more than every 0.7 s. All brightness is perceived
- * (see `Perceptual`); only the bloom is allowed to be sudden (see [comfort]).
+ * **A display, not a finale.** Shells come a few seconds apart, never closer than 1.8 s,
+ * and the room answers only a recording's main bangs, no more than every 1.8 s. Each
+ * shell's whole burn is a named event (see [comfort]), so the pop can be sudden.
  *
  * ## One shell, three moments, both media
  *
@@ -97,6 +104,8 @@ class FireworksAmbienceScript(
      * shell breaking, which is the one sudden thing in the scene. Sparks twinkling at
      * 2 Hz stay well inside the calm rate, so they read as embers rather than flicker.
      */
+    override val flashy = true
+
     override val comfort = ComfortProfile(
         risePerS = 1.0f, fallPerS = 0.8f, roomSwingPerS = 0.6f,
         burstRisePerS = 30f, burstFallPerS = 6f, burstRoomSwingPerS = 40f,
@@ -112,6 +121,8 @@ class FireworksAmbienceScript(
     private val rng = Rng(seed)
     private val renderRng = Rng(seed xor 0x0516_47L)
     private var nextBurstS = 0.8
+    private var salvoLeft = 0
+    private var lastColour = -1
 
     /** Seeds for each lamp's faint sky shimmer. Set at bind from [renderRng]. */
     private var lampSeed = IntArray(0)
@@ -206,10 +217,14 @@ class FireworksAmbienceScript(
      */
     override fun react(sample: BedSample, onset: BedOnset, emit: (AmbienceEvent) -> Unit) {
         if (!onset.broadband && !onset.low) return
-        if (!lastBurstS.isNaN() && sample.tS - lastBurstS < BURST_REFRACTORY_S) return
+        val strength = maxOf(onset.broadbandStrength, onset.lowStrength * 0.9f)
+        // The crackle and small reports are heard, not shown: only a shell's main bang
+        // makes a pop, so the room sees one big burst and not a flicker of little ones.
+        if (strength < MIN_POP_STRENGTH) return
+        val gapNeeded = if (strength >= SALVO_STRENGTH) SALVO_GAP_MIN_S.toDouble() else BURST_REFRACTORY_S
+        if (!lastBurstS.isNaN() && sample.tS - lastBurstS < gapNeeded) return
         lastBurstS = sample.tS
 
-        val strength = maxOf(onset.broadbandStrength, onset.lowStrength * 0.9f)
         val az = azimuthOfPan(onset.pan)
         // Bigger shells sit further out and higher; small ones are closer in. Keeps a
         // barrage of small bangs from all landing on the same lamps.
@@ -233,7 +248,7 @@ class FireworksAmbienceScript(
                 // Where the bang began, less the lead; see BedOnset.atS.
                 startS = onset.atS - lead,
                 env = BURST_ENV,
-                gain = (0.40f + 0.60f * strength).coerceIn(0.15f, 1f),
+                gain = (0.70f + 0.30f * strength).coerceIn(0.5f, 1f),
                 origin = origin,
                 azimuth = az,
                 colour = shellColours[reactRng.nextInt(shellColours.size)],
@@ -264,7 +279,7 @@ class FireworksAmbienceScript(
         // Bursts per second. A real display fires a shell every few seconds with the odd
         // salvo; the old one-a-second-or-more was a finale, and a finale is not a room
         // you can sit in.
-        val lambda = 0.05f + 0.30f * intensity
+        val lambda = 0.04f + 0.16f * intensity
         while (nextBurstS < toS) {
             val az = rng.f01()
             // Overhead and out: a firework is not in the room with you.
@@ -276,16 +291,20 @@ class FireworksAmbienceScript(
             )
             val size = 0.5f + 0.5f * rng.f01()
             val airS = airDelayOf(radius)
+            // A different colour from the shell before, so a salvo reads as several shells.
+            var ci = rng.nextInt(shellColours.size)
+            if (ci == lastColour) ci = (ci + 1 + rng.nextInt(shellColours.size - 1)) % shellColours.size
+            lastColour = ci
             emit(
                 AmbienceEvent(
                     kind = AmbienceEvent.BURST,
                     startS = nextBurstS,
                     // Long enough to expand and fade; matches FireworksEffect's BURST_LIFE.
                     env = BURST_ENV,
-                    gain = 0.45f + 0.55f * rng.f01(),
+                    gain = 0.80f + 0.20f * rng.f01(),
                     origin = origin,
                     azimuth = az,
-                    colour = shellColours[rng.nextInt(shellColours.size)],
+                    colour = shellColours[ci],
                     // Shell size: drives both the light shell's radius and the boom's depth.
                     timbre = size,
                     seed = rng.nextLong(),
@@ -298,7 +317,15 @@ class FireworksAmbienceScript(
                     soundS = airS + CRACKLE_S.toFloat(),
                 ),
             )
-            nextBurstS += (-ln(rng.f01().coerceAtLeast(1e-6f)) / lambda).coerceAtLeast(MIN_GAP_S).toDouble()
+            // Now and then a salvo: two or three shells in quick succession, the way a real
+            // display punctuates its rhythm, then back to one at a time.
+            val quick = SALVO_GAP_MIN_S + (SALVO_GAP_MAX_S - SALVO_GAP_MIN_S) * rng.f01()
+            val gap = when {
+                salvoLeft > 0 -> { salvoLeft--; quick }
+                rng.f01() < SALVO_CHANCE -> { salvoLeft = rng.nextInt(2); quick }
+                else -> (-ln(rng.f01().coerceAtLeast(1e-6f)) / lambda).coerceAtLeast(MIN_GAP_S)
+            }
+            nextBurstS += gap.toDouble()
         }
     }
 
@@ -367,7 +394,8 @@ class FireworksAmbienceScript(
                 if (climb > 0f) {
                     // Straight up from where it will break, so the ember arrives exactly
                     // where the shell opens rather than sliding across the room.
-                    val at = Vec3(e.origin.x, e.origin.y, e.origin.z * climb)
+                    val o = lightOrigin(e)
+                    val at = Vec3(o.x, o.y, o.z * climb)
                     val amp = TRACER * climb * climb * e.gain
                     var i = 0
                     while (i < ids.size) {
@@ -390,50 +418,50 @@ class FireworksAmbienceScript(
             val far = ((radiusOf(e) - 0.55f) / 0.45f).coerceIn(0f, 1f)
             val proximity = 1f - FAR_DIM * far
 
-            // 2b. The bloom: a ring travelling outward and fading, not a flash. Quick
-            //     to open and gone in a second or so.
-            val bloom = e.levelAt(tS)
-            if (bloom > 0f) {
-                if (age < BLOOM_WINDOW_S) anyBloom = true
-                val shellR = EXPAND * age * e.timbre
+            // 2b. The shell burning. How a real shell looks (and how WLED's fireworks draw
+            //     one): a white-hot ignition that turns to the star colour within a fifth of
+            //     a second; stars thrown out from the break and slowing fast, so the lit patch
+            //     grows quickly and then holds; and the whole patch burning down together,
+            //     warming as it cools. The ignition is the big pop. What follows is the stars
+            //     themselves, a third as bright, twinkling softly as they burn out.
+            val burnS = BURN_MIN_S + (BURN_MAX_S - BURN_MIN_S) * e.timbre
+            if (age < burnS) {
+                anyBloom = true
+                val k = age / burnS
+                val burn = BURN * (1f - k)
+                val maxR = SHELL_MAX_R * (0.6f + 0.4f * e.timbre)
+                val r = maxR * (1f - exp(-age / SPREAD_TAU_S))
+                // Cooling: green and blue go first, so every colour warms as it dies.
+                val cool = smoothstep(0.35f, 1f, k)
+                val at = lightOrigin(e)
+                val twinkleSeed = (e.seed and 0xFFFFL).toInt()
                 var i = 0
                 while (i < ids.size) {
-                    val x = (room.distanceTo(ids[i], e.origin) - shellR) / SHELL_WIDTH
-                    val lvl = trim * proximity * BURST_PEAK * bloom * exp(-x * x)
+                    val dist = room.distanceTo(ids[i], at)
+                    val inside = 1f - smoothstep(r - EDGE, r + EDGE, dist)
+                    // Each lamp sees the pop when the stars reach it, not when the shell broke,
+                    // or the far lamps would only ever catch its tail.
+                    val arrive = -SPREAD_TAU_S * ln(1f - ((dist + EDGE) / maxR).coerceIn(0f, 0.95f))
+                    val local = (age - arrive).coerceAtLeast(0f)
+                    val pop = POP * exp(-local / POP_TAU_S)
+                    val hot = mix(WHITE_HOT, e.colour, (local / IGNITE_S).coerceIn(0f, 1f))
+                    val col = Rgb(hot.first, hot.second * (1f - 0.45f * cool), hot.third * (1f - 0.75f * cool))
+                    val centre = 1f - 0.45f * (dist / maxR).coerceIn(0f, 1f)
+                    // Thousands of stars burning out: a soft twinkle on the burn, not the pop.
+                    val tw = 1f - TWINKLE * (0.5f + 0.5f * SmoothNoise.value(lampSeed[i] + twinkleSeed, tS * TWINKLE_HZ))
+                    val lvl = trim * proximity * e.gain * (pop + burn * tw) * inside * centre
                     if (lvl > 1e-4f) {
                         val o = i * 3
-                        acc[o] += e.colour.first * lvl
-                        acc[o + 1] += e.colour.second * lvl
-                        acc[o + 2] += e.colour.third * lvl
-                    }
-                    i++
-                }
-            }
-
-            // 2c. The trail: the shell's embers drifting down and twinkling out over one
-            //     and a half to three seconds, bigger shells lasting longer. Each lamp
-            //     twinkles on its own seeded phase, slowly, so it is a scatter of sparks
-            //     and not the room breathing.
-            val trailS = TRAIL_MIN_S + (TRAIL_MAX_S - TRAIL_MIN_S) * e.timbre
-            val trailAge = age - TRAIL_DELAY_S
-            if (trailAge > 0f && trailAge < trailS) {
-                val fade = exp(-trailAge / (trailS * 0.38f)) * (1f - smoothstep(0.8f, 1f, trailAge / trailS))
-                val heard = if (haveBed) (0.7f + 0.5f * bedNow.rain).coerceIn(0f, 1.2f) else 1f
-                var i = 0
-                while (i < ids.size) {
-                    val ph = (e.seed ushr (i % 32)).toFloat() * 0.61803f + ids[i] * 0.31f
-                    val tw = 0.5f + 0.5f * sin(2f * PI.toFloat() * (trailAge * TWINKLE_HZ + ph))
-                    val lvl = trim * proximity * SPARKLE * fade * heard * e.gain * tw * tw
-                    if (lvl > 1e-4f) {
-                        val o = i * 3
-                        acc[o] += e.colour.first * lvl
-                        acc[o + 1] += e.colour.second * lvl
-                        acc[o + 2] += e.colour.third * lvl
+                        acc[o] += col.first * lvl
+                        acc[o + 1] += col.second * lvl
+                        acc[o + 2] += col.third * lvl
                     }
                     i++
                 }
             }
         }
+        // The whole shell is the named event, burn included, so the twinkle is not
+        // smoothed away by the calm limits the moment the pop has passed.
         bursting = anyBloom
 
         var i = 0
@@ -568,6 +596,17 @@ class FireworksAmbienceScript(
     }
 
     /** How far out from the middle of the room this shell broke, 0..1. */
+    /**
+     * Where a shell's light lands in the room: along its direction, anywhere from
+     * overhead to the edge. `origin` is the shell out in the sky, which the boom's delay
+     * and the pan are worked out from; seen from the room, a display fills the whole view,
+     * so the bursts land on every part of it and not only around the edge.
+     */
+    private fun lightOrigin(e: AmbienceEvent): Vec3 {
+        val u = ((e.seed ushr 23) and 0xFFL).toFloat() / 255f
+        return Vec3(0.5f + (e.origin.x - 0.5f) * u, 0.5f + (e.origin.y - 0.5f) * u, e.origin.z)
+    }
+
     private fun radiusOf(e: AmbienceEvent): Float {
         val dx = e.origin.x - 0.5f
         val dy = e.origin.y - 0.5f
@@ -585,8 +624,27 @@ class FireworksAmbienceScript(
         const val MAX_VOICES = 20
 
         /** Shell radius per second, in normalised room units. Matches FireworksEffect. */
-        const val EXPAND = 0.9f
-        const val SHELL_WIDTH = 0.34f
+        /** How far a shell's stars reach, in room units: most of the room for a big one. */
+        const val SHELL_MAX_R = 1.0f
+        /** The stars fly out and slow: the lit patch reaches its size in about three of these. */
+        const val SPREAD_TAU_S = 0.10f
+        /** Softness of the patch's edge. */
+        const val EDGE = 0.14f
+        /** White-hot to star colour. */
+        const val IGNITE_S = 0.18f
+        /** The pop: its share of the peak, and how fast it gives way to the burning stars. */
+        const val POP = 0.80f
+        const val POP_TAU_S = 0.22f
+        /** The stars burning out: their share of the peak, and how long they last by shell size. */
+        const val BURN = 0.32f
+        const val BURN_MIN_S = 1.6f
+        const val BURN_MAX_S = 2.6f
+        /** The burning stars' twinkle: depth and rate. */
+        const val TWINKLE = 0.55f
+        const val TWINKLE_HZ = 7.0
+        val WHITE_HOT = Rgb(1.00f, 0.95f, 0.85f)
+        /** The bright heart of the break, and its size. */
+        /** How fast the embers fall, and how wide they start. */
 
         /** How long a shell whistles before it bursts. */
         const val LAUNCH_S = 0.9
@@ -602,67 +660,64 @@ class FireworksAmbienceScript(
          * shells you can tell apart, and keeps a flash from landing inside the last
          * one's bloom. The ear still gets every bang from the recording.
          */
-        const val BURST_REFRACTORY_S = 0.7
+        const val BURST_REFRACTORY_S = 1.8
+        const val MIN_POP_STRENGTH = 0.2f
 
         /** Shortest gap the scheduler leaves between two shells, in seconds. */
-        const val MIN_GAP_S = 0.8f
+        const val MIN_GAP_S = 1.8f
+
+        /** Salvos: how often one starts, the gap inside one, and how hard a bang must be to join one. */
+        const val SALVO_CHANCE = 0.2f
+        const val SALVO_GAP_MIN_S = 0.40f
+        const val SALVO_GAP_MAX_S = 0.65f
+        const val SALVO_STRENGTH = 0.6f
 
         /**
          * A shell's light: a quick bloom (the ring), then gone. The sparks that follow
          * are drawn separately, so the envelope is short; 0.4 s of decay is a bloom that
          * has faded to a tenth in about a second.
          */
-        val BURST_ENV = Envelope(attackS = 0.05f, holdS = 0.04f, decayTauS = 0.40f)
+        // Long enough to cover the whole burn; the light's shape is drawn from the age.
+        val BURST_ENV = Envelope(attackS = 0.02f, holdS = 2.6f, decayTauS = 0.15f)
 
         /** How long after the burst the bloom still counts as the named event, in seconds. */
-        const val BLOOM_WINDOW_S = 0.5f
 
         /** Perceived brightness of a shell's ring at its peak, before distance and intensity. */
-        const val BURST_PEAK = 1.0f
 
         /** How much dimmer the furthest shells are than the nearest. */
-        const val FAR_DIM = 0.40f
+        const val FAR_DIM = 0.15f
 
         /** Brightness the climbing ember is allowed, and how tightly it is focused. */
         const val TRACER = 0.16f
         const val TRACER_WIDTH = 0.42f
 
         /** Brightness the twinkling embers are allowed once the shell has broken. */
-        const val SPARKLE = 0.20f
+        /** The embers after the pop: a quarter of its brightness, so the pop is the event. */
+        /** Glints in the embers: small, a touch above them, never a second pop. */
 
-        /** The trail of sparks: starts just after the bloom, lasts 1.5 to 3 s by shell size. */
-        const val TRAIL_DELAY_S = 0.2f
-        const val TRAIL_MIN_S = 1.5f
-        const val TRAIL_MAX_S = 3.0f
-        const val TWINKLE_HZ = 1.8f
+        /** The trail of sparks: starts just after the bloom, lasts 2 to 3.5 s by shell size. */
 
         /**
          * The night and its smoke, perceived. The sky is dim enough that a shell is the
          * brightest thing in the room by far; the smoke is a faint warm-grey veil that
          * builds with each shell and clears over about ten seconds.
          */
-        const val SKY_LEVEL = 0.07f
+        const val SKY_LEVEL = 0.008f
         const val SKY_TAU_S = 3f
-        const val HAZE_LEVEL = 0.07f
+        const val HAZE_LEVEL = 0.010f
         const val SMOKE_TAU_S = 9f
         const val SMOKE_PER_SHELL = 0.30f
 
         /**
          * Seconds of sound delay for a shell at the far edge of the display.
          *
-         * A real display is set back a few hundred metres, which puts about a second
-         * between the flash and the thump — and that gap is most of what makes fireworks
-         * read as *outdoors and enormous* rather than as a speaker in the corner.
-         *
-         * Kept to two thirds of a second at the very furthest, though, rather than the
-         * literal figure. Past about a second the eye stops crediting the burst it just
-         * saw with the bang it hears, especially when shells are going up two a second
-         * and the previous one is still crackling — it stops being distance and starts
-         * being a fault. This is the one place the effect knowingly under-states the
-         * physics, and it does it in the direction of the relationship staying legible.
+         * Outdoors this is up to a second, and it was once modelled at two thirds of one.
+         * On real lamps in a room it read as the lights and the sound being out of step,
+         * so the pop now lands on the bang; the far shells keep only a hair of delay, and
+         * still use it to take the treble out of their boom.
          */
-        const val MAX_AIR_S = 0.66f
-        const val MIN_AIR_S = 0.24f
+        const val MAX_AIR_S = 0.05f
+        const val MIN_AIR_S = 0.0f
 
         /** The delay for a shell at normalised distance [radius] from the room's middle. */
         fun airDelayOf(radius: Float): Float =
@@ -677,17 +732,21 @@ class FireworksAmbienceScript(
         val EMBER = Rgb(1.00f, 0.52f, 0.14f)
 
         /**
-         * The saturated show. The Hue light-effects guide describes two explosion
+         * The saturated show: neon, cheerful, every channel pushed to its edge so a
+         * shell reads as colour and not as a tinted white. The Hue light-effects guide describes two explosion
          * archetypes — "reds and oranges with smoke" or "white hot and intense" —
          * and [WHITE_HOT_SHELLS] is the other one.
          */
         val SHELL_COLOURS = arrayOf(
-            Rgb(1.00f, 0.30f, 0.25f),
-            Rgb(1.00f, 0.78f, 0.25f),
-            Rgb(0.35f, 0.85f, 1.00f),
-            Rgb(0.65f, 0.40f, 1.00f),
-            Rgb(0.40f, 1.00f, 0.55f),
-            Rgb(1.00f, 0.55f, 0.85f),
+            Rgb(1.00f, 0.05f, 0.55f),   // hot pink
+            Rgb(0.00f, 0.90f, 1.00f),   // electric cyan
+            Rgb(0.55f, 1.00f, 0.00f),   // lime
+            Rgb(0.60f, 0.05f, 1.00f),   // ultraviolet
+            Rgb(1.00f, 0.45f, 0.00f),   // neon orange
+            Rgb(1.00f, 0.00f, 1.00f),   // magenta
+            Rgb(0.10f, 0.35f, 1.00f),   // electric blue
+            Rgb(1.00f, 0.92f, 0.00f),   // sunny yellow
+            Rgb(1.00f, 0.08f, 0.10f),   // neon red
         )
 
         /** Magnesium and gold: the "white hot and intense" archetype. */

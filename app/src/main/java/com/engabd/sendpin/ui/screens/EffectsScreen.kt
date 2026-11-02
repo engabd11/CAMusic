@@ -27,6 +27,9 @@ import androidx.compose.material.icons.filled.EmojiObjects
 import androidx.compose.material.icons.filled.Forest
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Thunderstorm
 import androidx.compose.material.icons.filled.Train
@@ -75,9 +78,11 @@ import com.engabd.sendpin.ui.viewmodel.EffectsViewModel
 fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
     val accent = LocalAccent.current
     val running by viewModel.running.collectAsStateWithLifecycle()
+    val starting by viewModel.starting.collectAsStateWithLifecycle()
     val soundMode by viewModel.soundMode.collectAsStateWithLifecycle()
     val overMusic by viewModel.overMusic.collectAsStateWithLifecycle()
     val volume by viewModel.volume.collectAsStateWithLifecycle()
+    val brightness by viewModel.brightness.collectAsStateWithLifecycle()
     val intensities by viewModel.intensities.collectAsStateWithLifecycle()
     val clips by viewModel.clips.collectAsStateWithLifecycle()
     val sleepMinutes by viewModel.sleepMinutes.collectAsStateWithLifecycle()
@@ -172,9 +177,14 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                             EffectCard(
                                 effect = e,
                                 running = running == e.wire,
+                                starting = starting == e.wire,
                                 modifier = Modifier.weight(1f),
                             ) {
-                                if (running == e.wire) viewModel.stop() else viewModel.start(e)
+                                when {
+                                    starting == e.wire -> Unit     // already on its way
+                                    running == e.wire -> viewModel.stop()
+                                    else -> viewModel.start(e)
+                                }
                             }
                         }
                         // Keeps the last row's single tile at half width rather than
@@ -184,149 +194,166 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                     Spacer(Modifier.height(10.dp))
                 }
 
-                expanded?.let { wire ->
-                    AmbienceEffect.fromWire(wire)?.let { e ->
-                        Spacer(Modifier.height(8.dp))
-                        SectionLabel(e.title)
-                        Spacer(Modifier.height(10.dp))
-                        GlassCard(radius = 18.dp) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text(e.blurb, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp)
-                                Spacer(Modifier.height(14.dp))
-
-                                Text("Intensity", color = TextSecondary, fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold)
-                                Spacer(Modifier.height(6.dp))
-                                var drag by remember(wire) { mutableStateOf<Float?>(null) }
-                                val value = drag ?: (intensities[wire] ?: 0.5f)
-                                LabeledSliderRow(
-                                    value = value,
-                                    label = "${(value * 100).toInt()}%",
-                                    onChange = { drag = it },
-                                    onCommit = { drag = null; viewModel.setIntensity(e, it) },
-                                )
-
-                                Spacer(Modifier.height(16.dp))
-                                Text("Sound", color = TextSecondary, fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold)
-                                Spacer(Modifier.height(8.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Pill("Default", soundMode == "synth") { viewModel.setSoundMode("synth") }
-                                    Pill("My clip", soundMode == "clip") { viewModel.setSoundMode("clip") }
-                                    Pill("Off", soundMode == "off") { viewModel.setSoundMode("off") }
-                                }
-
-                                if (soundMode == "clip") {
-                                    Spacer(Modifier.height(10.dp))
-                                    val clip = clips[wire]
-                                    Text(
-                                        clip?.substringAfterLast('/')?.let { "Using $it" }
-                                            ?: "No clip chosen — falls back to the synth",
-                                        color = TextFaint, fontSize = 11.sp,
-                                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Spacer(Modifier.height(6.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Pill("Choose file", false) {
-                                            pickingFor = e
-                                            pickClip.launch(arrayOf("audio/*"))
-                                        }
-                                        if (clip != null) Pill("Clear", false) { viewModel.setClip(e, null) }
-                                    }
-                                    Spacer(Modifier.height(6.dp))
-                                    // This used to have to say the opposite — that the
-                                    // lights followed the script and not the file — because
-                                    // a clip ran on its own clock with nothing analysing
-                                    // it. Now the same tap the music show uses is on this
-                                    // player too, so any file the listener picks drives
-                                    // the room.
-                                    Text(
-                                        "Your clip plays as the bed, and the lights follow it — " +
-                                            "the effect reacts to whatever it can hear.",
-                                        color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                                    )
-                                }
-
-                                if (soundMode != "off") {
-                                    Spacer(Modifier.height(14.dp))
-                                    Text("Level", color = TextSecondary, fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold)
-                                    Spacer(Modifier.height(6.dp))
-                                    var vDrag by remember(wire) { mutableStateOf<Float?>(null) }
-                                    val v = vDrag ?: (volume / 100f)
-                                    LabeledSliderRow(
-                                        value = v,
-                                        label = "${(v * 100).toInt()}%",
-                                        onChange = { vDrag = it },
-                                        onCommit = { vDrag = null; viewModel.setVolume((it * 100).toInt()) },
-                                    )
-
-                                    Spacer(Modifier.height(14.dp))
-                                    Text("Play over music", color = TextSecondary, fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold)
-                                    Spacer(Modifier.height(8.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Pill("Under the music", overMusic) { viewModel.setOverMusic(true) }
-                                        Pill("Instead of it", !overMusic) { viewModel.setOverMusic(false) }
-                                    }
-                                    Spacer(Modifier.height(6.dp))
-                                    Text(
-                                        if (overMusic)
-                                            "A record keeps playing and the bed sits underneath it, " +
-                                                "quietly. Nothing is paused and nothing is taken over."
-                                        else
-                                            "Starting a show stops whatever is playing and takes the " +
-                                                "output, which is what a show playing on its own wants.",
-                                        color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                                    )
-                                }
-
-                                Spacer(Modifier.height(16.dp))
-                                Text("Sleep timer", color = TextSecondary, fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold)
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "A show is a 60 Hz render loop and a running synth. The " +
-                                        "timer is here so it cannot quietly run all night.",
-                                    color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                Row(
-                                    Modifier.horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    listOf(0 to "Off", 15 to "15m", 30 to "30m", 60 to "1h", 120 to "2h")
-                                        .forEach { (m, label) ->
-                                            Pill(label, sleepMinutes == m) { viewModel.setSleepMinutes(m) }
-                                        }
-                                }
-                            }
-                        }
-                    }
-                }
-
                 Spacer(Modifier.height(16.dp))
             }
 
-            // The running bar. Always reachable, so a show can be stopped without
-            // hunting for the tile that started it.
-            if (running != null) {
-                val title = AmbienceEffect.fromWire(running)?.title ?: "Ambience"
+            // The scene's controls, at the bottom where a thumb is, as soon as a scene is
+            // picked: brightness and intensity always, the rest a tap away. They used to sit
+            // below the whole grid, a long scroll from the tile that started the scene.
+            (running ?: expanded)?.let { AmbienceEffect.fromWire(it) }?.let { e ->
+                val wire = e.wire
+                val isRunning = running == wire
+                var more by remember { mutableStateOf(false) }
                 GlassCard(
                     radius = 18.dp,
-                    fill = accent.a(0.12f),
+                    fill = if (isRunning) accent.a(0.12f) else Glass,
                     modifier = Modifier.padding(horizontal = 18.dp)
                         .padding(bottom = navBarInset() + 12.dp),
                 ) {
-                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                            Text(title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text(
-                                remaining?.let { "Stops in ${formatRemaining(it)}" } ?: "Running",
-                                color = TextMuted, fontSize = 12.sp,
-                            )
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                                Text(e.title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text(
+                                    when {
+                                        starting == wire -> "Starting…"
+                                        isRunning -> remaining?.let { "Stops in ${formatRemaining(it)}" } ?: "Running"
+                                        else -> "Not playing"
+                                    },
+                                    color = TextMuted, fontSize = 12.sp,
+                                )
+                            }
+                            CircleBtn(
+                                if (more) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                                if (more) "Fewer settings" else "More settings",
+                            ) { more = !more }
+                            Spacer(Modifier.width(8.dp))
+                            if (isRunning) {
+                                CircleBtn(Icons.Default.Stop, "Stop") { viewModel.stop() }
+                            } else {
+                                CircleBtn(Icons.Default.PlayArrow, "Play") {
+                                    if (starting != wire) viewModel.start(e)
+                                }
+                            }
                         }
-                        CircleBtn(Icons.Default.Stop, "Stop") { viewModel.stop() }
+                        Spacer(Modifier.height(6.dp))
+
+                        var bDrag by remember { mutableStateOf<Float?>(null) }
+                        val b = bDrag ?: (brightness / 100f)
+                        PanelSlider(
+                            "Brightness", b,
+                            onChange = { bDrag = it.coerceAtLeast(0.05f) },
+                            onCommit = { bDrag = null; viewModel.setBrightness((it * 100).toInt()) },
+                        )
+                        // Intensity is how lively the scene is; brightness stays where it is.
+                        var drag by remember(wire) { mutableStateOf<Float?>(null) }
+                        val value = drag ?: (intensities[wire] ?: 0.5f)
+                        PanelSlider(
+                            "Intensity", value,
+                            onChange = { drag = it },
+                            onCommit = { drag = null; viewModel.setIntensity(e, it) },
+                        )
+
+                        if (more) {
+                            Column(
+                                Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())
+                                    .padding(top = 8.dp),
+                            ) {
+                            Text("Sound", color = TextSecondary, fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Pill("Default", soundMode == "synth") { viewModel.setSoundMode("synth") }
+                                Pill("My clip", soundMode == "clip") { viewModel.setSoundMode("clip") }
+                                Pill("Off", soundMode == "off") { viewModel.setSoundMode("off") }
+                            }
+
+                            if (soundMode == "clip") {
+                                Spacer(Modifier.height(10.dp))
+                                val clip = clips[wire]
+                                Text(
+                                    clip?.substringAfterLast('/')?.let { "Using $it" }
+                                        ?: "No clip chosen — falls back to the synth",
+                                    color = TextFaint, fontSize = 11.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Pill("Choose file", false) {
+                                        pickingFor = e
+                                        pickClip.launch(arrayOf("audio/*"))
+                                    }
+                                    if (clip != null) Pill("Clear", false) { viewModel.setClip(e, null) }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                // This used to have to say the opposite — that the
+                                // lights followed the script and not the file — because
+                                // a clip ran on its own clock with nothing analysing
+                                // it. Now the same tap the music show uses is on this
+                                // player too, so any file the listener picks drives
+                                // the room.
+                                Text(
+                                    "Your clip plays as the bed, and the lights follow it — " +
+                                        "the effect reacts to whatever it can hear.",
+                                    color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                                )
+                            }
+
+                            if (soundMode != "off") {
+                                Spacer(Modifier.height(14.dp))
+                                Text("Volume", color = TextSecondary, fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(6.dp))
+                                var vDrag by remember(wire) { mutableStateOf<Float?>(null) }
+                                val v = vDrag ?: (volume / 100f)
+                                LabeledSliderRow(
+                                    value = v,
+                                    label = "${(v * 100).toInt()}%",
+                                    onChange = { vDrag = it },
+                                    onCommit = { vDrag = null; viewModel.setVolume((it * 100).toInt()) },
+                                )
+
+                                Spacer(Modifier.height(14.dp))
+                                Text("Play over music", color = TextSecondary, fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Pill("Under the music", overMusic) { viewModel.setOverMusic(true) }
+                                    Pill("Instead of it", !overMusic) { viewModel.setOverMusic(false) }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    if (overMusic)
+                                        "A record keeps playing and the bed sits underneath it, " +
+                                            "quietly. Nothing is paused and nothing is taken over."
+                                    else
+                                        "Starting a show stops whatever is playing and takes the " +
+                                            "output, which is what a show playing on its own wants.",
+                                    color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                                )
+                            }
+
+                            Spacer(Modifier.height(16.dp))
+                            Text("Sleep timer", color = TextSecondary, fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "A show is a 60 Hz render loop and a running synth. The " +
+                                    "timer is here so it cannot quietly run all night.",
+                                color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                listOf(0 to "Off", 15 to "15m", 30 to "30m", 60 to "1h", 120 to "2h")
+                                    .forEach { (m, label) ->
+                                        Pill(label, sleepMinutes == m) { viewModel.setSleepMinutes(m) }
+                                    }
+                            }
+                            }
+                        }
                     }
                 }
             }
@@ -338,6 +365,7 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
 private fun EffectCard(
     effect: AmbienceEffect,
     running: Boolean,
+    starting: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -353,7 +381,11 @@ private fun EffectCard(
     } else 0f
     Box(
         modifier.aspectRatio(0.82f).clip(shape)
-            .border(if (running) 2.dp else 1.dp, if (running) accent.a(breath) else Hairline, shape)
+            .border(
+                if (running || starting) 2.dp else 1.dp,
+                when { running -> accent.a(breath); starting -> accent.a(0.5f); else -> Hairline },
+                shape,
+            )
             .clickable(onClick = onClick),
     ) {
         Image(
@@ -366,9 +398,9 @@ private fun EffectCard(
                 Brush.verticalGradient(0.35f to Color.Transparent, 1f to Ink.a(0.92f)),
             ),
         )
-        if (running) {
+        if (running || starting) {
             Text(
-                "Playing",
+                if (starting) "Starting…" else "Playing",
                 color = Ink, fontWeight = FontWeight.Bold, fontSize = 11.sp,
                 modifier = Modifier.align(Alignment.TopStart).padding(10.dp)
                     .clip(RoundedCornerShape(100)).background(accent)
@@ -387,6 +419,18 @@ private fun EffectCard(
                 effect.blurb, color = TextSecondary, fontSize = 11.sp, lineHeight = 14.sp,
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
+        }
+    }
+}
+
+/** A labelled slider row for the bottom panel: name, slider, value. */
+@Composable
+private fun PanelSlider(label: String, value: Float, onChange: (Float) -> Unit, onCommit: (Float) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.width(76.dp))
+        Box(Modifier.weight(1f)) {
+            LabeledSliderRow(value = value, label = "${(value * 100).toInt()}%", onChange = onChange, onCommit = onCommit)
         }
     }
 }

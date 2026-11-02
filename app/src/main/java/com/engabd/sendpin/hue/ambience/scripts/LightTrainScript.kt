@@ -62,7 +62,7 @@ class LightTrainScript : AmbienceScript {
      * steepest moment is half again its average). The room mean may move as fast, since
      * only the lamps under the train are moving.
      */
-    override val comfort = ComfortProfile(risePerS = 1.2f, fallPerS = 1.2f, roomSwingPerS = 1.2f)
+    override val comfort = ComfortProfile(risePerS = 1.6f, fallPerS = 1.6f, roomSwingPerS = 1.6f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -200,7 +200,7 @@ class LightTrainScript : AmbienceScript {
         val fwd = forward(cycle)
         val head = headTravel(pf.coerceIn(0f, 1f))
         val onPass = pf in 0f..1f
-        val windowLevel = WINDOW_MIN + (WINDOW_MAX - WINDOW_MIN) * intensity
+        val windowLevel = WINDOW_LEVEL
         val length = trainLength()
 
         // The approach: a platform lighting up at the end the train comes from, easing
@@ -374,9 +374,8 @@ class LightTrainScript : AmbienceScript {
         const val APPROACH_S = 6f
         const val QUIET_S = 20f
 
-        /** Perceived brightness of a lit window, at intensity 0 and 1. */
-        const val WINDOW_MIN = 0.38f
-        const val WINDOW_MAX = 0.68f
+        /** Perceived brightness of a lit window. Intensity is the train's speed, not this. */
+        const val WINDOW_LEVEL = 0.68f
 
         const val NIGHT_LEVEL = 0.06f
         const val HEADLIGHT_LEVEL = 0.24f

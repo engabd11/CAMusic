@@ -158,6 +158,17 @@ class HueStreamEncoder(
     /** Per-channel previous xy for slew-limiting. */
     private val prevXy = mutableMapOf<Int, Pair<Float, Float>>()
 
+    /** Per-channel brightness last sent, for [snapFromDark]. */
+    private val prevBri = mutableMapOf<Int, Float>()
+
+    /**
+     * Let a lamp that was near-dark take its new colour at once instead of slewing to it.
+     * A dark lamp changing colour is invisible, so nothing pops; without it a firework
+     * bursting out of a blue night arrived purple and only reached its colour as it faded.
+     * Off by default, so the music show is untouched; ambience flash scenes turn it on.
+     */
+    @Volatile var snapFromDark = false
+
     init {
         val raw = configId.toByteArray(Charsets.US_ASCII)
         require(raw.size == 36) { "Entertainment config id must be 36 bytes, got ${raw.size}" }
@@ -196,6 +207,7 @@ class HueStreamEncoder(
                     buf.put(cid.toByte())
                     if (bri <= 1e-6f) {
                         // Black: hold the last chromaticity, send brightness 0.
+                        prevBri[cid] = 0f
                         val prev = prevXy[cid] ?: gamutCentroid(gamuts[cid] ?: GAMUT_C)
                         prevXy[cid] = prev
                         buf.putShort(floatTo16(prev.first).toShort())
@@ -203,6 +215,8 @@ class HueStreamEncoder(
                         buf.putShort(0)
                     } else {
                         val (x, y) = rgbToXy(r / bri, g / bri, b / bri, gamuts[cid] ?: GAMUT_C)
+                        if (snapFromDark && (prevBri[cid] ?: 0f) < SNAP_DARK_BRI) prevXy.remove(cid)
+                        prevBri[cid] = bri
                         val (sx, sy) = slewXy(cid, x, y)
                         buf.putShort(floatTo16(sx).toShort())
                         buf.putShort(floatTo16(sy).toShort())
@@ -262,6 +276,8 @@ class HueStreamEncoder(
         (gamut[0].second + gamut[1].second + gamut[2].second) / 3f
 
     companion object {
+        /** Below this a lamp is dark enough that a colour snap cannot be seen. */
+        const val SNAP_DARK_BRI = 0.12f
         const val MAX_CHANNELS = 20
     }
 }

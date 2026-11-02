@@ -312,6 +312,13 @@ interface AmbienceScript {
      */
     val burstActive: Boolean get() = false
 
+    /**
+     * True for a scene made of flashes (fireworks, lightning), which gets the relaxed
+     * flash budget the Intense music rung uses rather than the default three a second.
+     * Never none at all, as Extreme has: the scenes carry no seizure warning of their own.
+     */
+    val flashy: Boolean get() = false
+
     /** Called once before the first [schedule], with the room this show will run in. */
     fun bind(room: RoomModel, params: AmbienceParams)
 

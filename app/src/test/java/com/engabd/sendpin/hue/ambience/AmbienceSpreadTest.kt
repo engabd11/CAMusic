@@ -30,11 +30,13 @@ class AmbienceSpreadTest {
         EntertainmentChannel(2, ChannelPosition(0f, -0.9f, 0f)),
     )
 
-    /** Night scenes with events: dark between them by design, bright when they land. */
+    /** Night scenes with events: dim between them by design, bright when they land. */
     private val night = setOf(
-        AmbienceEffect.FIREWORKS, AmbienceEffect.FIREWORKS_2, AmbienceEffect.THUNDERSTORM,
-        AmbienceEffect.THUNDERSTORM_2, AmbienceEffect.LIGHT_TRAIN,
+        AmbienceEffect.THUNDERSTORM, AmbienceEffect.THUNDERSTORM_2, AmbienceEffect.LIGHT_TRAIN,
     )
+
+    /** A fireworks night: close to black between shells, so every burst stands out. */
+    private val darkSky = setOf(AmbienceEffect.FIREWORKS, AmbienceEffect.FIREWORKS_2)
 
     /** Calm scenes: a soft room all the time, never a bright one. */
     private val calm = setOf(
@@ -54,12 +56,12 @@ class AmbienceSpreadTest {
         val peak: Float,
     )
 
-    private fun run(effect: AmbienceEffect, channels: List<EntertainmentChannel>, seconds: Int = 180): Run {
+    private fun run(effect: AmbienceEffect, channels: List<EntertainmentChannel>, seconds: Int = 180, intensity: Float = 1f): Run {
         val fps = 60
         val dt = 1f / fps
         val room = RoomModel(channels)
         val script = scriptFor(effect)
-        script.bind(room, AmbienceParams(intensity = 1f))
+        script.bind(room, AmbienceParams(intensity = intensity))
         val shaper = AmbienceFrameShaper(script)
         val timeline = AmbienceTimeline()
         val scratch = arrayOfNulls<AmbienceEvent>(160)
@@ -80,7 +82,7 @@ class AmbienceSpreadTest {
             val live = timeline.windowAt(t, scratch)
             frame.clear()
             script.renderLights(t, scratch, live, frame)
-            val out = shaper.shape(frame, dt, 1f, 1f, intensity = 1f)
+            val out = shaper.shape(frame, dt, 1f, 1f)
             for (c in out.values) peak = max(peak, Perceptual.levelOf(c))
             if (f >= 15 * fps && f % 6 == 0) {
                 val cs = Array(ids.size) { out[ids[it]] ?: Rgb(0f, 0f, 0f) }
@@ -126,6 +128,7 @@ class AmbienceSpreadTest {
             // scene rests dimmer, but its events - a strike, a burst, the train going by -
             // must still hit hard.
             val dim = when (e) {
+                in darkSky -> r.peak < 0.8f
                 in night -> mean < 0.18 || r.peak < 0.7f
                 in calm -> mean < 0.30 || medians.max() < 0.45f
                 else -> mean < 0.45 || medians.max() < 0.7f
@@ -135,13 +138,73 @@ class AmbienceSpreadTest {
         assertTrue(fails.isEmpty(), "too dim at 100%:\n" + fails.joinToString("\n"))
     }
 
+    /** Per lamp: how much it moves over a few seconds (std of level), averaged over lamps. */
+    private fun liveliness(r: Run): Float {
+        val n = r.room.count
+        var acc = 0.0
+        for (i in 0 until n) {
+            val xs = lamp(r, i)
+            // Std within 5 s windows, so slow drifts over minutes do not count as life.
+            var w = 0.0; var c = 0
+            for (start in 0 until xs.size - 50 step 50) {
+                val win = xs.subList(start, start + 50)
+                val m = win.average()
+                w += sqrt(win.sumOf { (it - m) * (it - m) } / win.size); c++
+            }
+            acc += w / c
+        }
+        return (acc / n).toFloat()
+    }
+
+    /**
+     * The least a scene may move at full intensity, measured as above. Calibrated on
+     * candlelight, which the owner judged realistic on real lamps at 0.08: everything
+     * that is meant to be alive must be visibly so, and the fire livelier than a candle.
+     */
+    private val minLive = mapOf(
+        AmbienceEffect.FIREPLACE to 0.07f, AmbienceEffect.CANDLELIGHT to 0.06f,
+        AmbienceEffect.UNDERWATER to 0.06f, AmbienceEffect.LIGHT_TRAIN to 0.08f,
+        // Fireworks: one shell every few seconds over a dark night, so less movement on average.
+        AmbienceEffect.FIREWORKS to 0.02f, AmbienceEffect.FIREWORKS_2 to 0.02f,
+        AmbienceEffect.THUNDERSTORM to 0.04f, AmbienceEffect.THUNDERSTORM_2 to 0.04f,
+        AmbienceEffect.COASTAL_RAIN to 0.04f,
+        // One lamp of six is a reading lamp, steady on purpose, which pulls the average down.
+        AmbienceEffect.TIN_ROOF_RAIN to 0.03f,
+        AmbienceEffect.AURORA to 0.03f, AmbienceEffect.FOREST_DAWN to 0.03f,
+        // A wind-down scene: only the patch of sun dapples, and early on it is barely in.
+        AmbienceEffect.GOLDEN_HOUR to 0.004f,
+    )
+
+    @Test
+    fun `every scene is alive at full intensity and calm at the bottom`() {
+        val fails = ArrayList<String>()
+        for (e in AmbienceEffect.entries) {
+            val hi = liveliness(run(e, ring))
+            val lo = liveliness(run(e, ring, intensity = 0.05f))
+            println("%-15s live=%.3f at 5%%=%.3f".format(e.wire, hi, lo))
+            if (hi < minLive.getValue(e)) fails += "${e.wire}: live %.3f < %.3f".format(hi, minLive.getValue(e))
+            // Intensity is the scene's liveliness, so the bottom of the slider is calmer.
+            // Light train is the exception: its intensity is the train's speed, not its shimmer.
+            if (e != AmbienceEffect.LIGHT_TRAIN && lo > 0.8f * hi) fails += "${e.wire}: intensity barely changes it (%.3f at 5%%, %.3f at 100%%)".format(lo, hi)
+        }
+        assertTrue(fails.isEmpty(), fails.joinToString("\n"))
+    }
+
     @Test
     fun `every lamp is used, in every room shape`() {
         val fails = ArrayList<String>()
         for (room in listOf(ring, line, small)) for (e in AmbienceEffect.entries) {
-            val r = run(e, room, seconds = 120)
-            val floor = when (e) { in night -> 0.12f; in calm -> 0.20f; else -> 0.25f }
+            // A fireworks display needs longer for every part of the sky to have had a shell.
+            val r = run(e, room, seconds = if (e in darkSky) 300 else 120)
             val ranges = (0 until r.room.count).map { lamp(r, it).let { xs -> xs.max() - xs.min() } }
+            if (e in darkSky) {
+                // Dark by design: used means every part of the room catches shells.
+                for (i in 0 until r.room.count) {
+                    if (lamp(r, i).max() < 0.4f) fails += "${e.wire} on ${room.size} lamps: lamp $i never caught a shell"
+                }
+                continue
+            }
+            val floor = when (e) { in night -> 0.12f; in calm -> 0.20f; else -> 0.25f }
             for (i in 0 until r.room.count) {
                 val med = median(lamp(r, i))
                 if (med < floor) fails += "${e.wire} on ${room.size} lamps: lamp $i median %.3f".format(med)
@@ -208,6 +271,22 @@ class AmbienceSpreadTest {
             if (leaders.size < (n + 1) / 2) fails += "${e.wire}: events only ever lead on lamps ${leaders.sorted()}"
         }
         assertTrue(fails.isEmpty(), fails.joinToString("\n"))
+    }
+
+    @Test
+    fun `fireworks rest dark and burst in one part of the room at a time`() {
+        for (e in darkSky) {
+            val r = run(e, ring, seconds = 300)
+            // The night between shells: the quietest fifth of the show.
+            val night = r.levels.map { it.average().toFloat() }.sorted().let { it[it.size / 5] }
+            assertTrue(night < 0.10f, "${e.wire}: the night sits at $night")
+            // While a shell is lit, it is brightest where it broke: the room is never one
+            // flat colour, the way a burst fills part of the sky more than the rest.
+            val lit = r.levels.filter { it.max() > 0.5f }
+            assertTrue(lit.size > 20, "${e.wire}: only ${lit.size} lit samples")
+            val local = lit.count { s -> s.min() < 0.75f * s.max() }
+            assertTrue(local >= lit.size * 0.6, "${e.wire}: only $local of ${lit.size} bursts were brighter where they broke")
+        }
     }
 
     @Test

@@ -24,20 +24,23 @@ import kotlin.math.exp
 import kotlin.math.sin
 
 /**
- * Being underwater: deep teal going to black at the floor, light moving slowly overhead.
+ * Diving in sunlit water: deep blue below, the sun breaking through the surface above.
  *
- * Four things, all of them slow, laid over each other.
+ * Five things laid over each other. The water itself is slow; the sunlight in it is not.
  *
  * **Depth.** The lamps lowest in the room are the bottom: a deep teal, close to black.
  * The lamps highest are the surface: brighter, greener, and the only ones the caustics
  * really reach. Depth is the lamp's height (`RoomModel.heightOf`), so the effect has a
  * vertical dimension even in a floor-plan room.
  *
- * **Caustics.** The bright net sunlight makes on a pool floor is two crossing fields
- * sampled at each lamp's position. Both drift at 0.08 to 0.12 cycles a second, so a lamp
- * sees a ripple pass every five to twelve seconds: slow enough to read as water seen from
- * a bench and not as a flickering lamp. Two fields are enough, because one is a stripe
- * and two is a mesh.
+ * **Caustics.** The bright, dancing net sunlight makes through moving water: three
+ * crossing wavefronts sampled at each lamp's position, sharpened so it is mostly dim with
+ * bright lines, rippling past a lamp about every one to three seconds. They are added
+ * after the coupling pass, which would otherwise average the shimmer into a flat colour.
+ *
+ * **Sun rays.** Three shafts of light come down through the surface all the time, each
+ * swaying slowly as the surface rocks and flickering as waves pass over it. The high
+ * lamps, nearer the surface, catch the most of them.
  *
  * **A shaft of sun.** Once a minute or so a pale shaft drifts along the room's long axis
  * over fifteen seconds or so, the way a ray moves across the bottom as the surface
@@ -57,12 +60,10 @@ class UnderwaterScript : AmbienceScript {
     override val effect = AmbienceEffect.UNDERWATER
 
     /**
-     * Water does not jump. A quarter of a unit a second is a lamp going from dim to
-     * moderate over a couple of seconds, which is faster than anything this scene asks
-     * for and fast enough never to be the thing that is noticed. The room mean may move
-     * at about half that.
+     * Caustics shimmer, so a lamp may move a couple of units a second; the room as a
+     * whole, which is the water and not the sunlight in it, far less.
      */
-    override val comfort = ComfortProfile(risePerS = 0.25f, fallPerS = 0.25f, roomSwingPerS = 0.12f)
+    override val comfort = ComfortProfile(risePerS = 2.0f, fallPerS = 2.0f, roomSwingPerS = 0.5f)
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
@@ -77,6 +78,7 @@ class UnderwaterScript : AmbienceScript {
     private lateinit var raw: FloatArray
     private lateinit var smooth: FloatArray
     private lateinit var sun: FloatArray
+    private lateinit var caustic: FloatArray
     private lateinit var lampSeed: IntArray
 
     private val bed = PinkNoise(0x00A1)
@@ -100,6 +102,7 @@ class UnderwaterScript : AmbienceScript {
         raw = FloatArray(room.count)
         smooth = FloatArray(room.count)
         sun = FloatArray(room.count)
+        caustic = FloatArray(room.count)
         lampSeed = IntArray(room.count) { (renderRng.nextLong() ushr 33).toInt() }
     }
 
@@ -166,26 +169,18 @@ class UnderwaterScript : AmbienceScript {
     ) {
         val intensity = params.intensity.coerceIn(0f, 1f)
         val t = tS.toFloat()
-        val gain = 0.75f + 0.5f * intensity
+        val gain = 1.25f
 
         for ((i, id) in room.ids.withIndex()) {
             val p = room.positions[id] ?: room.centre()
             val h = room.heightOf(id)         // 0 at the floor, 1 at the surface
-            // Two crossing wavefronts, at different angles and drifting at different
-            // rates so the mesh never repeats. 0.08 and 0.115 cycles a second: a ripple
-            // passes a given lamp every five to twelve seconds.
-            val a = sin(2f * PI.toFloat() * (p.x * 1.7f + p.y * 0.6f - t * 0.080f))
-            val b = sin(2f * PI.toFloat() * (p.x * 0.7f - p.y * 1.9f - t * 0.115f))
-            // Sharpened towards the bright lines: caustics are mostly dark with bright
-            // edges, not a smooth ripple.
-            val mesh = ((a * b) * 0.5f + 0.5f).let { it * it }
-            // The net is only really visible near the surface; down at the floor the
-            // light has been scattered into a faint, even glow.
+            // The light only really reaches the high lamps; the floor is scattered glow.
             val reach = 0.25f + 0.75f * h
             // Slow variation of the water itself, so no two minutes are alike.
             val drift = 1f + 0.10f * SmoothNoise.fractal(lampSeed[i], tS, 0.04f, 2)
             var beam = 0f
-            var lvl = (FLOOR_LEVEL + (SURFACE_LEVEL - FLOOR_LEVEL) * h + CAUSTIC_DEPTH * mesh * reach) * drift
+            // Intensity is how much the caustics move the light, not how bright the water is.
+            var lvl = (FLOOR_LEVEL + (SURFACE_LEVEL - FLOOR_LEVEL) * h) * drift
 
             var k = 0
             while (k < n) {
@@ -202,7 +197,10 @@ class UnderwaterScript : AmbienceScript {
                 }
             }
             raw[i] = lvl
-            sun[i] = beam
+            // Caustics and rays ride on top of the water, after the coupling below, or the
+            // coupling would average the shimmer into one colour.
+            sun[i] = beam + rays(tS, i, id, h, intensity)
+            caustic[i] = causticAt(t, p.x, p.y, intensity) * reach
         }
 
         // Water spreads light. Without the coupling pass this reads as lamps, not depth.
@@ -218,12 +216,47 @@ class UnderwaterScript : AmbienceScript {
             val c = mix(DEEP, SHALLOW, room.heightOf(id))
             val v = (smooth[i] * gain).coerceIn(0f, 1f)
             val s = sun[i] * gain
+            val k = caustic[i] * gain
             out[id] = Rgb(
-                (c.first * v + SUN.first * s).coerceIn(0f, 1f),
-                (c.second * v + SUN.second * s).coerceIn(0f, 1f),
-                (c.third * v + SUN.third * s).coerceIn(0f, 1f),
+                (c.first * v + SUN.first * s + CAUSTIC.first * k).coerceIn(0f, 1f),
+                (c.second * v + SUN.second * s + CAUSTIC.second * k).coerceIn(0f, 1f),
+                (c.third * v + SUN.third * s + CAUSTIC.third * k).coerceIn(0f, 1f),
             )
         }
+    }
+
+    /**
+     * The caustic net at a point: three wavefronts at different angles and rates, so it
+     * never repeats, sharpened so most of it is dim and the crossings are bright. About
+     * 0.3 to 0.5 cycles a second at full intensity, a quarter as fast at the bottom.
+     */
+    private fun causticAt(t: Float, x: Float, y: Float, intensity: Float): Float {
+        val speed = 0.25f + 0.75f * intensity
+        val tau = 2f * PI.toFloat()
+        // About one ripple across the room, so neighbouring lamps share a patch of light
+        // and the net is seen travelling across the room rather than as scattered sparkle.
+        val a = sin(tau * (x * 0.9f + y * 0.4f - t * 0.35f * speed))
+        val b = sin(tau * (x * 0.35f - y * 1.0f - t * 0.47f * speed) + 1.3f)
+        val c = sin(tau * (x * 0.6f + y * 0.7f + t * 0.29f * speed) + 2.1f)
+        val net = ((a + b + c) / 3f * 0.5f + 0.5f).coerceIn(0f, 1f)
+        return CAUSTIC_DEPTH * (0.3f + 0.7f * intensity) * net * net * net * 2.2f
+    }
+
+    /**
+     * The standing sun rays at [id]: [RAYS] shafts spread along the room, each swaying
+     * slowly about its place and flickering as waves pass over the surface.
+     */
+    private fun rays(tS: Double, i: Int, id: Int, h: Float, intensity: Float): Float {
+        val axis = room.axisPos[id] ?: 0.5f
+        var sum = 0f
+        for (r in 0 until RAYS) {
+            val home = (r + 0.5f) / RAYS
+            val sway = 0.14f * sin(2f * PI.toFloat() * (tS * (0.05 + 0.02 * r)).toFloat() + r * 2.4f)
+            val d = (axis - home - sway) / RAY_WIDTH
+            val flicker = 0.55f + 0.45f * SmoothNoise.fractal(RAY_SEED + r * 31, tS, 0.5f + 0.6f * intensity, 3)
+            sum += exp(-d * d) * flicker
+        }
+        return RAY_LEVEL * (0.35f + 0.65f * intensity) * sum * (0.3f + 0.7f * h)
     }
 
     /**
@@ -319,7 +352,11 @@ class UnderwaterScript : AmbienceScript {
          */
         const val FLOOR_LEVEL = 0.10f
         const val SURFACE_LEVEL = 0.36f
-        const val CAUSTIC_DEPTH = 0.16f
+        const val CAUSTIC_DEPTH = 0.42f
+        const val RAYS = 3
+        const val RAY_WIDTH = 0.16f
+        const val RAY_LEVEL = 0.30f
+        const val RAY_SEED = 0x5A_7E
         const val SWELL_DEPTH = 0.12f
         const val BEAM_LEVEL = 0.22f
         const val BEAM_WIDTH = 0.18f

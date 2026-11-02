@@ -104,8 +104,10 @@ class ThunderstormScript(
      * script asks for it. The burst fall (20 a second) is what lets the dark gap between
      * two strokes actually be dark.
      */
+    override val flashy = true
+
     override val comfort = ComfortProfile(
-        risePerS = 0.80f, fallPerS = 0.50f, roomSwingPerS = 0.50f,
+        risePerS = 1.2f, fallPerS = 1.0f, roomSwingPerS = 0.50f,
         burstRisePerS = 40f, burstFallPerS = 20f, burstRoomSwingPerS = 80f,
     )
 
@@ -399,14 +401,16 @@ class ThunderstormScript(
         val rainNow = rainFollow.step(haveBed || r == null, if (haveBed) bedNow.rain else gustAt(tS), dt)
         val rumbleNow = rumbleFollow.step(haveBed || r == null, if (haveBed) bedNow.rumble else 0f, dt)
         val rainMod = 0.85f + 0.30f * rainNow
-        val base = (BASE_MIN + (BASE_MAX - BASE_MIN) * (0.7f + 0.3f * intensity)) * rainMod
+        val base = BASE * rainMod
         var i = 0
         while (i < ids.size) {
             val axis = room.axisPos[ids[i]] ?: 0.5f
             // The patch: noise sampled at a point that slides along the axis with time.
             val patch = 0.5f + 0.5f * SmoothNoise.value(cloudSeed, tS * CLOUD_SPEED - axis * CLOUD_SPAN)
             val own = 0.5f + 0.5f * SmoothNoise.fractal(lampSeed[i], tS, 0.03f, 2)
-            val v = base * (0.45f + 0.55f * (0.6f * patch + 0.4f * own))
+            // Rain sheeting past the glass: a shimmer over the sky, livelier with intensity.
+            val sheet = 1f + 0.55f * (0.25f + 0.75f * intensity) * SmoothNoise.fractal(lampSeed[i] + 11, tS, 0.7f + 0.9f * intensity, 3)
+            val v = base * (0.45f + 0.55f * (0.6f * patch + 0.4f * own)) * sheet
             acc[i * 3] = rain.first * v
             acc[i * 3 + 1] = rain.second * v
             acc[i * 3 + 2] = rain.third * v
@@ -769,9 +773,8 @@ class ThunderstormScript(
         const val NEAR_PEAK = 0.95f
         const val FAR_PEAK = 0.30f
 
-        /** The dim base: perceived brightness of the rain light, at intensity 0 and 1. */
-        const val BASE_MIN = 0.17f
-        const val BASE_MAX = 0.25f
+        /** The dim base: perceived brightness of the rain light. Intensity is the storm, not this. */
+        const val BASE = 0.25f
 
         /** How fast cloud moves along the room's axis, and how many cloud cells span it. */
         const val CLOUD_SPEED = 0.025
