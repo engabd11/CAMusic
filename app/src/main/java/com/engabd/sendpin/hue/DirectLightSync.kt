@@ -2576,6 +2576,11 @@ class DirectLightSync(
             // reads the field.
             gameField = GameLightField()
             gameMode = true
+            // The chart is transcribed from the scan's onset grid; an older scan has
+            // none, so this one track is re-read. Adoption rules are unchanged, so the
+            // better chart arrives from the next play of it.
+            val track = currentTrack
+            if (track != null && activeScan?.onsets == null) scans?.refreshIfOutdated(track)
         } else {
             gameMode = false
             gameField = null

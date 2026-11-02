@@ -262,6 +262,16 @@ class TrackScanStore(private val dir: File) {
             out.writeFloat(loudness.integratedLufs)
             out.writeFloat(loudness.truePeakDb)
         }
+
+        // -- Format 7 tail ------------------------------------------------
+        // Same append-only reasoning again. A format-6 file predates the onset
+        // grid, and the rhythm game charts a scan without one as it always did.
+        val onsets = scan.onsets
+        out.writeBoolean(onsets != null)
+        if (onsets != null) {
+            out.writeInt(onsets.data.size)
+            out.write(onsets.data)
+        }
     }
 
     /** Tuning in signed half-cents, clamped to what one byte can carry. */
@@ -412,6 +422,19 @@ class TrackScanStore(private val dir: File) {
                 null
             }
 
+            // A format-6 file has no onset grid. Read defensively like the tails above.
+            val onsets = try {
+                if (format >= 7 && input.readBoolean()) {
+                    val n = input.readIntBounded(MAX_BEATS * OnsetGrid.SLOTS_PER_BEAT * OnsetGrid.CHANNELS)
+                    val bytes = ByteArray(n).also { input.readFully(it) }
+                    if (n % OnsetGrid.CHANNELS == 0) OnsetGrid(bytes) else null
+                } else {
+                    null
+                }
+            } catch (e: IOException) {
+                null
+            }
+
             TrackScan(
                 durationS = durationS,
                 bpm = bpm,
@@ -429,6 +452,7 @@ class TrackScanStore(private val dir: File) {
                 tuningCents = tuningCents,
                 stems = stems,
                 loudness = loudness,
+                onsets = onsets,
             )
         } catch (e: EOFException) {
             null  // truncated: treat as absent and rescan
@@ -457,8 +481,8 @@ class TrackScanStore(private val dir: File) {
         /** "CAMS" — enough to reject a file that is not one of ours at all. */
         private const val MAGIC = 0x43414D53
 
-        private const val FORMAT = 6
-        private val COMPATIBLE_FORMATS = setOf(1, 2, 3, 4, 5, 6)
+        private const val FORMAT = 7
+        private val COMPATIBLE_FORMATS = setOf(1, 2, 3, 4, 5, 6, 7)
 
         private const val SUFFIX = ".scan"
 

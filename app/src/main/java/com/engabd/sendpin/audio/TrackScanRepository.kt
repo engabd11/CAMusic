@@ -249,6 +249,20 @@ class TrackScanRepository(
         currentJob?.cancel(CancellationException("skipped"))
     }
 
+    /**
+     * As [request], but also re-read a stored scan a newer analyser would improve,
+     * keeping the old one until the new one replaces it. For the rhythm game, whose
+     * chart needs [TrackScan.onsets] that pre-version-6 scans do not have.
+     */
+    fun refreshIfOutdated(track: LocalTrack) {
+        scope.launch {
+            if (!settings.lightSyncPrescan.first()) return@launch
+            val key = keyFor(track)
+            if (givenUpOn(key)) return@launch
+            enqueue(ScanRequest(track, key, urgent = true, rescan = false, rescanOutdated = true))
+        }
+    }
+
     /** Throw away [track]'s scan and analyse it again from scratch. */
     fun rescan(track: LocalTrack) {
         scope.launch {

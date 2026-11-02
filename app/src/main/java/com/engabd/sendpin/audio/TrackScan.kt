@@ -108,6 +108,12 @@ data class TrackScan(
      * gate. ReplayGain levels an untagged track from it; see [ReplayGain.resolve].
      */
     val loudness: MeasuredLoudness? = null,
+    /**
+     * What each sixteenth of the track did, band by band — the rhythm game's chart
+     * is transcribed from it. Null on a scan from before it existed (analyser version
+     * &lt; 6) or without a usable grid; the game then charts from [accents] as before.
+     */
+    val onsets: OnsetGrid? = null,
 ) {
     /** The scan covers the whole track, rather than stopping at the analysis cap. */
     val complete: Boolean get() = analysedS >= durationS - 1f
@@ -236,7 +242,8 @@ data class TrackScan(
             melbankRef.contentEquals(other.melbankRef) &&
             analyserVersion == other.analyserVersion && analysedS == other.analysedS &&
             key == other.key && beatsPerBar == other.beatsPerBar &&
-            tuningCents == other.tuningCents && stems == other.stems
+            tuningCents == other.tuningCents && stems == other.stems &&
+            onsets == other.onsets
     }
 
     override fun hashCode(): Int {
@@ -255,6 +262,7 @@ data class TrackScan(
         result = 31 * result + beatsPerBar
         result = 31 * result + tuningCents.hashCode()
         result = 31 * result + (stems?.hashCode() ?: 0)
+        result = 31 * result + (onsets?.hashCode() ?: 0)
         return result
     }
 
@@ -293,8 +301,11 @@ data class TrackScan(
          * 5 - adds [loudness], measured to BS.1770-4 in the same decode so ReplayGain
          * can level files that carry no tags. A version-4 scan has no measurement;
          * the re-read offer is what fills it in.
+         *
+         * 6 - adds [onsets], the per-sixteenth band onsets and sustains the rhythm
+         * game transcribes its chart from. A version-5 scan charts as it always did.
          */
-        const val ANALYSER_VERSION = 5
+        const val ANALYSER_VERSION = 6
 
         /**
          * Below this the grid is not served. Matches syncoV2's
@@ -350,6 +361,40 @@ data class ScanSection(
      */
     val label: Int = 0,
 )
+
+/**
+ * Per-sixteenth band onsets and sustains, the rhythm game's source material.
+ *
+ * Four slots to a beat, laid between the scan's refined beats, so slot `i` is
+ * sixteenth `i % 4` of beat `i / 4`. Each slot carries [CHANNELS] bytes, row-major:
+ * onset strength in the low, mid and high bands and in tonal (mid-dominant)
+ * content, then the sustained level of the low band and of the tonal mel range.
+ * Every channel is normalised to its own p95 over the track, so 1 means "as hard
+ * as this song hits there", not an absolute level.
+ */
+class OnsetGrid(val data: ByteArray) {
+    val slots: Int get() = data.size / CHANNELS
+
+    /** Channel [channel] at [slot], 0..1; 0 outside the grid. */
+    fun at(slot: Int, channel: Int): Float {
+        if (slot < 0 || slot >= slots) return 0f
+        return (data[slot * CHANNELS + channel].toInt() and 0xFF) / 255f
+    }
+
+    override fun equals(other: Any?): Boolean = other is OnsetGrid && data.contentEquals(other.data)
+    override fun hashCode(): Int = data.contentHashCode()
+
+    companion object {
+        const val SLOTS_PER_BEAT = 4
+        const val LOW = 0
+        const val MID = 1
+        const val HIGH = 2
+        const val TONE = 3
+        const val LOW_HOLD = 4
+        const val TONE_HOLD = 5
+        const val CHANNELS = 6
+    }
+}
 
 /**
  * Per-section mid/side stem energy — a mid-side decomposition (mid = L+R, isolating

@@ -379,6 +379,25 @@ class TrackAnalysisTest {
         assertNotNull(scan.intensity)
     }
 
+    @Test
+    fun `the onset grid puts the kicks on the beat and sees a held tone`() {
+        val sig = clicks(bpm = 120f, seconds = 40f)
+        // A steady 1.5 kHz tone from 20 s to 30 s: no attacks after its first, only level.
+        for (i in (20 * sr) until (30 * sr)) sig[i] += 0.3f * sin(2.0 * PI * 1500.0 * i / sr).toFloat()
+        val scan = (finishScan(analyse(sig)) as ScanResult.Ok).scan
+        val grid = assertNotNull(scan.onsets, "a usable grid should carry onsets")
+        assertEquals(scan.beats.size * OnsetGrid.SLOTS_PER_BEAT, grid.slots)
+
+        val onBeat = (0 until grid.slots).filter { it % 4 == 0 }.map { grid.at(it, OnsetGrid.LOW) }.average()
+        val offBeat = (0 until grid.slots).filter { it % 4 == 2 }.map { grid.at(it, OnsetGrid.LOW) }.average()
+        assertTrue(onBeat > offBeat * 3, "kicks should land on beat slots: on $onBeat off $offBeat")
+
+        fun slotAt(s: Float) = scan.beats.indexOfFirst { it >= s } * OnsetGrid.SLOTS_PER_BEAT
+        val held = (slotAt(22f) until slotAt(28f)).map { grid.at(it, OnsetGrid.TONE_HOLD) }.average()
+        val before = (slotAt(10f) until slotAt(16f)).map { grid.at(it, OnsetGrid.TONE_HOLD) }.average()
+        assertTrue(held > before + 0.3, "the held tone should read as sustain: held $held before $before")
+    }
+
     // ── Small pieces ───────────────────────────────────────────────────────
 
     @Test

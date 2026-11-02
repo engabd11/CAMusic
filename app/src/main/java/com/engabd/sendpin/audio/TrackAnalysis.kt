@@ -1561,8 +1561,59 @@ internal fun finishScan(
             tuningCents = ex.tuningCents,
             stems = stems,
             loudness = loudness,
+            onsets = if (gridOk) buildOnsetGrid(ex, beatTimes) else null,
         )
     )
+}
+
+/**
+ * What each sixteenth did, band by band — see [OnsetGrid].
+ *
+ * Slots are spaced evenly between neighbouring refined beats, so a tempo drift
+ * moves them with the beat rather than off it. Onsets take the max over ±1 frame:
+ * a slot is 30+ ms wide at most tempos and the flux peak rarely sits on its centre
+ * frame. High is what the broadband flux has left after bass and mid, the same
+ * split [OfflineExtractor.frame] already makes. Tone is mid flux the linear-domain
+ * gate called mid-dominant, which is the live detector's "guitar" rather than a
+ * kick's attack splash. The holds are levels, not flux: a sustained note is
+ * exactly the thing flux cannot see.
+ */
+internal fun buildOnsetGrid(ex: OfflineExtractor, beatTimes: FloatArray): OnsetGrid? {
+    val n = ex.frames
+    if (beatTimes.size < 2 || n == 0) return null
+    val spb = OnsetGrid.SLOTS_PER_BEAT
+    val slots = beatTimes.size * spb
+    val raw = Array(OnsetGrid.CHANNELS) { FloatArray(slots) }
+    val toneLo = MELBANK_BINS * 5 / 16
+    val toneHi = MELBANK_BINS * 12 / 16
+    for (s in 0 until slots) {
+        val b = s / spb
+        val gap = if (b + 1 < beatTimes.size) beatTimes[b + 1] - beatTimes[b] else beatTimes[b] - beatTimes[b - 1]
+        val t = beatTimes[b] + gap * (s % spb) / spb
+        val f = (t / FRAME_PERIOD).roundToInt().coerceIn(0, n - 1)
+        for (g in max(0, f - 1)..min(n - 1, f + 1)) {
+            val bass = ex.bassEnv[g]
+            val mid = ex.midEnv[g]
+            raw[OnsetGrid.LOW][s] = max(raw[OnsetGrid.LOW][s], bass)
+            raw[OnsetGrid.MID][s] = max(raw[OnsetGrid.MID][s], mid)
+            raw[OnsetGrid.HIGH][s] = max(raw[OnsetGrid.HIGH][s], ex.env[g] - bass - mid)
+            if (ex.midDominant[g]) raw[OnsetGrid.TONE][s] = max(raw[OnsetGrid.TONE][s], mid)
+        }
+        var low = 0f
+        for (band in 0 until ex.nBass) low += ex.bandsAt(f, band)
+        raw[OnsetGrid.LOW_HOLD][s] = low / max(1, ex.nBass)
+        var tone = 0f
+        for (bin in toneLo until toneHi) tone += ex.melAt(f, bin)
+        raw[OnsetGrid.TONE_HOLD][s] = tone / (toneHi - toneLo)
+    }
+    val data = ByteArray(slots * OnsetGrid.CHANNELS)
+    for (c in 0 until OnsetGrid.CHANNELS) {
+        val ref = percentile(DoubleArray(slots) { raw[c][it].toDouble() }, 95.0).toFloat().coerceAtLeast(1e-9f)
+        for (s in 0 until slots) {
+            data[s * OnsetGrid.CHANNELS + c] = (unitF(raw[c][s] / ref) * 255f + 0.5f).toInt().toByte()
+        }
+    }
+    return OnsetGrid(data)
 }
 
 /**
