@@ -206,7 +206,9 @@
 - [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
       which is what Jellyfin and Subsonic take
 
-**v0.11.1 to v0.17.4** (summaries moved here from the README):
+**v0.11.1 to v0.18.0** (summaries moved here from the README):
+
+**v0.18.0**: **Scenes fill the room, and pairing a Hue Bridge shows you what to do.** Ambience is now **Scenes**, out of experimental, with a picture for each one. Scenes were dim even at full brightness because the brightness was turned down twice on the way to the bulbs; they now reach full brightness. **Intensity** sets how lively a scene is and **Brightness** has its own slider that eases in. Underwater, fire, candles, aurora, rain, forest and golden hour all move more, and the fireworks are rebuilt from how real shells burn: a dark night, a white-hot pop that turns to one bright colour as it spreads across the room, then a slow burn-out, with the pop on the bang. Switching scenes no longer goes dark for a few seconds, and the controls sit in a panel at the bottom. **Pairing a Hue Bridge** now shows an animation of the bridge with a finger pressing its round button and a 30 second countdown. CAMusic keeps checking until the button is pressed, so you can tap the bridge in the app first and then walk over, and it tells you clearly when it worked or when to try again. Also: tapping download twice on the same song no longer downloads it twice, installing an update no longer stalls the screen while it is checked, and a settings backup with quoted true or false values imports correctly.
 
 **v0.17.4**: **Downloads has Favourites, and every library calls them Favourites.** The Downloads library now has the heart on its songs, albums, artists and playlists, and a **Favourites** category like the other libraries. Its favourites are kept on the phone, so they work with every server switched off, and a song that was already a favourite on its server arrives as one when it downloads. The **Starred** category is now **Favourites** in every library, with a heart for its icon, and the messages say favourites the same way everywhere.
 
