@@ -6,7 +6,7 @@
 # used twice (coroutines, media3, material3, Room) can no longer drift apart.
 
 [versions]
-agp = "9.5.0"
+agp = "9.5.1"
 kotlin = "2.4.21"
 ksp = "2.3.12"
 room = "2.8.5"
