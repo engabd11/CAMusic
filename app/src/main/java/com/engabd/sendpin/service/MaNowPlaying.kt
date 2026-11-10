@@ -385,11 +385,13 @@ class MaNowPlaying(private val app: Context) {
      * Not a plain id comparison since Music Assistant 2.10: the target is the
      * `universal_player` wrapper (`up…`) and [myPlayerId] is the protocol client it
      * renders through, so the two are never equal. See [MaPlayer.isSelfOrActiveOutput].
+     *
+     * Public for the library switch, which stops Music Assistant only when this is true.
      */
-    private fun targetIsThisPhone(): Boolean {
+    fun targetIsThisPhone(): Boolean {
         val id = targetId()
-        if (id == myPlayerId) return true
-        return _players.value.firstOrNull { it.playerId == id }?.let { isThisPhone(it) } == true
+        return _players.value.firstOrNull { it.playerId == id }?.let { isThisPhone(it) }
+            ?: isThisPhonePlayer(id, null, myPlayerId, null)
     }
 
     /**
@@ -406,8 +408,7 @@ class MaNowPlaying(private val app: Context) {
 
     private fun isThisPhone(p: MaPlayer): Boolean {
         p.activeOutputProtocol?.let { lastOutputProtocol[p.playerId] = it }
-        return p.isSelfOrActiveOutput(myPlayerId) ||
-            (p.activeOutputProtocol == null && lastOutputProtocol[p.playerId] == myPlayerId)
+        return isThisPhonePlayer(p.playerId, p, myPlayerId, lastOutputProtocol[p.playerId])
     }
 
     // --- refresh ----------------------------------------------------------
@@ -570,3 +571,15 @@ class MaNowPlaying(private val app: Context) {
         const val END_REPOLL_MIN_MS = 1_000L
     }
 }
+
+/**
+ * Is the player listed under [id] this phone? [player] is null when Music Assistant
+ * has not listed it, and [lastOutput] is the protocol client it last rendered through
+ * (see `MaNowPlaying.lastOutputProtocol`). A player that cannot be placed is not us.
+ *
+ * Pure so the rule a library switch stops by can be tested: switching library stops
+ * Music Assistant only when this is true, never a speaker elsewhere.
+ */
+internal fun isThisPhonePlayer(id: String, player: MaPlayer?, myPlayerId: String, lastOutput: String?): Boolean =
+    id == myPlayerId || player != null &&
+        (player.isSelfOrActiveOutput(myPlayerId) || (player.activeOutputProtocol == null && lastOutput == myPlayerId))

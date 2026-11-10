@@ -1243,7 +1243,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // at this phone's MA player. Opening the app to see what was playing killed
         // what was playing.
         localPlayer.stop()
-        stopMaPlayback()
+        // Only this phone's own MA player is changing over. A speaker elsewhere is not,
+        // and stopping it here paused the room every time the library was switched.
+        if (getApplication<SendpinApp>().maNowPlaying.targetIsThisPhone()) stopMaPlayback()
         applyBackend(b)
         viewModelScope.launch { settings.setBackend(if (b == Backend.SUBSONIC) "subsonic" else "ma") }
     }
