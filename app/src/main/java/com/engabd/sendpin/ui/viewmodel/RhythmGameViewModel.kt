@@ -296,7 +296,10 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         buildHit = 0
         currentTrackKey = runCatching { directLightSync.currentGameTrackKey() }.getOrNull()
         loadRecordsIfNeeded()
-        currentRecord = records[currentTrackKey]
+        // A best set before scan keys named the library is still this track's; the
+        // next finished run re-files it under the new key.
+        currentRecord = currentTrackKey?.let { records[it] }
+            ?: runCatching { directLightSync.legacyGameTrackKey() }.getOrNull()?.let { records[it] }
         runCatching { directLightSync.setGameMode(true) }
     }
 

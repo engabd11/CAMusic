@@ -2150,6 +2150,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             album = "",
             artUrl = track.image,
             streamUrl = sc.streamUrl(track.itemId),
+            // Named like every other Navidrome track, so its scan key matches the one
+            // the library and the sweep file it under.
+            scrobbleId = track.itemId,
+            scrobbleProvider = SubsonicClient.PROVIDER,
         )
     }
 

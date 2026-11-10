@@ -41,7 +41,7 @@ class LocalSonicIndex(
      */
     suspend fun similarTo(seed: MaItem, limit: Int = 20): List<MaSimilarTrack> {
         val indexed = index()
-        val seedKey = MusicSources.scanKey(seed)
+        val seedKey = MusicSources.legacyScanKey(seed)
         val target = indexed[seedKey]?.fingerprint ?: return emptyList()
         return indexed.asSequence()
             .filter { it.key != seedKey }
@@ -70,8 +70,10 @@ class LocalSonicIndex(
                     val page = source.tracks(offset = offset, limit = PAGE)
                     if (page.isEmpty()) break
                     for (track in page) {
-                        val key = MusicSources.scanKey(track)
-                        val scan = scanStore.load(key) ?: continue
+                        // Indexed by the item id, which a Downloads seed shares with its
+                        // library's copy; read by the full key the scan is filed under.
+                        val key = MusicSources.legacyScanKey(track)
+                        val scan = scanStore.load(MusicSources.scanKey(track), key) ?: continue
                         next[key] = Entry(track.toSimilar(), SonicFingerprint.from(scan))
                     }
                     offset += page.size

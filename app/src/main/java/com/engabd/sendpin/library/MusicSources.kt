@@ -437,11 +437,18 @@ object MusicSources {
      * library listing rather than the player.
      *
      * Deliberately the same shape as `TrackScanRepository.keyFor`, which sees the
-     * `LocalTrack` side of the same song: library id first, then the stream url,
-     * then the title. A key derived any other way would simply never match a
-     * stored scan.
+     * `LocalTrack` side of the same song: `"<provider>:<id>"` for a library this
+     * phone plays, else the item id, then the stream url, then the title. A key
+     * derived any other way would simply never match a stored scan. Not for a
+     * Downloads item, whose library only the download index knows.
      */
     fun scanKey(item: MaItem): String =
+        item.itemId.takeIf { it.isNotBlank() && item.provider in SOURCE_PROVIDERS }
+            ?.let { "${item.provider}:$it" }
+            ?: legacyScanKey(item)
+
+    /** [scanKey] as it was before it named the library; see `TrackScanRepository.legacyKeyFor`. */
+    fun legacyScanKey(item: MaItem): String =
         item.itemId.takeIf { it.isNotBlank() }
             ?: item.uri?.takeIf { it.isNotBlank() }
             ?: item.name

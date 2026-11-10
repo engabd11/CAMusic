@@ -189,18 +189,6 @@ private const val IDLE_FADE_IN_DURATION_S = 4f
 private val SILENCE = AnalysisFrame()
 
 /**
- * How far into a track a scan may arrive and still be adopted.
- *
- * One regime per track, decided once. A grid that appears mid-song replaces a
- * PLL that has by then found the beat itself, and the handover between two
- * clocks that agree on tempo but not quite on phase is a visible stumble — the
- * room skips. Better to stay causal for the rest of this play and be exact from
- * the first bar of the next one. syncoV2 draws the line in the same place
- * (`coordinator._MAP_COMMIT_WINDOW_S`) for the same reason.
- */
-private const val MAP_COMMIT_WINDOW_S = 6f
-
-/**
  * How far ahead a louder section counts as an approaching drop. Matches
  * syncoV2's `_PREDROP_WINDOW_S`.
  */
@@ -468,6 +456,9 @@ class DirectLightSync(
      */
     fun currentGameTrackKey(): String? = scanKeyOf(currentTrack)
 
+    /** The key a record set before scan keys named the library is filed under. */
+    fun legacyGameTrackKey(): String? = currentTrack?.let { TrackScanRepository.legacyKeyFor(it) }
+
     /** What shape the lamps are in, cached alongside [channels]. */
     private var roomTopology: RoomTopology = RoomTopology.CLUSTER
 
@@ -579,9 +570,25 @@ class DirectLightSync(
 
     /**
      * Whether this track's show is scheduled or causal. Null until decided; see
-     * [MAP_COMMIT_WINDOW_S] for why it is decided exactly once.
+     * [MapAdoption.COMMIT_WINDOW_S] for why it is decided exactly once per stretch.
      */
     @Volatile private var mapCommitted: Boolean? = null
+
+    /**
+     * The track position the current stretch of listening began at: the first
+     * positioned frame after a track change, a seek or a reset. See [MapAdoption.decide].
+     */
+    @Volatile private var mapStretchStartS: Float? = null
+
+    /** The last frame's track position, for spotting a gapless item boundary. Analysis thread only. */
+    private var lastTapPosS: Float? = null
+
+    /**
+     * The tap has crossed into the next queue item and the player has not said yet
+     * which track that is. The scan in hand is the previous track's, so it is kept
+     * out until [onTrackChanged] or [MapAdoption.BOUNDARY_HOLD_S].
+     */
+    @Volatile private var boundaryHold = false
 
     /**
      * Previous queried position, so a scheduled beat fires exactly once.
@@ -1215,13 +1222,34 @@ class DirectLightSync(
             // the light-show layers want "where in the track are we" whether
             // or not a scan exists for it.
             latestPositionS = pos
-            // Decided once per track, and only inside the window. Before it, a
-            // missing scan means "not arrived yet", not "there isn't one".
-            if (mapCommitted == null) {
-                if (scan != null && pos <= MAP_COMMIT_WINDOW_S) mapCommitted = true
-                else if (pos > MAP_COMMIT_WINDOW_S) mapCommitted = false
+            // The tap runs ahead of the player, so at a gapless transition it is in
+            // the next track a beat before [onTrackChanged] hears about it. Until
+            // then the scan in hand is the last track's, and its grid read at this
+            // track's position is confidently wrong. Held back, and the regime is
+            // decided afresh for the track that has arrived.
+            if (MapAdoption.crossedBoundary(lastTapPosS, pos)) {
+                boundaryHold = true
+                mapCommitted = null
+                mapStretchStartS = null
+                mapPrevPos = null
+                mapSection = null
+                scannedSignal = null
             }
-            if (mapCommitted == true && scan != null) {
+            lastTapPosS = pos
+            // No change of track came: the same one started again (repeat one).
+            if (boundaryHold && pos >= MapAdoption.BOUNDARY_HOLD_S) boundaryHold = false
+            // Decided once per stretch, and only inside the window. Before it, a
+            // missing scan means "not arrived yet", not "there isn't one".
+            if (!boundaryHold) {
+                val start = mapStretchStartS ?: pos.also { mapStretchStartS = it }
+                mapCommitted = MapAdoption.decide(
+                    mapCommitted, scan != null, pos, start,
+                    // The local player's position is its own media time, exact
+                    // from the first frame. Spotify's is a session clock.
+                    positionTrusted = activeSource.value.feed == LightSyncFeed.LOCAL_PCM,
+                )
+            }
+            if (mapCommitted == true && scan != null && !boundaryHold) {
                 scan.gridAt(pos, mapPrevPos)?.let { grid = it }
                 arc = arc?.let { enrichWithScan(it, scan, pos) }
                 scannedSignal = scan.intensitySignalAt(pos)
@@ -1397,6 +1425,12 @@ class DirectLightSync(
         // seeking does not make it less true. Only the per-query state goes.
         mapPrevPos = null
         mapSection = null
+        lastTapPosS = null
+        mapStretchStartS = null
+        // A "no" was about not unseating a PLL that had found the beat, and that PLL
+        // has just been reset; a scan that arrived since gets this stretch. A "yes"
+        // stays: the grid describes the whole track.
+        if (mapCommitted == false) mapCommitted = null
         // For the same reason the structure tracker resets: a layer's smoothed
         // temperature, decaying flash or accumulated phase describes the audio
         // that was playing, and a new track is not that audio. Each layer
@@ -1602,13 +1636,15 @@ class DirectLightSync(
                     LayerContext(
                         frame = frame,
                         structure = latestStructure,
-                        scan = activeScan,
+                        // Not across an item boundary the player has not caught up with:
+                        // the position is already the next track's.
+                        scan = activeScan.takeUnless { boundaryHold },
                         positions = roomPositions,
                         topology = roomTopology,
                         trackPositionS = latestPositionS,
                         dt = dt,
                         brightness = layerBrightness,
-                        stems = if (stemSeparationEnabled) currentSectionStems(activeScan, latestPositionS) else null,
+                        stems = if (stemSeparationEnabled && !boundaryHold) currentSectionStems(activeScan, latestPositionS) else null,
                     ),
                 )
             }
@@ -2615,8 +2651,11 @@ class DirectLightSync(
         activeProfile = null
         scannedSignal = null
         mapCommitted = null
+        mapStretchStartS = null
         mapPrevPos = null
         mapSection = null
+        // The track the tap crossed into is now named; its scan is adopted below.
+        boundaryHold = false
 
         val repo = scans ?: return
         val next = track ?: return

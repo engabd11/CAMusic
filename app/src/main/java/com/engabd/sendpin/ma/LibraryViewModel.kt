@@ -3382,13 +3382,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * touched this session. (That constraint is why Harmonic DJ mode's own
      * [djBonus] still uses `peek`; it really is called per comparison.)
      *
-     * Keyed by `itemId` for the same reason [djBonus] is: that is what
-     * `TrackScanRepository.keyFor` resolves a local track to.
+     * Keyed by `itemId` for the callers; looked up through the very `LocalTrack` the
+     * item would play as, so the scan key cannot drift from the one it was filed under.
      */
     private suspend fun scansFor(items: List<MaItem>): Map<String, TrackScan> =
         withContext(Dispatchers.IO) {
             items.mapNotNull { item ->
-                trackScans.store.load(item.itemId)?.let { item.itemId to it }
+                trackScans.cached(downloadManager.toLocalTrack(item))?.let { item.itemId to it }
             }.toMap()
         }
 
@@ -3625,13 +3625,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * `store.peek`, not the suspending `cached()`: this is a sort selector, called
      * on every comparison, so a disk read is not an option. A candidate with no
      * memory-resident scan contributes nothing and keeps its genre/artist ranking.
-     * Keyed by `itemId` because that is what [TrackScanRepository.keyFor] resolves
-     * a downloaded track to — `DownloadsIndex.item` sets `itemId` from the
-     * download's id and `toLocalTrack` carries the same value into `LocalTrack.id`,
-     * which `keyFor` prefers over every other field.
+     * Looked up through the `LocalTrack` the candidate would play as, for the reason
+     * [scansFor] is: the scan key names the library as well as the id.
      */
     private fun djBonus(seedScan: TrackScan): (MaItem) -> Int = { item ->
-        val candidateScan = trackScans.store.peek(item.itemId)
+        val candidateScan = trackScans.peek(downloadManager.toLocalTrack(item))
         val seedKey = seedScan.key
         val candidateKey = candidateScan?.key
         var s = 0

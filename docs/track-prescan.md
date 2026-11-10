@@ -93,11 +93,23 @@ silently dead while appearing to work.
 
 ### Adoption
 
-One regime per track, decided once, inside the first `MAP_COMMIT_WINDOW_S` = 6 s
+One regime per track, decided once, inside the first `MapAdoption.COMMIT_WINDOW_S` = 6 s
 (syncoV2's `coordinator._MAP_COMMIT_WINDOW_S`). A grid arriving mid-song would
 replace a PLL that has by then found the beat itself, and the handover between
 two clocks that agree on tempo but not quite on phase reads as the room
 stumbling. A late scan is used on the *next* play instead.
+
+The window counts from where a stretch of listening begins, not from 0:00, when the
+position is the local player's own media time. A scan already cached when Light
+Sync is switched on mid-song, after a resume or after a seek replaces no PLL at
+all, so it is adopted at whatever position the first frame is. Spotify's position
+is a session clock, so its window still counts from the top. A seek resets the PLL,
+so a "no" is decided again after one. The rules are `hue/MapAdoption.kt`.
+
+At a gapless transition the tap runs into the next track ~200 ms before the player
+says so. The position jumping back without a flush marks the crossing; the scan in
+hand (the previous track's) is held out until the player names the new track, or
+for 2 s if it never does (repeat one).
 
 This is why the next queue item is prefetched: without it a queue is only exact
 from the second *listen*; with it, from the second song.
@@ -175,9 +187,20 @@ Scans live in `filesDir/light-sync-scans`, not `cacheDir`: the OS may clear a
 cache directory, and quietly discarding a library someone spent an hour and a
 gigabyte of transfer building is not a reasonable thing to do behind their back.
 
-A track that cannot be analysed is remembered for the session — silence and
-too-little-audio permanently, a failed decode or fetch after three tries — so it
-is not re-downloaded on every play for a result already known.
+A track that cannot be analysed is given up on — silence and too-little-audio at
+once, a failed decode or fetch after three tries — so it is not re-downloaded on
+every play for a result already known. The verdict is kept in
+`filesDir/light-sync-scan-failures` for 7 days, across restarts; Re-analyse this
+track, Retry and Delete analyses clear it.
+
+Every request ends where its caller can see it: on `completed` when a scan is
+stored, on `unavailable` when there will not be one (pre-scan off, given up on,
+nothing to fetch, a failed decode or save, or parked for Wi-Fi). The remote-speaker
+show moves off "analysing" on the second.
+
+Scans are keyed `"<library>:<id>"` (`TrackScanRepository.keyFor`), since an id is
+only unique within one server. A scan under the old bare id is renamed to the new
+key the first time it is read, so nothing is analysed again for the change.
 
 ## Verification
 

@@ -423,4 +423,67 @@ class RemoteTrackIdentityTest {
             RemoteTrackIdentity.keyOf("  IDIOTEQUE  ", "radiohead", 309_400),
         )
     }
+
+    // ── Tolerant, but not loose ────────────────────────────────────────────
+
+    private fun matches(titleA: String, artistA: String, msA: Long, titleB: String, artistB: String, msB: Long) =
+        RemoteTrackIdentity.sameTrack(titleA, artistA, msA, titleB, artistB, msB)
+
+    @Test
+    fun `an artist list written with an ampersand or a comma is the same list`() {
+        assertTrue(matches("Under Pressure", "Queen & David Bowie", 248_000, "Under Pressure", "Queen, David Bowie", 248_000))
+        assertTrue(matches("Under Pressure", "David Bowie & Queen", 248_000, "Under Pressure", "Queen and David Bowie", 249_000))
+    }
+
+    @Test
+    fun `a featured artist on one side only still matches`() {
+        assertTrue(matches("Stan", "Eminem feat. Dido", 404_000, "Stan", "Eminem", 404_000))
+        assertTrue(matches("Stan (feat. Dido)", "Eminem", 404_000, "Stan", "Eminem, Dido", 405_000))
+        assertTrue(matches("Get Lucky", "Daft Punk ft. Pharrell Williams", 369_000, "Get Lucky", "Daft Punk", 368_000))
+    }
+
+    @Test
+    fun `well-known edition suffixes are dropped, bracketed or after a dash`() {
+        assertTrue(matches("Here Comes the Sun (Remastered 2011)", "The Beatles", 185_000, "Here Comes the Sun", "The Beatles", 186_000))
+        assertTrue(matches("Here Comes the Sun - Remastered 2011", "The Beatles", 185_000, "Here Comes the Sun", "The Beatles", 186_000))
+        assertTrue(matches("Wonderwall - Single Version", "Oasis", 258_000, "Wonderwall", "Oasis", 259_000))
+    }
+
+    @Test
+    fun `a dash that is part of the title is kept`() {
+        assertEquals("sgt pepper s lonely hearts club band reprise", RemoteTrackIdentity.normalise("Sgt. Pepper's Lonely Hearts Club Band - Reprise"))
+    }
+
+    @Test
+    fun `the same title by an artist in common but a different length is a different song`() {
+        assertFalse(matches("Intro", "The xx", 128_000, "Intro", "The xx & Someone", 140_000))
+        assertFalse(matches("Hurt", "Johnny Cash", 218_000, "Hurt", "Nine Inch Nails", 218_000))
+        // Just outside the tolerance.
+        assertFalse(matches("Song", "A", 200_000, "Song", "A", 203_100))
+    }
+
+    @Test
+    fun `with no length to check, the credits must agree in full`() {
+        assertFalse(matches("Under Pressure", "Queen", 0, "Under Pressure", "Queen & David Bowie", 248_000))
+        assertTrue(matches("Under Pressure", "Queen & David Bowie", 0, "Under Pressure", "David Bowie, Queen", 248_000))
+    }
+
+    @Test
+    fun `of several matches the closest in length wins`() {
+        val hits = listOf(
+            Triple("Song (Radio Edit)", "A", 201_500L),
+            Triple("Song", "B", 200_000L),
+            Triple("Song", "A", 200_400L),
+        )
+        val best = RemoteTrackIdentity.closest("Song", "A", 200_000L, hits) { it }
+        assertEquals(200_400L, best?.third)
+    }
+
+    @Test
+    fun `a search falls back to the bare title`() {
+        assertEquals(
+            listOf("Here Comes the Sun - Remastered 2011 The Beatles", "here comes the sun"),
+            RemoteTrackIdentity.searchQueries("Here Comes the Sun - Remastered 2011", "The Beatles"),
+        )
+    }
 }

@@ -78,9 +78,22 @@ class TrackScanRepository(
      * Track keys as their scans land. `DirectLightSync` listens so a scan that
      * finishes while its track is still in the adoption window is picked up
      * rather than waiting for the next play.
+     *
+     * Sent with `emit`, not `tryEmit`: once the buffer is full `tryEmit` drops the
+     * key, and a dropped key is a show that never learns its scan arrived. The
+     * worker waiting on a slow collector costs nothing anyone can see.
      */
     private val _completed = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val completed: SharedFlow<String> = _completed.asSharedFlow()
+
+    /**
+     * Track keys whose request ended without a scan: pre-scan is off, the track was
+     * given up on, there was nothing to fetch, the decode or the save failed, or it
+     * is parked until Wi-Fi. Every request ends on this or on [completed], so a
+     * caller showing "analysing" has something to stop on.
+     */
+    private val _unavailable = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val unavailable: SharedFlow<String> = _unavailable.asSharedFlow()
 
     /**
      * Requests waiting for the worker. Unbounded, because dropping a request
@@ -113,6 +126,9 @@ class TrackScanRepository(
     /** Keys already queued, so a track played twice isn't scanned twice. */
     private val queued = HashSet<String>()
 
+    /** The [queued] keys that already have a copy on the urgent channel. See [enqueue]. */
+    private val queuedUrgent = HashSet<String>()
+
     /**
      * Keys that have failed, and how often.
      *
@@ -121,16 +137,17 @@ class TrackScanRepository(
      * re-decoded on *every* play, forever. On a streamed library that is a
      * download each time, for a result already known.
      *
-     * In memory only, so a restart tries again: a decode that failed because the
-     * server was busy, or the phone was on a bad connection, deserves another
-     * chance eventually, and an app launch is a reasonable "eventually". A
-     * permanent verdict — silence, or too little audio — is remembered outright,
+     * The attempt count is in memory; a track given up on is also written to
+     * [failureLog], so the next session does not fetch it again for a week. A
+     * permanent verdict — silence, or too little audio — is given up on outright,
      * since no amount of retrying will change it.
      */
     private val failures = HashMap<String, Int>()
 
+    private val failureLog = ScanFailureLog(File(context.filesDir, FAILURE_LOG))
+
     private fun givenUpOn(key: String): Boolean =
-        synchronized(failures) { (failures[key] ?: 0) >= MAX_ATTEMPTS }
+        synchronized(failures) { (failures[key] ?: 0) >= MAX_ATTEMPTS } || failureLog.givenUp(key)
 
     private val http: OkHttpClient by lazy { Http.transfer() }
 
@@ -198,6 +215,7 @@ class TrackScanRepository(
                 .also { list -> list.forEach { failedRequests.remove(it.key) } }
         }
         synchronized(failures) { retryable.forEach { failures.remove(it.key) } }
+        retryable.forEach { failureLog.forget(it.key) }
         _progress.update { note ->
             note.copy(
                 failed = (note.failed - retryable.size).coerceAtLeast(0),
@@ -215,7 +233,7 @@ class TrackScanRepository(
      * memory yet. Suspending, so it is never called from the render loop.
      */
     suspend fun cached(track: LocalTrack): TrackScan? = withContext(Dispatchers.IO) {
-        store.load(keyFor(track))
+        store.load(keyFor(track), legacyKeyFor(track))
     }
 
     /** The scan for [track] if it is already in memory. Safe from any thread. */
@@ -225,14 +243,19 @@ class TrackScanRepository(
      * Ask for [track] to be scanned if it has not been already.
      *
      * [urgent] marks the song that is playing, which goes to the front. Returns
-     * without waiting; the result arrives on [completed].
+     * without waiting; the result arrives on [completed], or on [unavailable] when
+     * there will not be one.
      */
     fun request(track: LocalTrack, urgent: Boolean = false) {
         scope.launch {
-            if (!settings.lightSyncPrescan.first()) return@launch
             val key = keyFor(track)
-            if (store.has(key) || givenUpOn(key)) return@launch
-            enqueue(ScanRequest(track, key, urgent, rescan = false))
+            val admission = admit(
+                prescanOn = settings.lightSyncPrescan.first(),
+                scanned = store.has(key, legacyKeyFor(track)),
+                givenUp = givenUpOn(key),
+            )
+            if (admission == Outcome.RETRY) enqueue(ScanRequest(track, key, urgent, rescan = false))
+            else announce(key, admission)
         }
     }
 
@@ -269,13 +292,21 @@ class TrackScanRepository(
             val key = keyFor(track)
             store.delete(key)
             synchronized(failures) { failures.remove(key) }
+            failureLog.forget(key)
             enqueue(ScanRequest(track, key, urgent = true, rescan = true))
         }
     }
 
     private suspend fun enqueue(request: ScanRequest) {
         synchronized(queued) {
-            if (!queued.add(request.key)) return
+            // A track already waiting is not queued twice, unless it is waiting behind a
+            // library sweep and has just started playing. Prefetched as the *next* track
+            // it sat in the ordinary queue, and the urgent request when it began was
+            // dropped as a duplicate, so the song playing waited for the sweep. The
+            // urgent copy runs first; the stale one finds the scan stored and stops.
+            val fresh = queued.add(request.key)
+            if (!fresh && !(request.urgent && queuedUrgent.add(request.key))) return
+            if (fresh && request.urgent) queuedUrgent.add(request.key)
         }
         _progress.update { it.copy(pending = it.pending + 1) }
         if (request.urgent) urgent.send(request) else queue.send(request)
@@ -285,7 +316,12 @@ class TrackScanRepository(
 
     fun delete(track: LocalTrack) = store.delete(keyFor(track))
 
-    suspend fun deleteAll(): Int = withContext(Dispatchers.IO) { store.deleteAll() }
+    suspend fun deleteAll(): Int = withContext(Dispatchers.IO) {
+        // A fresh start for the failures too: deleting every analysis is the one
+        // place someone asks for the whole library to be read again.
+        failureLog.forgetAll()
+        store.deleteAll()
+    }
 
     suspend fun usage(): Pair<Int, Long> = withContext(Dispatchers.IO) { store.usage() }
 
@@ -339,7 +375,7 @@ class TrackScanRepository(
             // per track in [run], where the file is being opened anyway — deciding it
             // here would read every scan on disk before the first one was analysed.
             val wanted = tracks.filterNot {
-                (!refreshOutdated && store.has(keyFor(it))) || givenUpOn(keyFor(it))
+                (!refreshOutdated && store.has(keyFor(it), legacyKeyFor(it))) || givenUpOn(keyFor(it))
             }
             _progress.update { it.copy(sweepTotal = wanted.size, error = null) }
             for (track in wanted) {
@@ -396,7 +432,9 @@ class TrackScanRepository(
                     queue.onReceive { it }
                 }
             }
-            var outcome = Outcome.DONE
+            // NONE unless the run says otherwise, so a worker exception still ends the
+            // request where its caller can see it.
+            var outcome = Outcome.NONE
             try {
                 // Run as a child so a skip cancels this request and nothing else. If
                 // the child is cancelled, `await` rethrows its cancellation — which is
@@ -411,7 +449,7 @@ class TrackScanRepository(
                         // two apart by asking whether *we* are still meant to run.
                         ensureActive()
                         noteSkipped(request)
-                        Outcome.DONE
+                        Outcome.NONE
                     } finally {
                         currentJob = null
                     }
@@ -423,6 +461,7 @@ class TrackScanRepository(
             } finally {
                 val stillQueued = synchronized(queued) {
                     queued.remove(request.key)
+                    queuedUrgent.remove(request.key)
                     queued.size
                 }
                 // Back of the queue rather than straight away, so a server having a bad
@@ -432,7 +471,7 @@ class TrackScanRepository(
                 _progress.update {
                     // A parked track has not been swept — it is waiting. Counting it as
                     // done is what let a sweep report completion over an empty result.
-                    val done = if (request.fromSweep && outcome == Outcome.DONE) {
+                    val done = if (request.fromSweep && (outcome == Outcome.SAVED || outcome == Outcome.NONE)) {
                         it.sweepDone + 1
                     } else it.sweepDone
                     val left = it.sweepTotal - done - it.parked
@@ -445,14 +484,17 @@ class TrackScanRepository(
                     )
                 }
             }
+            announce(request.key, outcome)
         }
     }
 
-    /** What became of one request, which is not always "it ran". */
-    private enum class Outcome {
-        DONE, PARKED,
-        /** The fetch came up short; the request goes back on the queue for another go. */
-        RETRY,
+    /** Tell whoever asked for [key] how its request ended, if it has. */
+    private suspend fun announce(key: String, outcome: Outcome) {
+        when (outcome.landed) {
+            true -> _completed.emit(key)
+            false -> _unavailable.emit(key)
+            null -> Unit
+        }
     }
 
     private suspend fun run(request: ScanRequest): Outcome {
@@ -460,17 +502,18 @@ class TrackScanRepository(
             // `has` rather than `load` for the ordinary case: the common answer is "yes,
             // and nothing else needs to be known", and loading it would read a file per
             // track for nothing. Only a refresh has to look at what is in there.
+            val legacy = legacyKeyFor(request.track)
             if (request.rescanOutdated) {
-                val existing = withContext(Dispatchers.IO) { store.load(request.key) }
-                if (existing != null && !existing.outdated) return Outcome.DONE
-            } else if (store.has(request.key)) {
-                return Outcome.DONE
+                val existing = withContext(Dispatchers.IO) { store.load(request.key, legacy) }
+                if (existing != null && !existing.outdated) return Outcome.SAVED
+            } else if (store.has(request.key, legacy)) {
+                return Outcome.SAVED
             }
         }
         // Re-checked here, not only when enqueued, so switching the setting off
         // stops a sweep already in flight rather than letting it run to the end.
         // A rescan is exempt: it is something the user just asked for by hand.
-        if (!request.rescan && !settings.lightSyncPrescan.first()) return Outcome.DONE
+        if (!request.rescan && !settings.lightSyncPrescan.first()) return Outcome.NONE
 
         _progress.update { it.copy(current = request.track.title, currentFraction = null, error = null) }
 
@@ -482,7 +525,9 @@ class TrackScanRepository(
             path = local
         } else {
             val urls = analysisUrls(request.track)
-            if (urls.isEmpty()) return Outcome.DONE
+            // Nothing to read (an MPD queue entry, a track with no URL). Not noted as a
+            // failure, since no file was tried, but it does end the request.
+            if (urls.isEmpty()) return Outcome.NONE
             val onDevice = urls.all { it.startsWith("content:") }
             if (!onDevice && settings.lightSyncPrescanWifiOnly.first() && isMetered()) {
                 // Not a failure — the setting is being honoured. Held until the
@@ -492,7 +537,7 @@ class TrackScanRepository(
             }
             temp = urls.firstNotNullOfOrNull { fetch(it) } ?: run {
                 noteFailure(request, "could not fetch the audio", ScanFailure.DECODE)
-                return Outcome.DONE
+                return Outcome.NONE
             }
             path = temp.absolutePath
         }
@@ -525,8 +570,12 @@ class TrackScanRepository(
                     } else {
                         synchronized(failures) { failures.remove(request.key) }
                         synchronized(failedRequests) { failedRequests.remove(request.key) }
-                        store.save(request.key, scan)
-                        _completed.tryEmit(request.key)
+                        failureLog.forget(request.key)
+                        if (store.save(request.key, scan)) return Outcome.SAVED
+                        // Not counted against the track: a full disk says nothing about
+                        // the file, and the next play tries again.
+                        Log.w(TAG, "Could not save the scan for \"${request.track.title}\"")
+                        _progress.update { it.copy(error = "${request.track.title}, could not save the analysis") }
                     }
                 }
                 is ScanResult.Failed -> noteFailure(request, describe(result), result.reason)
@@ -534,7 +583,7 @@ class TrackScanRepository(
         } finally {
             temp?.delete()
         }
-        return Outcome.DONE
+        return Outcome.NONE
     }
 
     /**
@@ -587,9 +636,11 @@ class TrackScanRepository(
         // final. A failed decode or fetch might be the network having a bad
         // moment, so it gets a few goes before this track is left alone.
         val permanent = reason == ScanFailure.SILENT || reason == ScanFailure.TOO_SHORT
-        synchronized(failures) {
-            failures[request.key] = if (permanent) MAX_ATTEMPTS else (failures[request.key] ?: 0) + 1
+        val attempts = synchronized(failures) {
+            (if (permanent) MAX_ATTEMPTS else (failures[request.key] ?: 0) + 1)
+                .also { failures[request.key] = it }
         }
+        if (attempts >= MAX_ATTEMPTS) failureLog.record(request.key)
         val note = ScanFailureNote(request.track.title, why, retryable = !permanent)
         val notes = synchronized(failedRequests) {
             failedRequests[request.key] = request to note
@@ -699,6 +750,9 @@ class TrackScanRepository(
     companion object {
         private const val TAG = "TrackScanRepository"
         private const val SCAN_DIR = "light-sync-scans"
+
+        /** Beside [SCAN_DIR], not in it, so "delete analyses" counts only analyses. */
+        private const val FAILURE_LOG = "light-sync-scan-failures"
         private const val TEMP_DIR = "scan-tmp"
 
         /** Attempts at one track before it is left alone for this session. */
@@ -715,17 +769,67 @@ class TrackScanRepository(
         /**
          * What identifies a track's analysis.
          *
-         * The library id, which is stable across plays and unique per song. A
-         * downloaded track and its streamed original share it, which is right:
-         * they are the same audio, and the analysis of one is the analysis of
-         * the other. Falling back to the source path covers a track with no id
-         * at all rather than letting them all collide on the empty string.
+         * The library and its id for the song, `"<provider>:<id>"`. An id alone is
+         * only unique within one server (Plex, Emby and this phone's own library all
+         * number their tracks), so two libraries could hand each other a scan of a
+         * different song. A downloaded track and its streamed original share the
+         * key, which is right: they are the same audio, and the analysis of one is
+         * the analysis of the other. A track with no library behind it keeps the
+         * old key.
+         *
+         * shortcut: the provider names a kind of library, not one server, so two
+         * Plex servers still share an id space; upgrade once LocalTrack carries a
+         * server id.
          */
-        fun keyFor(track: LocalTrack): String =
+        fun keyFor(track: LocalTrack): String {
+            val provider = track.scrobbleProvider?.takeIf { it.isNotBlank() }
+            val id = track.scrobbleId?.takeIf { it.isNotBlank() }
+            return if (provider != null && id != null) "$provider:$id" else legacyKeyFor(track)
+        }
+
+        /**
+         * The key scans were filed under before [keyFor] named the library: the
+         * library id, then the source path, then the title. Read as a fallback, so an
+         * existing library keeps its analyses (see [TrackScanStore.load]).
+         */
+        fun legacyKeyFor(track: LocalTrack): String =
             track.id.takeIf { it.isNotBlank() }
                 ?: track.localPath
                 ?: track.streamUrl
                 ?: track.title
+
+        /**
+         * What a new request comes to before it reaches the queue: [Outcome.SAVED]
+         * when there is a scan already, [Outcome.NONE] when there will not be one,
+         * and [Outcome.RETRY] ("not settled yet") when it has to be queued. Pure, so
+         * every way a request can end early is testable.
+         */
+        internal fun admit(prescanOn: Boolean, scanned: Boolean, givenUp: Boolean): Outcome = when {
+            scanned -> Outcome.SAVED
+            !prescanOn || givenUp -> Outcome.NONE
+            else -> Outcome.RETRY
+        }
+    }
+
+    /** What became of one request, which is not always "it ran". */
+    internal enum class Outcome(
+        /** How it is announced: true on [completed], false on [unavailable], null while still being worked on. */
+        val landed: Boolean?,
+    ) {
+        /** A scan is stored for it, just now or already. */
+        SAVED(true),
+
+        /** It ended without one. */
+        NONE(false),
+
+        /**
+         * Held for Wi-Fi. Announced as unavailable, because nobody should wait hours on
+         * it; when it does land, [completed] says so like any other.
+         */
+        PARKED(false),
+
+        /** The fetch came up short; the request goes back on the queue for another go. */
+        RETRY(null),
     }
 }
 

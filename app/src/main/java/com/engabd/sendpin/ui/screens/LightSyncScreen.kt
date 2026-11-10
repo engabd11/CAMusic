@@ -722,8 +722,10 @@ private fun DirectLightSyncScreen(
         runCatching { direct.currentGameTrackKey() }.getOrNull()
     }
     val rhythmBest = remember(gameTrackKey) {
-        com.engabd.sendpin.game.GameRecords.bestFor(context, gameTrackKey)
-            ?.bestScore?.takeIf { it > 0 }
+        (
+            com.engabd.sendpin.game.GameRecords.bestFor(context, gameTrackKey)
+                ?: com.engabd.sendpin.game.GameRecords.bestFor(context, runCatching { direct.legacyGameTrackKey() }.getOrNull())
+            )?.bestScore?.takeIf { it > 0 }
     }
 
     // Which hero pill is open, and which tab is on show. Saveable so that leaving the

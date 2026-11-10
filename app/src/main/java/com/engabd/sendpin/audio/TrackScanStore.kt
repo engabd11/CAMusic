@@ -57,9 +57,17 @@ class TrackScanStore(private val dir: File) {
     @Synchronized
     fun knownMissing(key: String): Boolean = key in misses
 
-    /** The scan for [key], from memory or from disk. Null if there isn't one. */
-    fun load(key: String): TrackScan? {
+    /**
+     * The scan for [key], from memory or from disk. Null if there isn't one.
+     *
+     * [legacy] is the name the same track's scan was filed under before scans were
+     * keyed by library (see `TrackScanRepository.legacyKeyFor`). A file under it is
+     * renamed to [key] once, so a library analysed before the change is not analysed
+     * again for it.
+     */
+    fun load(key: String, legacy: String? = null): TrackScan? {
         peek(key)?.let { return it }
+        if (legacy != null) adoptLegacy(legacy, key)
         synchronized(this) { if (key in misses) return null }
         val file = fileFor(key)
         if (!file.exists()) {
@@ -83,11 +91,16 @@ class TrackScanStore(private val dir: File) {
         return scan
     }
 
-    fun save(key: String, scan: TrackScan) {
+    /**
+     * Write [scan] under [key]. False if it could not be written, so nobody is told a
+     * scan landed that the next play will not find. The caller logs it: `Log` is a
+     * throwing stub under plain JVM tests, and this is tested.
+     */
+    fun save(key: String, scan: TrackScan): Boolean {
         dir.mkdirs()
         val target = fileFor(key)
         val tmp = File(target.parentFile, target.name + ".tmp")
-        try {
+        return try {
             DataOutputStream(tmp.outputStream().buffered()).use { write(it, scan) }
             // Renamed into place, so a reader never sees a half-written file and
             // an interrupted save leaves the previous scan intact.
@@ -96,9 +109,32 @@ class TrackScanStore(private val dir: File) {
                 tmp.delete()
             }
             remember(key, scan)
+            true
         } catch (e: Exception) {
-            Log.w(TAG, "Could not save the scan for $key: ${e.message}")
             tmp.delete()
+            false
+        }
+    }
+
+    /**
+     * Move a scan filed under [from] to [to], unless [to] already has one.
+     *
+     * Remembered as a miss either way, so a track with no old-style file costs one
+     * `File.exists()` per process, as an unscanned one already does. When both exist
+     * the old file is left alone: an id shared by two libraries is exactly the case
+     * the new key separates, and the old file may be the other library's track.
+     */
+    private fun adoptLegacy(from: String, to: String) {
+        if (from == to) return
+        synchronized(this) { if (from in misses) return }
+        val old = fileFor(from)
+        val moved = old.exists() && !fileFor(to).exists() && old.renameTo(fileFor(to))
+        synchronized(this) {
+            misses.add(from)
+            if (moved) {
+                misses.remove(to)
+                memory.remove(from)?.let { memory[to] = it }
+            }
         }
     }
 
@@ -155,7 +191,12 @@ class TrackScanStore(private val dir: File) {
     /** The analyser version recorded in a format-2 file, or null if it cannot be read. */
     private fun peekVersion(file: File): Int? = runCatching { read(file)?.analyserVersion }.getOrNull()
 
-    fun has(key: String): Boolean = peek(key) != null || fileFor(key).exists()
+    /** Whether [key] has a scan. [legacy] as for [load]. */
+    fun has(key: String, legacy: String? = null): Boolean {
+        if (peek(key) != null) return true
+        if (legacy != null) adoptLegacy(legacy, key)
+        return fileFor(key).exists()
+    }
 
     private fun fileFor(key: String): File = File(dir, fileName(key))
 
