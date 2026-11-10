@@ -863,6 +863,27 @@ private fun ServerDetailBody(
         // and opened a screen with seven. Every setting for a Music Assistant server
         // is one scroll now, in the order it is set up — where it is, how it is
         // spoken to, what this phone is to it.
+        // A rescan on demand, for music added to a provider since MA's own schedule last ran.
+        if (config.kind == ServerKind.MUSIC_ASSISTANT && !isNew && isActive && ready) {
+            var syncNote by remember(config.id) { mutableStateOf<String?>(null) }
+            SettingsCard(
+                title = "Library sync",
+                lead = "Music Assistant re-reads every provider for new and changed music, in the background.",
+            ) {
+                OledButton("Sync library now", accent = accent, outline = true) {
+                    scope.launch {
+                        syncNote = try {
+                            libraryVm.syncMaLibrary()
+                            "Sync requested. New music appears as Music Assistant finds it."
+                        } catch (e: Exception) {
+                            e.message ?: "Couldn't start the sync"
+                        }
+                    }
+                }
+                syncNote?.let { Note(it) }
+            }
+        }
+
         if (config.kind == ServerKind.MUSIC_ASSISTANT && !isNew) {
             MaPlayerCards(settings, accent, scope)
         }

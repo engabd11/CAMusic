@@ -353,6 +353,11 @@ fun LibraryScreen(
                 onToggleFavourite = if (isFavouritable(picked, capabilities)) {
                     { viewModel.toggleFavorite(picked) }
                 } else null,
+                onMarkPlayed = if (backend == LibraryViewModel.Backend.MA &&
+                    (picked.mediaType == "podcast_episode" || picked.mediaType == "audiobook")
+                ) {
+                    { played -> viewModel.markPlayed(picked, played) }
+                } else null,
             )
         }
 

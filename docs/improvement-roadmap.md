@@ -434,8 +434,5 @@ Genuinely still open:
 - **`SendspinAudioEngine.kt`** (1,035 lines) is no longer selected by
   `Playback.startSendspin` — it is dead code kept for `END_LINGER_MS` and
   `StreamContinuity`. See `docs/v0.10-plan.md` for the deprecation plan.
-- **`HaClient` has no reconnection logic.** Unlike `MaApiClient` (backoff +
-  `reconnectNow()`), a dropped HA WebSocket stays dead, silently disabling
-  HA-based light sync.
 - **`LocalMediaSource` is minimal.** Only SEARCH capability. No genres,
   playlists, favorites, lyrics, scrobble, rich format. Cover art always null.

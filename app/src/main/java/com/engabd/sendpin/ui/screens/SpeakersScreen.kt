@@ -18,10 +18,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,6 +54,8 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
     val somethingPlaying by viewModel.leaderIsPlaying.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     var announcing by remember { mutableStateOf(false) }
+    var scenesOpen by remember { mutableStateOf(false) }
+    var removing by remember { mutableStateOf<SpeakerUi?>(null) }
 
     val total = joined.size + available.size
     val allJoined = available.isEmpty() && joined.isNotEmpty()
@@ -80,6 +84,8 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                 }
                 if (connected) {
                     CircleIconButton(Icons.Default.Campaign, "Announce") { announcing = true }
+                    Spacer(Modifier.width(10.dp))
+                    CircleIconButton(Icons.Default.Bookmarks, "Scenes and group speakers") { scenesOpen = true }
                     Spacer(Modifier.width(10.dp))
                 }
                 RefreshButton(refreshing = refreshing, onClick = viewModel::manualRefresh)
@@ -117,6 +123,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                             onUnjoin = { viewModel.unjoin(p.id) },
                             onVol = { viewModel.setPlayerVolume(p.id, it) },
                             onOffset = { viewModel.changeOffset(p.id, it) },
+                            onRemove = { removing = p },
                         )
                         Spacer(Modifier.height(12.dp))
                     }
@@ -143,6 +150,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                                 onPlayHere = { viewModel.selectPlayer(p.id) },
                                 onJoin = { viewModel.join(p.id) },
                                 onMoveMusic = { viewModel.transferQueueTo(p.id) },
+                                onRemove = { removing = p },
                             )
                             Spacer(Modifier.height(12.dp))
                         }
@@ -167,6 +175,29 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
         }
 
         if (announcing) AnnounceSheet(joined + available, onClose = { announcing = false }, viewModel = viewModel)
+        if (scenesOpen) SpeakerScenesSheet(joined + available, onClose = { scenesOpen = false }, viewModel = viewModel)
+        // Removing deletes the group player on the server, for every app, so it asks first.
+        removing?.let { p ->
+            AlertDialog(
+                onDismissRequest = { removing = null },
+                containerColor = Ink2,
+                title = { Text("Remove ${p.name}?", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp) },
+                text = {
+                    Text(
+                        "Music Assistant deletes this group speaker for every app. The speakers in it stay.",
+                        color = TextSecondary, fontSize = 13.sp,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { removing = null; viewModel.removeGroupSpeaker(p.id) }) {
+                        Text("Remove", color = ErrorRed, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { removing = null }) { Text("Cancel", color = TextMuted) }
+                },
+            )
+        }
     }
 }
 
@@ -222,7 +253,7 @@ private fun GroupHeroCard(master: Float, activeCount: Int, title: String, onMast
 }
 
 @Composable
-private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit, onVol: (Float) -> Unit, onOffset: (Int) -> Unit) {
+private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit, onVol: (Float) -> Unit, onOffset: (Int) -> Unit, onRemove: () -> Unit) {
     val accent = LocalAccent.current
     Box(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(accent.a(0.08f)).border(1.dp, accent.a(0.28f), RoundedCornerShape(16.dp)).padding(14.dp),
@@ -234,6 +265,10 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                 Column(Modifier.weight(1f).clickable(onClick = onSelect)) {
                     Text(p.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(if (p.isTarget) "Playing here" else p.meta, color = if (p.isTarget) accent else TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                }
+                if (p.isGroup) {
+                    CircleIconButton(Icons.Default.DeleteOutline, "Remove group speaker ${p.name}", onRemove)
+                    Spacer(Modifier.width(8.dp))
                 }
                 // The leader is the group — it cannot leave itself — so it gets no
                 // switch at all rather than a disabled one. The spacer matches an M3
@@ -294,6 +329,7 @@ private fun FreeCard(
     onPlayHere: () -> Unit,
     onJoin: () -> Unit,
     onMoveMusic: () -> Unit,
+    onRemove: () -> Unit,
 ) {
     val accent = LocalAccent.current
     Row(
@@ -313,6 +349,11 @@ private fun FreeCard(
         // playing to move.
         if (canMoveMusic) {
             CircleIconButton(Icons.Default.MusicNote, "Move music here", onMoveMusic)
+            Spacer(Modifier.width(8.dp))
+        }
+        // Group players only: a real speaker is not this app's to delete.
+        if (p.isGroup) {
+            CircleIconButton(Icons.Default.DeleteOutline, "Remove group speaker ${p.name}", onRemove)
             Spacer(Modifier.width(8.dp))
         }
         if (canJoin) {

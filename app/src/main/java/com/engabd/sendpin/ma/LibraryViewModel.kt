@@ -4653,6 +4653,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun isFavorite(item: MaItem): Boolean = item.itemId in _favorites.value
 
+    /** Ask Music Assistant to re-sync every provider. Returns once it is requested, not done. */
+    suspend fun syncMaLibrary() {
+        maRepo.syncProviders()
+    }
+
+    /**
+     * Mark a Music Assistant podcast episode or audiobook played or unplayed, then re-read
+     * Continue listening, which is where its progress shows.
+     */
+    fun markPlayed(item: MaItem, played: Boolean) {
+        viewModelScope.launch {
+            try {
+                if (played) maRepo.markPlayed(item, fullyPlayed = true) else maRepo.markUnplayed(item)
+                _toast.tryEmit(if (played) "Marked as played" else "Marked as unplayed")
+                loadInProgress()
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't change the played state")
+            }
+        }
+    }
+
     // --- track preview -----------------------------------------------------
     //
     // Extracted to [TrackPreviewPlayer]: it is the one part of this class that owns a

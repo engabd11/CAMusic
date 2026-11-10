@@ -1,6 +1,8 @@
 package com.engabd.sendpin.ha
 
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
@@ -16,6 +18,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** Home Assistant's WebSocket handshake, played by a fake HA. */
@@ -95,5 +98,38 @@ class HaClientTest {
         assertFailsWith<HaException> { client.sendCommand("get_states", timeoutMs = 5_000) }
         assertEquals(HaClient.State.ERROR, client.state.value)
         client.disconnect()
+    }
+
+    @Test
+    fun `a dropped socket is dialled again and authenticates afresh`() = runBlocking {
+        // First HA: authenticates, then goes away as a restart would.
+        server.enqueue(MockResponse.Builder().webSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { webSocket.send("""{"type":"auth_required"}""") }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                seen += "auth"
+                webSocket.send("""{"type":"auth_ok"}""")
+                webSocket.close(1001, "restarting")
+            }
+        }).build())
+        // The HA that comes back.
+        fakeHa(authDelayMs = 0) { ws, id, _ -> ws.send("""{"id":$id,"type":"result","success":true,"result":[]}""") }
+        val client = HaClient()
+        client.connect(baseUrl(), "token")
+        // Polled, not collected: the first CONNECTED can be gone before a collector sees it.
+        withTimeout(5_000) {
+            while (seen.count { it == "auth" } < 2 || client.state.value != HaClient.State.CONNECTED) delay(20)
+        }
+        client.getStates()
+        assertEquals(listOf("auth", "auth", "get_states"), seen.toList())
+        client.disconnect()
+    }
+
+    @Test
+    fun `no redial after disconnect or a rejected token`() {
+        assertTrue(HaClient.shouldReconnect(userClosed = false, authRejected = false, wsUrl = "ws://ha/api/websocket"))
+        assertFalse(HaClient.shouldReconnect(userClosed = true, authRejected = false, wsUrl = "ws://ha/api/websocket"))
+        assertFalse(HaClient.shouldReconnect(userClosed = false, authRejected = true, wsUrl = "ws://ha/api/websocket"))
+        assertFalse(HaClient.shouldReconnect(userClosed = false, authRejected = false, wsUrl = ""))
     }
 }

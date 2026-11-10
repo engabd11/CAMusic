@@ -15,6 +15,8 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.RemoveDone
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.Palette
@@ -127,6 +129,12 @@ fun BoxScope.MediaActionsSheet(
     isFavourite: Boolean? = null,
     /** Null leaves the row out. See [isFavourite]. */
     onToggleFavourite: (() -> Unit)? = null,
+    /**
+     * Null leaves both rows out. Called with true for "played", false for "unplayed".
+     * Only passed for a Music Assistant podcast episode or audiobook, the two kinds it
+     * keeps a played state for.
+     */
+    onMarkPlayed: ((Boolean) -> Unit)? = null,
 ) {
     HideBottomChrome()
     BackHandler(onBack = onClose)
@@ -234,6 +242,11 @@ fun BoxScope.MediaActionsSheet(
                     if (isFavourite) "Remove from favourites" else "Add to favourites",
                     "Keeps it on the Favourites page",
                 ) { onClose(); onToggleFavourite() }
+            }
+            onMarkPlayed?.let { mark ->
+                // Both, because the item does not say which it is now.
+                ActionRow(Icons.Default.DoneAll, "Mark as played", "Off Continue listening") { onClose(); mark(true) }
+                ActionRow(Icons.Default.RemoveDone, "Mark as unplayed", "Starts again from the beginning") { onClose(); mark(false) }
             }
             onShare?.let { share ->
                 ActionRow(Icons.Default.Share, "Share", item.name) { onClose(); share() }

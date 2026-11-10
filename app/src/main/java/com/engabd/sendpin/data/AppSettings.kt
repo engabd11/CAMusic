@@ -137,6 +137,8 @@ class AppSettings(private val context: Context) {
         private val HA_TOKEN = stringPreferencesKey("ha_token")                // long-lived access token
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
+        /** Saved Music Assistant speaker groupings, as a JSON list of [com.engabd.sendpin.ma.SpeakerScene]. */
+        private val SPEAKER_SCENES = stringPreferencesKey("speaker_scenes")
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
         /** The home-screen widget shows the cover. Off by default: a new look. */
         private val WIDGET_COVER = booleanPreferencesKey("widget_cover")
@@ -1682,6 +1684,15 @@ class AppSettings(private val context: Context) {
             it[TARGET_PLAYER] = playerId
             putMaOption(it, ServerConfig.OPT_TARGET_PLAYER, playerId)
         }
+    }
+
+    /** Saved speaker scenes, oldest first. A string setting, so backups carry it. */
+    val speakerScenes: Flow<List<com.engabd.sendpin.ma.SpeakerScene>> = pref { prefs ->
+        prefs[SPEAKER_SCENES]?.let { com.engabd.sendpin.ma.SpeakerScene.decode(it) } ?: emptyList()
+    }
+
+    suspend fun saveSpeakerScenes(list: List<com.engabd.sendpin.ma.SpeakerScene>) {
+        context.dataStore.edit { it[SPEAKER_SCENES] = com.engabd.sendpin.ma.SpeakerScene.encode(list) }
     }
 
     /**

@@ -78,6 +78,31 @@ class PlexClient(
 
         /** The `genre=<id>` filter, for pulling a tag id back out of a filter path. */
         private val GENRE_PARAM = Regex("[?&]genre=([^&]+)")
+
+        /** Plex's `userRating` for a loved item: five full stars, what Plexamp's heart sets. */
+        internal const val LOVED = 10.0
+
+        /**
+         * The `rating` a heart tap should send, given the item's [current] 0–10 rating, or
+         * null to send nothing.
+         *
+         * Plex keeps a favourite and a star rating in one field, so the heart is careful
+         * with it. Loving an item sets 10, over whatever it had, because that is the only
+         * way Plex can hold "loved". Un-loving clears the rating only when it is still the
+         * 10 the heart set: a track the user rated 6 (three stars) is not loved, and an
+         * un-heart must not wipe those three stars.
+         */
+        internal fun favouriteRating(current: Double?, starred: Boolean): String? {
+            val loved = current != null && current >= LOVED
+            return when {
+                starred -> if (loved) null else LOVED.toInt().toString()
+                loved -> "-1"
+                else -> null
+            }
+        }
+
+        private fun rawRating(o: JsonObject): Double? =
+            o["userRating"]?.let { runCatching { it.toString().trim('"').toDouble() }.getOrNull() }
     }
 
     val serverUrl: String get() = base()
@@ -351,6 +376,32 @@ class PlexClient(
     suspend fun item(id: String): MaItem? =
         entries(container("/library/metadata/$id")).firstOrNull()?.let(::item)
 
+    /**
+     * Loved items of one [type], read fresh: the highest rated first, kept while loved.
+     *
+     * shortcut: the first 500 by rating per type; page on if anyone loves more than that.
+     */
+    private suspend fun loved(type: String): List<MaItem> =
+        entries(
+            container(
+                "/library/sections/$librarySectionKey/all",
+                mapOf("type" to type, "sort" to "userRating:desc", "X-Plex-Container-Size" to "500"),
+            ),
+        ).mapNotNull(::item).filter { it.favorite }
+
+    /** Every loved artist, album and track. See [LOVED]. */
+    suspend fun favorites(): MaSearchResults =
+        MaSearchResults(artists = loved(TYPE_ARTIST), albums = loved(TYPE_ALBUM), tracks = loved(TYPE_TRACK), playlists = emptyList())
+
+    /**
+     * Love or un-love [id] — see [favouriteRating]. The current rating is read from the
+     * server rather than from a list row, which may have been rated elsewhere since.
+     */
+    suspend fun setLoved(id: String, loved: Boolean) {
+        val current = entries(container("/library/metadata/$id")).firstOrNull()?.let(::rawRating)
+        favouriteRating(current, loved)?.let { rate(id, it) }
+    }
+
     suspend fun albumDetail(id: String): Pair<MaItem?, List<MaItem>> = item(id) to albumTracks(id)
 
     suspend fun artistDetail(id: String): Pair<MaItem?, List<MaItem>> = item(id) to artistAlbums(id)
@@ -528,9 +579,10 @@ class PlexClient(
             genres = o["Genre"]?.jsonArray.orEmpty().mapNotNull { (it as? JsonObject)?.str("tag") },
             // 0–10 on Plex, where its own apps draw five stars in half steps; whole
             // stars here, so a 7 (three and a half) shows as four.
-            userRating = o["userRating"]?.let { runCatching { it.toString().trim('"').toDouble() }.getOrNull() }
+            userRating = rawRating(o)
                 ?.let { ((it + 1) / 2).toInt().coerceIn(0, 5) }
                 ?.takeIf { it > 0 },
+            favorite = (rawRating(o) ?: 0.0) >= LOVED,
         )
     }
 
@@ -541,10 +593,15 @@ class PlexClient(
      */
     suspend fun setRating(id: String, stars: Int) {
         val s = stars.coerceIn(0, 5)
+        rate(id, if (s == 0) "-1" else (s * 2).toString())
+    }
+
+    /** `PUT /:/rate` with Plex's own 0–10 [rating], or "-1" to clear it. */
+    private suspend fun rate(id: String, rating: String) {
         val params = mapOf(
             "key" to id,
             "identifier" to "com.plexapp.plugins.library",
-            "rating" to if (s == 0) "-1" else (s * 2).toString(),
+            "rating" to rating,
         )
         withContext(Dispatchers.IO) {
             request(Request.Builder().url(url("/:/rate", params)).put(ByteArray(0).toRequestBody(null)))

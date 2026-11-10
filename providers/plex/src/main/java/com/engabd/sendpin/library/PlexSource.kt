@@ -7,11 +7,16 @@ import com.engabd.sendpin.plex.PlexClient
 /**
  * [PlexClient] as a [MusicSource].
  *
+ * ## Favourites are a rating
+ *
+ * Plex has no favourite flag: its music library has a 0–10 `userRating`, and Plexamp's
+ * heart is that rating at 10. So [Capability.FAVORITES] and [Capability.STAR] mean the
+ * same here: a heart sets 10, an un-heart clears only a 10, and a track the user rated
+ * 6 is neither loved nor touched by the heart. See [PlexClient.favouriteRating].
+ *
  * ## What Plex can't do here
  *
- * No [Capability.FAVORITES]: Plex's music library has a 0–10 `userRating`, not a
- * star, and mapping one onto the other would be a guess about what a user meant by
- * rating a track a 6. No [Capability.PLAYLIST_WRITE]: creating one needs the
+ * No [Capability.PLAYLIST_WRITE]: creating one needs the
  * server's own machine identifier woven into a `server://` URI per track, which is
  * more surface than this pass is confident enough of to ship silently wrong. No
  * [Capability.LYRICS], [Capability.SIMILAR], [Capability.METADATA] or
@@ -46,11 +51,15 @@ class PlexSource(private val client: PlexClient) : MusicSource {
         Capability.HISTORY,
         Capability.SCROBBLE,
         Capability.RATING,
+        Capability.FAVORITES,
+        Capability.STAR,
     )
 
     override fun ratable(item: MaItem): Boolean = item.mediaType in setOf("track", "album", "artist")
 
     override suspend fun setRating(item: MaItem, stars: Int) = client.setRating(item.itemId, stars)
+
+    override suspend fun setStarred(item: MaItem, starred: Boolean) = client.setLoved(item.itemId, starred)
 
     override suspend fun probe(): SourceError? = client.pingResult()?.let {
         SourceError(it.message ?: "Plex refused the request", isAuth = it.isAuth)
@@ -74,11 +83,7 @@ class PlexSource(private val client: PlexClient) : MusicSource {
     override suspend fun randomSongs(size: Int): List<MaItem> = client.randomSongs(size)
     override suspend fun randomAlbums(limit: Int): List<MaItem> = client.randomAlbums(limit)
 
-    // Plex has no starred-item listing worth relying on for music (see the class
-    // doc), so there is nothing to favourite over: an always-empty result here would
-    // be indistinguishable from a broken one.
-    override suspend fun favorites(): MaSearchResults =
-        MaSearchResults(emptyList(), emptyList(), emptyList(), emptyList())
+    override suspend fun favorites(): MaSearchResults = client.favorites()
 
     override suspend fun search(query: String, limit: Int): MaSearchResults = client.search(query, limit)
 
