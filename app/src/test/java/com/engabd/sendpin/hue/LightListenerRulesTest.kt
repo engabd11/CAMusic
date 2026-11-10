@@ -58,6 +58,21 @@ class LightListenerRulesTest {
     private val phone = player(me)
 
     @Test
+    fun `the phone is known by the wrapper around its client`() {
+        val own = player(me).copy(name = "Samsung")
+        val wrapper = player("up1", provider = "universal_player").copy(name = "Samsung")
+        val other = player("up2", provider = "universal_player").copy(name = "Kitchen")
+        // Idle, so nothing links them but the name; exactly one wrapper carries it.
+        assertEquals(setOf(me, "up1"), LightListenerRules.phoneIds(listOf(wrapper, other), me, own))
+        // Two wrappers with the name: no guess.
+        assertEquals(setOf(me), LightListenerRules.phoneIds(listOf(wrapper, wrapper.copy(playerId = "up3")), me, own))
+        // A stated link beats the name.
+        assertEquals(setOf(me, "up2"), LightListenerRules.phoneIds(listOf(wrapper, other), me, own.copy(protocolParentId = "up2")))
+        assertEquals(setOf(me, "up2"), LightListenerRules.phoneIds(listOf(wrapper, other.copy(outputProtocolIds = listOf(me))), me, own))
+        assertEquals(setOf(me, "up2"), LightListenerRules.phoneIds(listOf(wrapper, other.copy(activeOutputProtocol = me)), me, null))
+    }
+
+    @Test
     fun `a speaker whose own list leaves the phone out is not asked`() {
         val kitchen = player("kitchen")
         assertTrue(plan(listOf(phone, kitchen.copy(canGroupWith = listOf("lounge")))) is ListenerPlan.Fallback)

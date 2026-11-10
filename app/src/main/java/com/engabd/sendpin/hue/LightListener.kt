@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -93,9 +94,8 @@ object LightListenerRules {
         // player ids, or a provider for "anything of this kind". The provider guess is
         // only for a server that sends no list.
         val phoneProvider = players.firstOrNull { it.playerId == myPlayerId }?.provider
-        val phone = phoneIds + players.filter { it.activeOutputProtocol == myPlayerId }.map { it.playerId }
         if (leader.canGroupWith.isNotEmpty()) {
-            if (leader.canGroupWith.none { it in phone || it == phoneProvider }) {
+            if (leader.canGroupWith.none { it in phoneIds || it == phoneProvider }) {
                 return ListenerPlan.Fallback("Music Assistant does not let ${leader.name} group with this phone")
             }
         } else if (!isSendspin(leader, players, myPlayerId)) {
@@ -104,6 +104,25 @@ object LightListenerRules {
         if (!leader.canSetMembers) return ListenerPlan.Fallback("${leader.name} does not accept group members")
         if (!playerConnected) return ListenerPlan.Fallback("this phone is not connected to Music Assistant as a player")
         return ListenerPlan.Join(leader.playerId, leader.name)
+    }
+
+    /**
+     * Every id Music Assistant knows this phone by: its Sendspin client id, and the
+     * `up…` wrapper around it, which is the one grouping lists and commands use.
+     *
+     * [own] is the phone's protocol player as `players/get` returns it; it is not in
+     * [players], which lists wrappers. The links are tried in order of certainty; the
+     * name is last, and only when exactly one wrapper carries it.
+     */
+    fun phoneIds(players: List<MaPlayer>, myPlayerId: String, own: MaPlayer?): Set<String> {
+        val linked = players.filter {
+            it.activeOutputProtocol == myPlayerId || myPlayerId in it.outputProtocolIds
+        }.map { it.playerId } + listOfNotNull(own?.protocolParentId)
+        val named = if (linked.isEmpty() && own != null) {
+            players.filter { it.name == own.name && it.playerId != myPlayerId && it.activeOutputProtocol == null }
+                .map { it.playerId }.singleOrNull()
+        } else null
+        return setOf(myPlayerId) + linked + listOfNotNull(named)
     }
 
     /**
@@ -233,10 +252,18 @@ class LightListener(
                     failed.value = null
                     flowOf(ListenerPlan.Idle())
                 } else {
+                    // The phone's protocol player, asked for once per connection: the
+                    // player list holds only the wrapper around it.
+                    val own = playback.connected.mapLatest { up ->
+                        if (up) runCatching { repo.getPlayer(myPlayerId()) }.getOrNull() else null
+                    }
                     combine(
-                        nowPlaying.now, nowPlaying.players, playback.connected, playback.isPlaying, failed,
-                    ) { now, players, connected, aloud, failedAt ->
+                        nowPlaying.now, nowPlaying.players, playback.connected, playback.isPlaying,
+                        combine(failed, own) { f, o -> f to o },
+                    ) { now, players, connected, aloud, (failedAt, ownPlayer) ->
                         val me = myPlayerId()
+                        val ids = LightListenerRules.phoneIds(players, me, ownPlayer) + listOfNotNull(joined.value?.phoneId)
+                        phoneIdsNow = ids
                         LightListenerRules.plan(
                             wanted = true,
                             playerConnected = connected,
@@ -245,7 +272,7 @@ class LightListener(
                             targetPlaying = now?.isPlaying == true,
                             targetIsPhone = now?.isSelf == true,
                             players = players,
-                            phoneIds = setOfNotNull(me, joined.value?.phoneId),
+                            phoneIds = ids,
                             myPlayerId = me,
                             failed = failedAt,
                         )
@@ -265,6 +292,9 @@ class LightListener(
     }
 
     private var graceJob: Job? = null
+
+    /** What the last plan knew this phone as; the join picks the id the leader accepts from it. */
+    @Volatile private var phoneIdsNow: Set<String> = emptySet()
 
     private suspend fun act(plan: ListenerPlan) {
         val current = joined.value
@@ -315,9 +345,10 @@ class LightListener(
 
     /** The join itself; returns the attempt when Music Assistant would not take it. */
     private suspend fun joinLocked(plan: ListenerPlan.Join): Joined? {
-        // The id Music Assistant lists this phone under — the `up…` wrapper on 2.10 —
-        // resolved the way Playback's group poll does.
-        val phoneId = runCatching { repo.getPlayer(myPlayerId())?.playerId }.getOrNull() ?: myPlayerId()
+        // The id the leader's own list takes: the `up…` wrapper on Music Assistant 2.10,
+        // which refuses the client id while answering success. The client id otherwise.
+        val accepts = nowPlaying.players.value.firstOrNull { it.playerId == plan.leaderId }?.canGroupWith.orEmpty()
+        val phoneId = phoneIdsNow.firstOrNull { it in accepts } ?: myPlayerId()
         // Music Assistant answers a join it will not make with success and a log line of
         // its own, so what it was asked with is the only evidence on this side.
         Log.i(TAG, "Join ${plan.leaderId} with $phoneId; ${describePlayers()}")

@@ -302,6 +302,13 @@ data class MaPlayer(
      * share a timeline with, from one it cannot.
      */
     val provider: String? = null,
+    /**
+     * The other half of the wrapper link, which holds while nothing plays:
+     * a protocol client names the `up…` player around it, and that wrapper lists the
+     * protocol clients it can render through. Grouping lists hold the wrapper's id.
+     */
+    val protocolParentId: String? = null,
+    val outputProtocolIds: List<String> = emptyList(),
 ) {
     val isPlaying get() = state == "playing"
     /** This player leads an (ad-hoc sync or static) group. */
@@ -1052,6 +1059,9 @@ object MaParse {
             activeOutputProtocol = o["active_output_protocol"]?.jsonPrimitive?.contentOrNull,
             nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"], serverUrl),
             provider = o["provider"]?.jsonPrimitive?.contentOrNull,
+            protocolParentId = str(o["protocol_parent_id"]),
+            outputProtocolIds = (o["output_protocols"] as? JsonArray)
+                ?.mapNotNull { str((it as? JsonObject)?.get("output_protocol_id")) } ?: emptyList(),
         )
     }
 
