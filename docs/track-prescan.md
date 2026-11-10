@@ -106,7 +106,10 @@ The window counts from where a stretch of listening begins, not from 0:00, when 
 position is the local player's own media time. A scan already cached when Light
 Sync is switched on mid-song, after a resume or after a seek replaces no PLL at
 all, so it is adopted at whatever position the first frame is. Spotify's position
-is a session clock, so its window still counts from the top. A seek resets the PLL,
+is a session clock, so its window still counts from the top; in practice a Spotify
+track never has a scan, since its audio cannot be fetched to analyse, so it is not
+given a track clock. Its seeks and loads (librespot's flush) reset the analysis as a
+local seek does. A seek resets the PLL,
 so a "no" is decided again after one. The rules are `hue/MapAdoption.kt`.
 
 At a gapless transition the tap runs into the next track ~200 ms before the player
