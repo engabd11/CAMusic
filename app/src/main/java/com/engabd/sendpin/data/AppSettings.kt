@@ -311,6 +311,8 @@ class AppSettings(private val context: Context) {
          */
         private val LIGHT_SYNC_MODE_AUTO = booleanPreferencesKey("light_sync_mode_auto")
         private val LIGHT_SYNC_ENABLED = booleanPreferencesKey("light_sync_enabled") // direct mode master toggle
+        /** Experimental: the phone joins a remote MA speaker's group silently, for the bridge. See [lightSyncListenMa]. */
+        private val LIGHT_SYNC_LISTEN_MA = booleanPreferencesKey("light_sync_listen_ma")
         private val LIGHT_SYNC_INTENSITY = stringPreferencesKey("light_sync_intensity") // auto|subtle|medium|high|intense|extreme
         /** Rungs Auto may choose between, comma-separated wire keys. */
         private val LIGHT_SYNC_AUTO_LEVELS = stringPreferencesKey("light_sync_auto_levels")
@@ -581,13 +583,16 @@ class AppSettings(private val context: Context) {
          * The library decides where the audio actually comes out, which is what
          * the transport has to match. Navidrome always plays through this
          * phone's own ExoPlayer, and the direct bridge path taps exactly that.
-         * Music Assistant plays to whatever speaker is targeted — possibly this
-         * phone over Sendspin, which uses a raw AudioTrack the tap cannot see —
-         * so Home Assistant, which follows the MA player entity, is the one that
-         * can cover every case.
+         * Music Assistant plays to whatever speaker is targeted. On this phone the
+         * Sendspin engine feeds the same tap, but a speaker in another room is
+         * audio the phone never receives, so Home Assistant, which follows the MA
+         * player entity, is the one that covers every case — unless [maListener]:
+         * the experimental light listener puts this phone in that speaker's group
+         * silently, which makes the bridge right for Music Assistant too. True only
+         * with the setting on *and* a bridge paired.
          */
-        fun lightSyncModeFor(backend: String): String =
-            if (backend == BACKEND_SUBSONIC) MODE_DIRECT else MODE_HA
+        fun lightSyncModeFor(backend: String, maListener: Boolean = false): String =
+            if (backend == BACKEND_SUBSONIC || (backend == BACKEND_MA && maListener)) MODE_DIRECT else MODE_HA
 
         /**
          * The transport a library switch calls for, or null to leave it alone.
@@ -596,9 +601,9 @@ class AppSettings(private val context: Context) {
          * DataStore, an Application and a Home Assistant: the coordinator around
          * it is now three lines, and this is the part with the rules in it.
          */
-        fun lightSyncModeChange(backend: String, auto: Boolean, current: String): String? {
+        fun lightSyncModeChange(backend: String, auto: Boolean, current: String, maListener: Boolean = false): String? {
             if (!auto) return null  // the user pinned a transport by hand
-            return lightSyncModeFor(backend).takeIf { it != current }
+            return lightSyncModeFor(backend, maListener).takeIf { it != current }
         }
 
         /**
@@ -2510,6 +2515,22 @@ class AppSettings(private val context: Context) {
     suspend fun setLightSyncModeAuto(auto: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_MODE_AUTO] = auto }
     }
+
+    /**
+     * Listen silently for Light Sync on Music Assistant: when a remote speaker plays,
+     * this phone joins its group without making a sound, so the bridge follows the real
+     * audio instead of needing Home Assistant. Experimental and off by default — see
+     * [com.engabd.sendpin.hue.LightListener].
+     */
+    val lightSyncListenMa: Flow<Boolean> = pref { it[LIGHT_SYNC_LISTEN_MA] ?: false }
+
+    suspend fun setLightSyncListenMa(on: Boolean) {
+        context.dataStore.edit { it[LIGHT_SYNC_LISTEN_MA] = on }
+    }
+
+    /** A Hue Bridge is paired: an address and an app key, the pair DirectBridgeSetup checks. */
+    val hueBridgePaired: Flow<Boolean> =
+        combine(hueBridgeIp, hueAppKey) { ip, key -> ip.isNotBlank() && key.isNotBlank() }.distinctUntilChanged()
 
     // ── Driving mode ─────────────────────────────────────────────────────────
     //

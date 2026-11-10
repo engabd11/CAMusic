@@ -289,6 +289,12 @@ data class MaPlayer(
      */
     val activeOutputProtocol: String? = null,
     val nowPlaying: MaNowPlaying? = null,
+    /**
+     * The provider (instance) this player belongs to, e.g. `sendspin` or `airplay`.
+     * Read so the light listener can tell a Sendspin speaker, which this phone can
+     * share a timeline with, from one it cannot.
+     */
+    val provider: String? = null,
 ) {
     val isPlaying get() = state == "playing"
     /** This player leads an (ad-hoc sync or static) group. */
@@ -1035,6 +1041,7 @@ object MaParse {
             icon = o["icon"]?.jsonPrimitive?.contentOrNull,
             activeOutputProtocol = o["active_output_protocol"]?.jsonPrimitive?.contentOrNull,
             nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"], serverUrl),
+            provider = o["provider"]?.jsonPrimitive?.contentOrNull,
         )
     }
 

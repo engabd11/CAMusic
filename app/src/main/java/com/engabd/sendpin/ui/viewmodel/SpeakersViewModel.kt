@@ -441,11 +441,19 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun MaPlayer.toUi(delays: Map<String, SyncDelay>, leader: String): SpeakerUi {
         val self = playerId == myPlayerId
+        // The phone sitting silently in the group for Light Sync is not a speaker anyone
+        // is playing to, and must not read as one. Read rather than collected: joining
+        // and leaving both refresh the player list this is built from.
+        val listener = playerId == (getApplication<Application>() as SendpinApp).lightListener.listeningAs.value
         val delay = delays[playerId]
         return SpeakerUi(
             id = playerId,
-            name = if (self) "$name (this phone)" else name,
-            meta = metaFor(this),
+            name = when {
+                listener -> "$name (Light listener)"
+                self -> "$name (this phone)"
+                else -> name
+            },
+            meta = if (listener) "Silent, for Light Sync" else metaFor(this),
             isSelf = self,
             isTarget = playerId == leader,
             volume = (volumeLevel / 100f).coerceIn(0f, 1f),

@@ -44,6 +44,8 @@ A syncoV2 bridge for anyone already running that setup, with a smaller effect se
 When the sound comes from a speaker in another room, the show keeps running from an **offline scan** of the track, with beats, sections and spectral shape worked
 out in advance and followed against the server's playhead.
 
+**Listen silently (experimental, Music Assistant).** With this switched on in Settings → Illumination & Sync and a bridge paired, the phone joins a playing Sendspin speaker's group as a silent member: it decodes the same audio on the same timeline, plays nothing, and the bridge gets the full live show. AirPlay, Cast, Sonos and group players keep the offline-scan show, and the Lights tab says why.
+
 ## Ambience Effects
 
 Shows with their own sound, ready for the times you want the room rather than the music: **fireworks, thunderstorm,

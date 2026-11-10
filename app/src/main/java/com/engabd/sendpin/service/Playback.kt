@@ -238,6 +238,66 @@ class Playback(private val app: Context) {
     private val _maAudioSource = MutableStateFlow<Pair<AudioAnalysisTap, AudioLead>?>(null)
     val maAudioSource: StateFlow<Pair<AudioAnalysisTap, AudioLead>?> = _maAudioSource
 
+    // --- light listener ------------------------------------------------------
+    //
+    // This phone sitting in a remote speaker's group only so Light Sync can hear the
+    // group's audio. See [com.engabd.sendpin.hue.LightListener], which owns when.
+
+    /** Set by [setListenOnly]. While true, a stream is decoded for the tap and nothing else. */
+    @Volatile private var listenOnly = false
+
+    /** The volume reported to Music Assistant while listening — see [setListenerVolume]. */
+    @Volatile private var listenerVolume: Int? = null
+
+    private val _listenerAudio = MutableStateFlow(false)
+
+    /** Group audio is arriving for the light listener. */
+    val listenerAudio: StateFlow<Boolean> = _listenerAudio.asStateFlow()
+
+    /**
+     * Enter or leave light-listener mode.
+     *
+     * While on, a stream is decoded into the analysis tap with no output (see
+     * [SendspinNativeEngine.analysisOnly]), and none of what makes a stream "playing on
+     * this phone" happens: no audio focus, no media notification, no [isPlaying], no
+     * track metadata, so every surface that asks who is playing still sees the remote
+     * speaker. Set before the phone is added to a group and cleared only once it has
+     * left, so a stream that races either edge is silent rather than audible.
+     */
+    fun setListenOnly(on: Boolean) {
+        if (listenOnly == on) return
+        // Ordered so a stream starting in between is silent, never audible: the engine
+        // goes silent before this side stops acting on streams, and comes back after.
+        if (on) {
+            (engine as? SendspinNativeEngine)?.analysisOnly = true
+            listenOnly = true
+        } else {
+            listenOnly = false
+            (engine as? SendspinNativeEngine)?.analysisOnly = false
+        }
+        if (on) {
+            // The group timeline needs the clock at its fast cadence; idle mode samples
+            // it twice a minute, and nothing else wakes it because [isPlaying] stays false.
+            client?.setIdleMode(false)
+        } else {
+            _listenerAudio.value = false
+            listenerVolume = null
+            client?.sendClientState(volume = deviceVolume.volumePercent())
+            if (!_isPlaying.value) setClientIdleMode(true)
+        }
+    }
+
+    /**
+     * The volume to report while listening, so the silent phone does not skew the
+     * group's average. [com.engabd.sendpin.hue.LightListener] passes the mean of the
+     * other members, which leaves Music Assistant's group volume exactly where it was.
+     */
+    fun setListenerVolume(level: Int) {
+        if (!listenOnly || listenerVolume == level) return
+        listenerVolume = level
+        client?.sendClientState(volume = level)
+    }
+
     /**
      * Deferred "playback really has stopped" work. Armed on `stream/end` and
      * cancelled by the next `stream/start`, so a track change doesn't flicker the
@@ -518,7 +578,8 @@ class Playback(private val app: Context) {
                 // DeviceVolume.setVolumePercent. No curve on either leg: the OS steps
                 // already sit on a perceptual curve, and mapping the spec's amplitude
                 // onto them again collapsed the top of the slider onto one step.
-                client?.sendClientState(volume = deviceVolume.volumePercent())
+                // Not while listening: the phone's level is not part of that group.
+                if (!listenOnly) client?.sendClientState(volume = deviceVolume.volumePercent())
             }
         }
         // Wire the app lifecycle observer for warm reconnect and toggleable
@@ -703,7 +764,8 @@ class Playback(private val app: Context) {
         // connects, start in idle mode rather than running fast timer loops until
         // the next isPlaying transition. The connection service drives this from
         // its own watchPlayback observer, but the client needs to know *now*.
-        if (!_isPlaying.value) c.setIdleMode(true)
+        // Not while listening: the listener needs the clock at its fast cadence too.
+        if (!_isPlaying.value && !listenOnly) c.setIdleMode(true)
         // The native Oboe engine is the only MA engine. It replaces the ExoPlayer-
         // based SendspinExoEngine, which routed through ExoPlayer's AudioSink and
         // lost server timestamps, starved the native ring, and was off by default.
@@ -718,6 +780,7 @@ class Playback(private val app: Context) {
             onFatalError = { c.reconnectNow() },
         ).also {
             _maAudioSource.value = it.audioAnalysisTap to it.audioLead
+            it.analysisOnly = listenOnly
         }
         eng.onAudible = { startedAtMs ->
             if (awaitingAudible) {
@@ -749,6 +812,9 @@ class Playback(private val app: Context) {
         sessionScope.launch { c.events.collect { _connectionLog.value = it } }
         sessionScope.launch {
             c.nowPlaying.collect { np ->
+                // The group's track, not one this phone is playing; Music Assistant
+                // already reports it as the remote speaker's.
+                if (listenOnly) return@collect
                 _trackTitle.value = np?.title ?: ""
                 _artist.value = np?.artist ?: ""
                 _album.value = np?.album ?: ""
@@ -779,7 +845,13 @@ class Playback(private val app: Context) {
                     // The engine's own scalar stays reserved for audio focus (see
                     // [focusListener]): ducking must not move the user's system volume,
                     // or every notification would permanently turn the phone down.
-                    "volume" -> cmd.volume?.let { v -> deviceVolume.setVolumePercent(v) }
+                    // While listening, a group volume change must not move the phone: put
+                    // back the level it reports instead, so Music Assistant's group
+                    // average stays the speakers' own.
+                    "volume" -> cmd.volume?.let { v ->
+                        if (listenOnly) listenerVolume?.let { c.sendClientState(volume = it) }
+                        else deviceVolume.setVolumePercent(v)
+                    }
                     // A gate on the engine's output, not the device volume at zero: the
                     // spec keeps volume and mute independent ("a volume change MUST NOT
                     // clear the mute state"), and setting the level to zero both cleared
@@ -809,6 +881,12 @@ class Playback(private val app: Context) {
         // starting a foreground service) is posted, or it stalls the socket.
         c.sink = object : SendspinClient.PlaybackSink {
             override fun onAudio(frame: ByteArray) {
+                // The listener's stream is not this phone's: it moves no playhead.
+                if (listenOnly) {
+                    if (!_listenerAudio.value) _listenerAudio.value = true
+                    eng.submit(frame)
+                    return
+                }
                 // The first chunk of a (re)started stream only arms the edge; it
                 // fires when that audio is heard (see `eng.onAudible` below).
                 if (chunkEdge.onAudio()) awaitingAudible = true
@@ -833,6 +911,9 @@ class Playback(private val app: Context) {
                 tailJob?.cancel(); tailJob = null
                 coldEngineJob?.cancel(); coldEngineJob = null
                 eng.start(format)
+                // The light listener's stream: decoded for the tap and nothing more. No
+                // focus (other apps keep theirs), no notification, no "playing here".
+                if (listenOnly) return
                 // An announcement's first chunk must not release a hold placed on the
                 // music: the seek or skip it is waiting for has not happened yet.
                 if (streamKind != StreamClassifier.Kind.ANNOUNCEMENT) chunkEdge.onStreamStart()
@@ -869,8 +950,12 @@ class Playback(private val app: Context) {
                     tailJob = sessionScope.launch { drainTail(eng, endedAt, plan, endedStreamId) }
                 }
                 idleJob?.cancel()
+                val listening = listenOnly
                 idleJob = sessionScope.launch {
                     delay(SendspinPlaybackSupport.END_LINGER_MS)
+                    // The listener's stream never claimed "playing here", so there is
+                    // nothing of that to undo.
+                    if (listening) { _listenerAudio.value = false; return@launch }
                     _isPlaying.value = false
                     SendspinService.idleMedia(app)
                 }
@@ -1004,6 +1089,9 @@ class Playback(private val app: Context) {
         // pushes (`set_static_delay`) and one the user sets can't fight each other.
         sessionScope.launch { settings.staticDelayMs.collect { c.setStaticDelayMs(it) } }
         sessionScope.launch { c.staticDelay.collect { eng.staticDelayMs = it } }
+        // The light listener's lead carries the remote speaker's latency, which only the
+        // user knows — the same offset the scan-driven show uses. Read only in that mode.
+        sessionScope.launch { settings.lightSyncSpeakerOffsetMs.collect { eng.analysisLeadOffsetMs = it } }
 
         // Mute while the clock is still converging, per the spec — decoding and
         // buffering carry on, only the gain goes to zero. See SyncGate.
@@ -1417,6 +1505,8 @@ class Playback(private val app: Context) {
         // track then starts a second or two in. Group members were paying that on every
         // track.
         if (idle && engine?.grouped == true) return
+        // Nor is the light listener, which is a group member by another name.
+        if (idle && listenOnly) return
         client?.setIdleMode(idle)
     }
 
@@ -1447,6 +1537,7 @@ class Playback(private val app: Context) {
         _currentFormat.value = "-"
         _streamQuality.value = null
         _isPlaying.value = false
+        _listenerAudio.value = false
         _durationMs.value = 0
         if (stopService) {
             SendspinService.stopMedia(app)

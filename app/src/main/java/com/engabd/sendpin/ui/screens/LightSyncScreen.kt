@@ -628,6 +628,8 @@ private fun DirectLightSyncScreen(
     val mpdRemoteActive by app.localPlayer.remoteActive.collectAsStateWithLifecycle()
     val mpdOutputName by app.localPlayer.remoteOutputDeviceName.collectAsStateWithLifecycle()
     val speakerLabel = remoteSpeaker ?: (mpdOutputName ?: "MPD").takeIf { mpdRemoteActive }
+    // The light listener's own line — listening to a speaker, or why it is not.
+    val listenerNote by app.lightListener.note.collectAsStateWithLifecycle()
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
     val intensity by settings.lightSyncIntensity.collectAsState(initial = "high")
     val autoLevels by settings.lightSyncAutoLevels.collectAsState(initial = listOf("subtle", "medium", "high"))
@@ -828,7 +830,8 @@ private fun DirectLightSyncScreen(
                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                                     Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                                     Text(
-                                        showStatusText(showStatus, speakerLabel),
+                                        showStatusText(showStatus, speakerLabel) +
+                                            listenerNote?.let { " ($it)" }.orEmpty(),
                                         color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                                     )
                                 }

@@ -252,6 +252,68 @@ class LightSyncFeedPickerTest {
             ),
         )
     }
+
+    @Test
+    fun `the light listener's audio beats the scan of the same track`() {
+        // A remote speaker is playing, so the scan is driving; the listener is hearing
+        // the real thing, which is what the room is listening to.
+        assertEquals(
+            LightSyncFeed.SENDSPIN_PCM,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = true,
+                localPlaying = false, captureRunning = false, scanDriving = true,
+                listening = true,
+            ),
+        )
+        assertEquals(
+            LightSyncFeed.SENDSPIN_PCM,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = true,
+                localPlaying = false, captureRunning = false, scanDriving = true,
+                phoneAudioFeed = "internal", listening = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `a listener with no audio or no tap falls back to the scan`() {
+        assertEquals(
+            LightSyncFeed.SCAN_REMOTE,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = true,
+                localPlaying = false, captureRunning = false, scanDriving = true,
+                listening = false,
+            ),
+        )
+        assertEquals(
+            LightSyncFeed.SCAN_REMOTE,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = false,
+                localPlaying = false, captureRunning = false, scanDriving = true,
+                listening = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `projection still means other apps first`() {
+        assertEquals(
+            LightSyncFeed.CAPTURE,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = true,
+                localPlaying = false, captureRunning = true, scanDriving = true,
+                phoneAudioFeed = "projection", listening = true,
+            ),
+        )
+        assertEquals(
+            LightSyncFeed.SENDSPIN_PCM,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = true,
+                localPlaying = false, captureRunning = false, scanDriving = true,
+                phoneAudioFeed = "projection", listening = true,
+            ),
+        )
+    }
 }
 
 class ShowStatusRulesTest {

@@ -284,6 +284,52 @@ class SendspinNativeEngine(
             }
             return out
         }
+
+        /**
+         * The lead reported to Light Sync for a chunk due at [presentationUs]: how long
+         * until it is heard, plus the output path's own latency and, for the light
+         * listener, the user's speaker offset (positive delays the lights). Clamped as
+         * [MAX_REPORTED_LEAD_US] explains. With [offsetMs] 0 this is exactly the
+         * expression [writeChunk] has always used.
+         */
+        internal fun reportedLeadUs(presentationUs: Long, nowUs: Long, outputLatencyUs: Long, offsetMs: Int = 0): Long =
+            ((presentationUs - nowUs).coerceAtLeast(0L) + outputLatencyUs + offsetMs * 1000L)
+                .coerceIn(0L, MAX_REPORTED_LEAD_US)
+
+        /**
+         * Hand one decoded chunk to Light Sync: analyse it and publish how far ahead of
+         * the ear it is. Touches no output, which is why the analysis-only path can be
+         * driven whole from a JVM test. Inline so the clock lambda costs nothing per chunk.
+         */
+        internal inline fun publishToLightSync(
+            tap: AudioAnalysisTap,
+            lead: AudioLead,
+            pcm: ByteArray,
+            offset: Int,
+            length: Int,
+            sampleRate: Int,
+            channels: Int,
+            mediaTimeUs: Long,
+            presentationUs: Long,
+            outputLatencyUs: Long,
+            offsetMs: Int,
+            nowUs: () -> Long,
+        ) {
+            tap.analyseExternal(
+                // Little-endian, as MediaCodec and the 24-bit conversion both write it.
+                // `wrap` alone is big-endian, and the tap read every sample byte-swapped.
+                ByteBuffer.wrap(pcm, offset, length).order(java.nio.ByteOrder.LITTLE_ENDIAN),
+                sampleRate,
+                channels,
+                android.media.AudioFormat.ENCODING_PCM_16BIT,
+                mediaTimeUs,
+            )
+            // Read after the analysis, as it always was, so the lead is measured from
+            // the moment it is published.
+            lead.leadUs = reportedLeadUs(presentationUs, nowUs(), outputLatencyUs, offsetMs)
+            // Track-relative, per the field's contract — the same value handed to the tap.
+            lead.mediaTimeUs = mediaTimeUs
+        }
     }
 
     // ---- Public state exposed to Playback.kt ----
@@ -329,6 +375,28 @@ class SendspinNativeEngine(
     @Volatile private var serverTimeline: Boolean = true
 
     @Volatile override var staticDelayMs: Int = 0
+
+    /**
+     * Light listener mode: decode the group's stream and feed the analysis tap, but open
+     * no output and play nothing. See [com.engabd.sendpin.hue.LightListener].
+     *
+     * Read once per stream, at [start]: a stream already running keeps the mode it began
+     * in, so flipping this mid-stream can never make a silent stream audible. A stream
+     * that starts in the other mode rebuilds the engine.
+     */
+    @Volatile var analysisOnly: Boolean = false
+
+    /** The user's speaker offset, added to the lead in [analysisOnly]. Positive delays the lights. */
+    @Volatile var analysisLeadOffsetMs: Int = 0
+
+    /** [analysisOnly] as it was when the current stream was configured. */
+    @Volatile private var configuredAnalysisOnly = false
+
+    /**
+     * When the last chunk handed to the tap is due, in [analysisOnly]. Stands in for the
+     * native ring's depth as the producer's backpressure, since there is no ring.
+     */
+    @Volatile private var analysisFedUntilUs = 0L
 
     // ---- Internal state ----
 
@@ -523,7 +591,8 @@ class SendspinNativeEngine(
             format.codec == activeCodec &&
             format.sampleRate == activeSampleRate &&
             format.channels == activeChannels &&
-            format.bitDepth == activeBitDepth
+            format.bitDepth == activeBitDepth &&
+            configuredAnalysisOnly == analysisOnly
 
         configureGeneration++
         cancelIdleStop()
@@ -550,10 +619,16 @@ class SendspinNativeEngine(
         activeSampleRate = format.sampleRate
         activeChannels = format.channels
         activeBitDepth = format.bitDepth
+        configuredAnalysisOnly = analysisOnly
 
-        startNativeOutput()
-        registerDeviceCallback()
-        refreshRoutedDevice()
+        // No Oboe stream at all for the listener: nothing to hear, and an open stream
+        // holds the audio HAL awake. Every native call below is a no-op on an output
+        // that was never started.
+        if (!configuredAnalysisOnly) {
+            startNativeOutput()
+            registerDeviceCallback()
+            refreshRoutedDevice()
+        }
 
         codecFailures = 0
         fatalReported = false
@@ -618,7 +693,7 @@ class SendspinNativeEngine(
             // gap went into freed memory. The thread is stopped for the swap and started
             // again on the new output; queue, marks and timeline are all kept.
             stopPlaybackThread()
-            startNativeOutput()
+            if (!configuredAnalysisOnly) startNativeOutput()
             ensurePlaybackThread()
         }
         codecFailures = 0
@@ -916,6 +991,7 @@ class SendspinNativeEngine(
         audioLead.leadUs = AudioLead.UNKNOWN
         audioLead.mediaTimeUs = AudioLead.UNKNOWN
         mediaAnchorUs = 0L
+        analysisFedUntilUs = 0L
     }
 
     // ---- Volume management ----
@@ -968,7 +1044,9 @@ class SendspinNativeEngine(
         // acoustic offset is what the per-player static delay is for.
         val unreportedLatencyUs = 0L
         // Static delay: positive = this path adds latency = play earlier (subtract).
-        val staticDelayOffsetUs = staticDelayMs.toLong() * 1000L
+        // Not for the listener: it is this phone's own output trim, and the listener
+        // has no output — the group timeline itself is when its audio is heard.
+        val staticDelayOffsetUs = if (configuredAnalysisOnly) 0L else staticDelayMs.toLong() * 1000L
         val presentationUs = local.localOutputUs +
             local.headroomUs -
             staticDelayUs -
@@ -1104,7 +1182,16 @@ class SendspinNativeEngine(
 
                 // Backpressure: keep the native ring around RING_TARGET_MS.
                 val ringTargetFrames = activeSampleRate.toLong() * RING_TARGET_MS / 1000L
-                if (nativeOutput.bufferedFrames() >= ringTargetFrames) {
+                // The listener has no ring to fill, so it paces on how far ahead of the
+                // group timeline it has already fed the tap - the same lead the ring gives
+                // the audible path, without which it would analyse the server's whole
+                // read-ahead in one burst.
+                val buffered = if (configuredAnalysisOnly) {
+                    (analysisFedUntilUs - nowUs()).coerceAtLeast(0L) * activeSampleRate / 1_000_000L
+                } else {
+                    nativeOutput.bufferedFrames()
+                }
+                if (buffered >= ringTargetFrames) {
                     sleepMs(10)
                     continue
                 }
@@ -1309,7 +1396,12 @@ class SendspinNativeEngine(
             writeLength = length
         }
 
-        nativeOutput.write(writePcm, writeOffset, writeLength, plan.presentationUs)
+        // The listener plays nothing; the chunk goes to the tap alone.
+        if (configuredAnalysisOnly) {
+            analysisFedUntilUs = plan.presentationUs + chunkDurationUs
+        } else {
+            nativeOutput.write(writePcm, writeOffset, writeLength, plan.presentationUs)
+        }
 
         // Feed the AudioAnalysisTap for Hue Light Sync. analyseExternal checks
         // internally whether the tap is active, so no guard is needed here.
@@ -1318,14 +1410,6 @@ class SendspinNativeEngine(
         val frames = writeLength / (activeChannels * 2).coerceAtLeast(1)
         if (mediaAnchorUs == 0L) mediaAnchorUs = plan.presentationUs
         val mediaTimeUs = plan.presentationUs - mediaAnchorUs
-        val buf = ByteBuffer.wrap(writePcm, writeOffset, writeLength)
-        audioAnalysisTap.analyseExternal(
-            buf,
-            activeSampleRate,
-            activeChannels,
-            android.media.AudioFormat.ENCODING_PCM_16BIT,
-            mediaTimeUs,
-        )
 
         // Update AudioLead: how far ahead of the speaker the tap is.
         //
@@ -1348,11 +1432,17 @@ class SendspinNativeEngine(
         // and reporting that pushes the light show's hold past the frame history it
         // keeps — the room simply stops reacting until the delay slews back down. See
         // [MAX_REPORTED_LEAD_US].
-        val scheduledAheadUs = (plan.presentationUs - nowUs()).coerceAtLeast(0L)
-        audioLead.leadUs = (scheduledAheadUs + plan.outputLatencyUs).coerceAtMost(MAX_REPORTED_LEAD_US)
-        // Track-relative, per the field's contract — the same value handed to the tap
-        // just above, not the absolute output-clock stamp it was being given.
-        audioLead.mediaTimeUs = mediaTimeUs
+        //
+        // The listener adds the user's speaker offset: its lead is the group timeline
+        // alone, and the remote speaker's own acoustic latency is the one thing that
+        // timeline does not know.
+        publishToLightSync(
+            audioAnalysisTap, audioLead, writePcm, writeOffset, writeLength,
+            activeSampleRate, activeChannels, mediaTimeUs,
+            plan.presentationUs, plan.outputLatencyUs,
+            if (configuredAnalysisOnly) analysisLeadOffsetMs else 0,
+            ::nowUs,
+        )
 
         writtenChunkCount++
 
