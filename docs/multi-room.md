@@ -4,7 +4,7 @@ CAMusic as a Sendspin player on Music Assistant, and AirPlay output for what the
 
 Music Assistant is one of the [libraries](libraries.md), and it brings **speaker grouping across the house**.
 
-**As a controller.** Group and ungroup speakers, save a grouping and its volumes as a custom group to apply in one tap (each server lists its own), create and remove permanent group speakers (as a sync group when the speakers sync together, or through Music Assistant's Universal Group provider when it is added), send a typed or spoken announcement to any speaker, set per-player sync offsets, drive the queue,
+**As a controller.** Group and ungroup speakers, send a typed or spoken announcement to any speaker, set per-player sync offsets, drive the queue,
 and reach MA's gapless, crossfade and DSP settings from here rather than from its web UI. The
 library front page is built from MA's own Discover rows, so a row your providers add appears as soon as Music Assistant offers it.
 

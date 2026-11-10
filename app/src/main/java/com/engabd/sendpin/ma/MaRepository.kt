@@ -1193,23 +1193,6 @@ class MaRepository(
             dynamic?.let { put("dynamic", it) }
         })
 
-    /**
-     * The providers on this server that can create a group player, by instance id and by
-     * domain (MA's `players/create_group_player` accepts either): those listing the
-     * `create_group_player` feature in `providers`. Since MA 2.8 that is the built-in
-     * `sync_group` and, only when the user has added it, `universal_group`.
-     */
-    suspend fun groupProviders(): Set<String> {
-        val list = api.sendCommand("providers") as? JsonArray ?: return emptySet()
-        return list.mapNotNull { it as? JsonObject }
-            .filter { o ->
-                o["available"]?.jsonPrimitive?.booleanOrNull != false &&
-                    (o["supported_features"] as? JsonArray).orEmpty().any { it.jsonPrimitive.contentOrNull == "create_group_player" }
-            }
-            .flatMap { o -> listOfNotNull(o["instance_id"]?.jsonPrimitive?.contentOrNull, o["domain"]?.jsonPrimitive?.contentOrNull) }
-            .toSet()
-    }
-
     /** Remove a player permanently (ADMIN). */
     suspend fun removePlayer(playerId: String) =
         api.sendCommand("players/remove", buildJsonObject { put("player_id", playerId) })

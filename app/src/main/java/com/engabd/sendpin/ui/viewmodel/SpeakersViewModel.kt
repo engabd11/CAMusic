@@ -12,7 +12,6 @@ import com.engabd.sendpin.ma.Announcer
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaPlayer
 import com.engabd.sendpin.ma.MaRepository
-import com.engabd.sendpin.ma.SpeakerScene
 import com.engabd.sendpin.ma.SyncDelay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -57,8 +56,6 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         val offsetKnown: Boolean,
         /** This player can lead a sync group, so it's a valid "Play here" target. */
         val canLead: Boolean,
-        /** A group player in its own right, the only kind that can be removed. */
-        val isGroup: Boolean = false,
         /** The phone sitting silently in a group for Light Sync. */
         val isListener: Boolean = false,
         /** MA can reach it now, so it can take an announcement. */
@@ -160,23 +157,6 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     val leaderIsPlaying: StateFlow<Boolean> = combine(_players, _target) { players, target ->
         players.firstOrNull { it.playerId == leaderIdOf(players, target) }?.isPlaying ?: false
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
-    /** Every saved grouping, on any server: what writes start from, so none are lost. */
-    private val allScenes: StateFlow<List<SpeakerScene>> =
-        settings.speakerScenes.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
-    /** The Music Assistant server this screen talks to: the first in the list, as [AppSettings.maBaseUrl] is. */
-    private val maServerId: StateFlow<String> = settings.servers
-        .map { list -> list.firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT }?.id.orEmpty() }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
-
-    /** Saved groupings for this server. See [SpeakerScene]. */
-    val scenes: StateFlow<List<SpeakerScene>> = combine(allScenes, maServerId) { list, server ->
-        SpeakerScene.forServer(list, server)
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
-    /** What the last custom-group or group-speaker action did, for the custom groups dialog. */
-    private val _sceneStatus = MutableStateFlow<String?>(null); val sceneStatus: StateFlow<String?> = _sceneStatus
 
     init {
         viewModelScope.launch {
@@ -418,96 +398,6 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // --- scenes and group speakers ------------------------------------------
-
-    private val listenerId: String? get() = (getApplication<Application>() as SendpinApp).lightListener.listeningAs.value
-
-    /** The players as the screen shows them: MA's answer with any unconfirmed volume on top. */
-    private fun shownPlayers(): List<MaPlayer> = _players.value.map { it.withVolume(_volumeIntent.value) }
-
-    fun saveScene(name: String) {
-        // The group as the screen shows it, so a join MA has not confirmed yet is kept.
-        val leader = leaderId
-        val inGroup = joinedIds(_players.value, _joinIntent.value, leader)
-        val scene = SpeakerScene.capture(name, leader, shownPlayers(), listenerId, maServerId.value, inGroup)
-        viewModelScope.launch { settings.saveSpeakerScenes(allScenes.value + scene) }
-        _sceneStatus.value = "Saved \"$name\" with ${scene.members.size} ${if (scene.members.size == 1) "speaker" else "speakers"}"
-    }
-
-    fun renameScene(scene: SpeakerScene, name: String) {
-        viewModelScope.launch { settings.saveSpeakerScenes(allScenes.value.map { if (it.id == scene.id) it.copy(name = name) else it }) }
-    }
-
-    fun deleteScene(scene: SpeakerScene) {
-        viewModelScope.launch { settings.saveSpeakerScenes(allScenes.value.filterNot { it.id == scene.id }) }
-    }
-
-    /**
-     * Bring the speakers to [scene] through the same paths a tap on this screen uses,
-     * intents included, so the screen shows the scene at once rather than snapping back
-     * while MA catches up. Nothing here plays, pauses or stops anything.
-     */
-    fun recallScene(scene: SpeakerScene) {
-        val plan = SpeakerScene.plan(scene, _players.value, leaderId, listenerId)
-        val skipped = if (plan.skipped.isEmpty()) "" else " Skipped, not available: ${plan.skipped.joinToString(", ")}."
-        if (plan.isNoop) {
-            _sceneStatus.value = (if (scene.members.size > plan.skipped.size) "\"${scene.name}\" is already set." else "None of \"${scene.name}\" is available.") + skipped
-            return
-        }
-        if (plan.leaderChanges) selectPlayer(plan.leader)
-        _joinIntent.update { m -> m + plan.add.associateWith { Intent(true) } + plan.remove.associateWith { Intent(false) } }
-        plan.volumes.forEach { (id, level) -> setPlayerVolumeLevel(id, level) }
-        _sceneStatus.value = "Applied \"${scene.name}\".$skipped"
-        act {
-            // Out of the old groups first, so a speaker joining is free to.
-            if (plan.remove.isNotEmpty()) repo.ungroup(plan.remove)
-            if (plan.add.isNotEmpty()) repo.setMembers(plan.leader, add = plan.add)
-        }
-    }
-
-    /**
-     * Providers on this server that can create a group player, see [MaRepository.groupProviders].
-     * Null until asked, and when the server would not say.
-     */
-    private val _groupProviders = MutableStateFlow<Set<String>?>(null)
-    val groupProviders: StateFlow<Set<String>?> = _groupProviders
-
-    fun loadGroupProviders() {
-        viewModelScope.launch {
-            runCatchingCancellable { repo.groupProviders() }
-                .onSuccess { _groupProviders.value = it }
-                .onFailure { _sceneStatus.value = "Couldn't ask Music Assistant which groups it can make: ${it.message}" }
-        }
-    }
-
-    /** The provider that can group [members] permanently, or null. See [SpeakerScene.groupProvider]. */
-    fun groupProviderFor(members: Collection<String>, canCreate: Set<String>?): String? =
-        SpeakerScene.groupProvider(_players.value.filter { it.playerId in members }, canCreate.orEmpty())
-
-    /**
-     * A permanent group player, which MA then lists as a speaker of its own. The provider
-     * is chosen from the members: hard-coding `universal_group` failed on every server
-     * that has not added that optional provider.
-     */
-    fun createGroupSpeaker(name: String, members: List<String>) {
-        val provider = groupProviderFor(members, _groupProviders.value) ?: return
-        viewModelScope.launch {
-            _sceneStatus.value = try {
-                repo.createGroupPlayer(provider, name, members)
-                maNowPlaying.refreshNow()
-                "Created the group speaker \"$name\""
-            } catch (e: Exception) {
-                e.message ?: "Couldn't create the group speaker"
-            }
-        }
-    }
-
-    /** Remove a group player. Only ever offered for one: see [SpeakerUi.isGroup]. */
-    fun removeGroupSpeaker(playerId: String) {
-        if (_players.value.firstOrNull { it.playerId == playerId }?.type != "group") return
-        act { repo.removePlayer(playerId) }
-    }
-
     // --- helpers ----------------------------------------------------------
 
     private fun leaderIdOf(players: List<MaPlayer>, target: String): String {
@@ -582,7 +472,6 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
             // showed a value that was not its own.
             offsetKnown = delay != null,
             canLead = canSetMembers,
-            isGroup = type == "group",
             isListener = listener,
             available = available,
         )
