@@ -28,6 +28,22 @@ class SpeakerSceneTest {
     }
 
     @Test
+    fun `capture keeps a speaker the screen shows joined before MA confirms it`() {
+        val players = listOf(p("lead", 40), p("kitchen", 25), p("garage", 70))
+        val scene = SpeakerScene.capture("Dinner", "lead", players, null, inGroup = setOf("lead", "kitchen"))
+        assertEquals(listOf("lead", "kitchen"), scene.members.map { it.id })
+    }
+
+    @Test
+    fun `a scene shows only on its own server, and an untagged one everywhere`() {
+        val here = SpeakerScene(name = "Here", server = "ma1")
+        val there = SpeakerScene(name = "There", server = "ma2")
+        val old = SpeakerScene(name = "Old")
+        assertEquals(listOf(here, old), SpeakerScene.forServer(listOf(here, there, old), "ma1"))
+        assertEquals("ma1", SpeakerScene.capture("X", "lead", listOf(p("lead")), null, server = "ma1").server)
+    }
+
+    @Test
     fun `recalling the scene the speakers are already in does nothing`() {
         val players = listOf(p("lead", 40, childs = listOf("kitchen")), p("kitchen", 25, syncedTo = "lead"))
         val scene = SpeakerScene.capture("Dinner", "lead", players, listenerId = null)

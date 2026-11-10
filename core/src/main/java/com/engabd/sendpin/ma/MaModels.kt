@@ -200,6 +200,13 @@ data class MaItem(
      * not. The "Never played" shelf is the reader; a source without it is skipped.
      */
     val addedAtMs: Long? = null,
+    /**
+     * Music Assistant's `fully_played` on a podcast episode or audiobook: heard to the
+     * end. Null where MA did not say, which is every other kind of item.
+     */
+    val fullyPlayed: Boolean? = null,
+    /** Music Assistant's `resume_position_ms` on the same items: where listening stopped. */
+    val resumePositionMs: Long? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -961,6 +968,9 @@ object MaParse {
             year = o["year"]?.jsonPrimitive?.intOrNull,
             addedAtMs = o["timestamp_added"]?.jsonPrimitive?.doubleOrNull
                 ?.takeIf { it > 0 }?.let { (it * 1000).toLong() },
+            // `as?`, not `.jsonPrimitive`: a field in an odd shape is skipped, not fatal.
+            fullyPlayed = (o["fully_played"] as? JsonPrimitive)?.booleanOrNull,
+            resumePositionMs = (o["resume_position_ms"] as? JsonPrimitive)?.let { it.longOrNull ?: it.doubleOrNull?.toLong() },
             genres = genreList(o),
             trackNumber = o["track_number"]?.jsonPrimitive?.intOrNull,
             discNumber = o["disc_number"]?.jsonPrimitive?.intOrNull,

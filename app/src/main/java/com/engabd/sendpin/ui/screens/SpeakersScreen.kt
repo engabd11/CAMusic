@@ -41,6 +41,7 @@ import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel
 import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel.SpeakerUi
+import kotlin.math.roundToInt
 
 @Composable
 fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewModel()) {
@@ -246,7 +247,7 @@ private fun GroupHeroCard(master: Float, activeCount: Int, title: String, onMast
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
                 Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = TextSecondary, modifier = Modifier.size(16.dp))
                 HSlider(master, onMaster, modifier = Modifier.weight(1f), trackHeight = 5.dp, knob = 15.dp)
-                Text("${(master * 100).toInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text("${(master * 100).roundToInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
         }
     }
@@ -284,7 +285,7 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = TextMuted, modifier = Modifier.size(14.dp))
                 HSlider(p.volume, onVol, modifier = Modifier.weight(1f))
-                Text("${(p.volume * 100).toInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                Text("${(p.volume * 100).roundToInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
             }
             // Sync offset only for members. The leader is the reference clock of the
             // group; nudging it would move the whole group, so per-speaker latency trim

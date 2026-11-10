@@ -84,4 +84,17 @@ class MaParseFieldShapesTest {
         assertEquals(listOf("volume_set"), players.single().supportedFeatures)
         assertEquals(emptyList<String>(), players.single().canGroupWith)
     }
+
+    @Test
+    fun `an episode's played state is read, and is unknown where MA does not send it`() {
+        val heard = item("""{"item_id": "e1", "name": "Ep", "media_type": "podcast_episode", "fully_played": true, "resume_position_ms": 0}""")
+        assertEquals(true, heard?.fullyPlayed)
+        assertEquals(0L, heard?.resumePositionMs)
+        val halfway = item("""{"item_id": "e2", "name": "Ep", "media_type": "podcast_episode", "fully_played": false, "resume_position_ms": 61500.0}""")
+        assertEquals(false, halfway?.fullyPlayed)
+        assertEquals(61_500L, halfway?.resumePositionMs)
+        val track = item("""{"item_id": "t", "name": "Song", "media_type": "track", "fully_played": {"odd": 1}}""")
+        assertEquals(null, track?.fullyPlayed)
+        assertEquals(null, track?.resumePositionMs)
+    }
 }

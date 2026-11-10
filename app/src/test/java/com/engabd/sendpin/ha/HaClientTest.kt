@@ -126,6 +126,28 @@ class HaClientTest {
     }
 
     @Test
+    fun `a command while the socket is down waits for the redial instead of failing`() = runBlocking {
+        // First HA: authenticates, then goes away as a restart would.
+        server.enqueue(MockResponse.Builder().webSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { webSocket.send("""{"type":"auth_required"}""") }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                seen += "auth"
+                webSocket.send("""{"type":"auth_ok"}""")
+                webSocket.close(1001, "restarting")
+            }
+        }).build())
+        fakeHa(authDelayMs = 0) { ws, id, _ -> ws.send("""{"id":$id,"type":"result","success":true,"result":[]}""") }
+        val client = HaClient()
+        client.connect(baseUrl(), "token")
+        withTimeout(5_000) { while (seen.isEmpty() || client.state.value == HaClient.State.CONNECTED || client.state.value == HaClient.State.CONNECTING) delay(5) }
+        // Down, redial pending: this used to throw "Not connected" at once.
+        client.getStates()
+        assertEquals(listOf("auth", "auth", "get_states"), seen.toList())
+        client.disconnect()
+    }
+
+    @Test
     fun `no redial after disconnect or a rejected token`() {
         assertTrue(HaClient.shouldReconnect(userClosed = false, authRejected = false, wsUrl = "ws://ha/api/websocket"))
         assertFalse(HaClient.shouldReconnect(userClosed = true, authRejected = false, wsUrl = "ws://ha/api/websocket"))

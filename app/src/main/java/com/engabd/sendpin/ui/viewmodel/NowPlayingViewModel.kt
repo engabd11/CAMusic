@@ -52,6 +52,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
+import kotlin.math.roundToInt
 
 /**
  * Now-Playing as a **controller**: reflects and controls the currently *selected*
@@ -1309,7 +1310,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             else deviceVolume.set(level01.coerceIn(0f, 1f))
             return
         }
-        val lvl = (level01 * 100).toInt().coerceIn(0, 100)
+        val lvl = (level01 * 100).roundToInt().coerceIn(0, 100)
         // When *this phone* is the Music Assistant player, its player volume is the
         // phone's media volume — see `Playback.applyUserVolume`. Setting it here as
         // well as sending the RPC means the rocker's level and the slider agree the

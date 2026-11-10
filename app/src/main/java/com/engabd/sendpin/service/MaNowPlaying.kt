@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
 /**
  * What the **selected** Music Assistant player is doing, at process scope.
@@ -551,7 +552,7 @@ class MaNowPlaying(private val app: Context) {
 
     /** [level01] is 0..1, as the media session reports it. */
     fun setVolume(level01: Float) = command {
-        repo.setVolume(targetId(), (level01.coerceIn(0f, 1f) * 100).toInt())
+        repo.setVolume(targetId(), (level01.coerceIn(0f, 1f) * 100).roundToInt())
     }
 
     private fun command(block: suspend () -> Unit) {

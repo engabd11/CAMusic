@@ -41,6 +41,7 @@ import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * What identifies the album on show, for [AlbumArt]'s page-turn.
@@ -315,7 +316,7 @@ fun VolumeRow(volume: Float, onChange: (Float) -> Unit) {
             modifier = Modifier.weight(1f), knob = 12.dp, accented = false,
         )
         Text(
-            "${(volume * 100).toInt()}", color = TextMuted, fontFamily = MonoFont,
+            "${(volume * 100).roundToInt()}", color = TextMuted, fontFamily = MonoFont,
             fontWeight = FontWeight.Bold, fontSize = 11.sp,
             modifier = Modifier.width(22.dp), textAlign = TextAlign.End,
         )

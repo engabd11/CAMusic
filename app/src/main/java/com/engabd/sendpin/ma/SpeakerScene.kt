@@ -23,6 +23,12 @@ data class SpeakerScene(
     val leader: String = "",
     /** Every speaker in the scene, the leader included. */
     val members: List<Member> = emptyList(),
+    /**
+     * The Music Assistant server it was saved on (its `ServerConfig.id`), so another
+     * server does not list it with every speaker skipped. Blank on scenes saved before
+     * this was kept: those show on every server rather than vanishing.
+     */
+    val server: String = "",
 ) {
     /** One speaker and its volume. The name is only for saying which one is missing. */
     @Serializable
@@ -60,13 +66,21 @@ data class SpeakerScene(
          *
          * [listenerId] is the phone sitting silently in the group for Light Sync: it is
          * not a speaker anyone chose, and recalling it would put the phone into a group
-         * Light Sync is not running for.
+         * Light Sync is not running for. [inGroup] is who the screen shows as grouped,
+         * which can be ahead of MA's answer by a join it has not confirmed yet.
          */
-        fun capture(name: String, leader: String, players: List<MaPlayer>, listenerId: String?): SpeakerScene {
-            val inGroup = groupOf(leader, players)
+        fun capture(
+            name: String,
+            leader: String,
+            players: List<MaPlayer>,
+            listenerId: String?,
+            server: String = "",
+            inGroup: Set<String> = groupOf(leader, players),
+        ): SpeakerScene {
             return SpeakerScene(
                 name = name,
                 leader = leader,
+                server = server,
                 members = players
                     .filter { it.playerId in inGroup && it.playerId != listenerId }
                     .sortedByDescending { it.playerId == leader }
@@ -99,6 +113,10 @@ data class SpeakerScene(
             val volumes = usable.filter { byId[it.id]?.volumeLevel != it.volume }.associate { it.id to it.volume }
             return Plan(leader, add, detach + leaving, volumes, skipped, leaderChanges = leader != currentLeader)
         }
+
+        /** The scenes that belong on [server]: its own and any saved before scenes were tagged. */
+        fun forServer(list: List<SpeakerScene>, server: String): List<SpeakerScene> =
+            list.filter { it.server.isBlank() || it.server == server }
 
         /** [leader] and every player synced to it. */
         private fun groupOf(leader: String, players: List<MaPlayer>): Set<String> {

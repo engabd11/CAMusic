@@ -244,9 +244,13 @@ fun BoxScope.MediaActionsSheet(
                 ) { onClose(); onToggleFavourite() }
             }
             onMarkPlayed?.let { mark ->
-                // Both, because the item does not say which it is now.
-                ActionRow(Icons.Default.DoneAll, "Mark as played", "Off Continue listening") { onClose(); mark(true) }
-                ActionRow(Icons.Default.RemoveDone, "Mark as unplayed", "Starts again from the beginning") { onClose(); mark(false) }
+                // Only the one that would change something, where MA said; both when it did not.
+                if (item.fullyPlayed != true) {
+                    ActionRow(Icons.Default.DoneAll, "Mark as played", "Off Continue listening") { onClose(); mark(true) }
+                }
+                if (item.fullyPlayed != false || (item.resumePositionMs ?: 1L) > 0L) {
+                    ActionRow(Icons.Default.RemoveDone, "Mark as unplayed", "Starts again from the beginning") { onClose(); mark(false) }
+                }
             }
             onShare?.let { share ->
                 ActionRow(Icons.Default.Share, "Share", item.name) { onClose(); share() }

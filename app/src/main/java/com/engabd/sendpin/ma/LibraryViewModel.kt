@@ -303,8 +303,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * self-hosted library that exists" back when it was. It stopped being that the
      * day Jellyfin arrived: a Jellyfin track got no download button — on rows or in
      * the long-press sheet — while the very same screen's "Download all" bar offered
-     * to fetch the whole list, because that one had already been widened. A Plex row
-     * got a favourite heart that calls a `setStarred` Plex has no endpoint for.
+     * to fetch the whole list, because that one had already been widened. The heart
+     * follows the library's own declaration too: Plex has one now, its loved rating
+     * (see `PlexSource`), because it declares [Capability.STAR].
      *
      * So the rows ask [Capability] instead. Published as a flow rather than read
      * during composition for the reason `AlbumDetailViewModel.canDownload` gives:

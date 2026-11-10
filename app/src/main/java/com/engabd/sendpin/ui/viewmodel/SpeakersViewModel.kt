@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.ma.Announcer
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaPlayer
@@ -17,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** How long a local intent outranks the server's answer. */
 private const val SETTLE_MS = 6_000L
@@ -157,9 +159,19 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         players.firstOrNull { it.playerId == leaderIdOf(players, target) }?.isPlaying ?: false
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    /** Saved groupings. See [SpeakerScene]. */
-    val scenes: StateFlow<List<SpeakerScene>> =
+    /** Every saved grouping, on any server: what writes start from, so none are lost. */
+    private val allScenes: StateFlow<List<SpeakerScene>> =
         settings.speakerScenes.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** The Music Assistant server this screen talks to: the first in the list, as [AppSettings.maBaseUrl] is. */
+    private val maServerId: StateFlow<String> = settings.servers
+        .map { list -> list.firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT }?.id.orEmpty() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    /** Saved groupings for this server. See [SpeakerScene]. */
+    val scenes: StateFlow<List<SpeakerScene>> = combine(allScenes, maServerId) { list, server ->
+        SpeakerScene.forServer(list, server)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** What the last scene or group-speaker action did, for the scenes sheet. */
     private val _sceneStatus = MutableStateFlow<String?>(null); val sceneStatus: StateFlow<String?> = _sceneStatus
@@ -336,7 +348,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     private val volumeJobs = mutableMapOf<String, kotlinx.coroutines.Job>()
     private var groupVolJob: kotlinx.coroutines.Job? = null
 
-    fun setPlayerVolume(playerId: String, level01: Float) = setPlayerVolumeLevel(playerId, (level01 * 100).toInt())
+    fun setPlayerVolume(playerId: String, level01: Float) = setPlayerVolumeLevel(playerId, (level01 * 100).roundToInt())
 
     private fun setPlayerVolumeLevel(playerId: String, level: Int) {
         val lvl = level.coerceIn(0, 100)
@@ -355,7 +367,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
      * there is nothing grouped to fan out to.
      */
     fun setGroupVolume(level01: Float) {
-        val lvl = (level01 * 100).toInt().coerceIn(0, 100)
+        val lvl = (level01 * 100).roundToInt().coerceIn(0, 100)
         val leader = leaderId
         val isGroup = joinedIds(_players.value, _joinIntent.value, leader).size > 1
         _groupVolumeIntent.value = Intent(lvl)
@@ -412,17 +424,20 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     private fun shownPlayers(): List<MaPlayer> = _players.value.map { it.withVolume(_volumeIntent.value) }
 
     fun saveScene(name: String) {
-        val scene = SpeakerScene.capture(name, leaderId, shownPlayers(), listenerId)
-        viewModelScope.launch { settings.saveSpeakerScenes(scenes.value + scene) }
+        // The group as the screen shows it, so a join MA has not confirmed yet is kept.
+        val leader = leaderId
+        val inGroup = joinedIds(_players.value, _joinIntent.value, leader)
+        val scene = SpeakerScene.capture(name, leader, shownPlayers(), listenerId, maServerId.value, inGroup)
+        viewModelScope.launch { settings.saveSpeakerScenes(allScenes.value + scene) }
         _sceneStatus.value = "Saved \"$name\" with ${scene.members.size} ${if (scene.members.size == 1) "speaker" else "speakers"}"
     }
 
     fun renameScene(scene: SpeakerScene, name: String) {
-        viewModelScope.launch { settings.saveSpeakerScenes(scenes.value.map { if (it.id == scene.id) it.copy(name = name) else it }) }
+        viewModelScope.launch { settings.saveSpeakerScenes(allScenes.value.map { if (it.id == scene.id) it.copy(name = name) else it }) }
     }
 
     fun deleteScene(scene: SpeakerScene) {
-        viewModelScope.launch { settings.saveSpeakerScenes(scenes.value.filterNot { it.id == scene.id }) }
+        viewModelScope.launch { settings.saveSpeakerScenes(allScenes.value.filterNot { it.id == scene.id }) }
     }
 
     /**

@@ -47,6 +47,7 @@ import com.engabd.sendpin.ui.screens.settings.ToggleRow
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel
 import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel.SpeakerUi
+import kotlin.math.roundToInt
 
 /**
  * "Announce": say something on chosen Music Assistant speakers, typed (spoken by the
@@ -87,7 +88,7 @@ fun BoxScope.AnnounceSheet(
     fun request() = Announcer.Request(
         players.filter { it.id in selected }.associate { it.id to it.name },
         chime,
-        (volume * 100).toInt(),
+        (volume * 100).roundToInt(),
     )
     val ready = selected.isNotEmpty() && !busy
 
@@ -184,7 +185,7 @@ fun BoxScope.AnnounceSheet(
             SectionLabel("Announcement volume")
             SliderRow(
                 volume,
-                format = { "${(it * 100).toInt()}" },
+                format = { "${(it * 100).roundToInt()}" },
                 modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "Announcement volume" },
             ) { volume = it }
 

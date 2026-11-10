@@ -63,6 +63,7 @@ import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.EffectsViewModel
+import kotlin.math.roundToInt
 
 /**
  * Ambience effects: lighting shows with their own sound, independent of music.
@@ -308,9 +309,9 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                                 val v = vDrag ?: (volume / 100f)
                                 LabeledSliderRow(
                                     value = v,
-                                    label = "${(v * 100).toInt()}%",
+                                    label = "${(v * 100).roundToInt()}%",
                                     onChange = { vDrag = it },
-                                    onCommit = { vDrag = null; viewModel.setVolume((it * 100).toInt()) },
+                                    onCommit = { vDrag = null; viewModel.setVolume((it * 100).roundToInt()) },
                                 )
 
                                 Spacer(Modifier.height(14.dp))

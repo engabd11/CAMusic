@@ -43,6 +43,11 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         /** Whether a socket that just dropped should be dialled again. */
         internal fun shouldReconnect(userClosed: Boolean, authRejected: Boolean, wsUrl: String): Boolean =
             !userClosed && !authRejected && wsUrl.isNotBlank()
+
+        /** [reconnectNow]'s limit against itself, as `MaApiClient.RECONNECT_MIN_GAP_MS`. */
+        private const val RECONNECT_MIN_GAP_MS = 750L
+        /** How long a command waits for a redial it set off, before failing. */
+        private const val REDIAL_WAIT_MS = 5_000L
     }
 
     enum class State { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
@@ -63,6 +68,8 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     @Volatile private var authRejected = false
     private var attempt = 0
     private var reconnectJob: Job? = null
+    /** When a socket was last opened, for [reconnectNow]'s rate limit. */
+    @Volatile private var lastDialAtMs = 0L
 
     /**
      * [baseUrl] like `http://host:8123` (ws/wss derived). A no-op when already connected,
@@ -86,6 +93,7 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     // Same rule as MaApiClient.dial: a socket nobody references is not a socket
     // that closes. Whatever was here is shut before its replacement is opened.
     private fun dial() {
+        lastDialAtMs = System.currentTimeMillis()
         ws?.close(1000, "redial")
         ws = http.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
     }
@@ -107,6 +115,21 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
             _state.value = State.CONNECTING
             dial()
         }
+    }
+
+    /**
+     * Dial at once instead of waiting out the backoff, as `MaApiClient.reconnectNow`:
+     * a command is someone waiting. A no-op when a socket is already up or on its
+     * way, when no redial is allowed, or when one was opened moments ago.
+     */
+    private fun reconnectNow() {
+        if (!shouldReconnect(userClosed, authRejected, wsUrl)) return
+        if (_state.value == State.CONNECTED || _state.value == State.CONNECTING) return
+        if (System.currentTimeMillis() - lastDialAtMs < RECONNECT_MIN_GAP_MS) return
+        reconnectJob?.cancel()
+        attempt = 0
+        _state.value = State.CONNECTING
+        dial()
     }
 
     /**
@@ -181,11 +204,20 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         // HA ignores anything sent before `auth_ok` and then drops the socket, so a
         // command issued straight after connect() — which is how the one-shot "switch
         // every area off" path used it — never reached HA at all. Wait for the
-        // handshake to settle; fail fast if it did not succeed.
+        // handshake to settle; fail fast if it did not succeed. A command arriving while
+        // the socket is down (a redial waiting out its backoff) dials now and waits
+        // briefly for it, through a failed attempt or two, rather than failing at once.
+        val down = _state.value == State.ERROR || _state.value == State.DISCONNECTED
+        if (down) reconnectNow()
         val settled = try {
-            withTimeout(timeoutMs) { state.first { it != State.CONNECTING } }
+            withTimeout(if (down) minOf(timeoutMs, REDIAL_WAIT_MS) else timeoutMs) {
+                state.first {
+                    it == State.CONNECTED ||
+                        (it != State.CONNECTING && (!down || !shouldReconnect(userClosed, authRejected, wsUrl)))
+                }
+            }
         } catch (e: TimeoutCancellationException) {
-            throw HaException("Home Assistant did not answer")
+            throw HaException(if (down) "Not connected" else "Home Assistant did not answer")
         }
         if (settled != State.CONNECTED) throw HaException("Not connected")
         val socket = ws ?: throw HaException("Not connected")
