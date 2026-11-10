@@ -273,7 +273,7 @@ class PlaybackOwner(
 
     fun next() = route(
         local = { local.next() },
-        selfSendspin = { sendspin.onMediaNext() },
+        selfSendspin = { maNowPlaying.notePressedNext(); sendspin.onMediaNext() },
         remote = { maNowPlaying.next() },
     )
 

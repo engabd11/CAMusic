@@ -1,6 +1,5 @@
 package com.engabd.sendpin.audio
 
-import com.engabd.sendpin.local.db.RecentPlay
 import com.engabd.sendpin.local.db.TrackSignalEntity
 import com.engabd.sendpin.ma.MaItem
 
@@ -9,8 +8,10 @@ import com.engabd.sendpin.ma.MaItem
  * too recently to come round again, and how much they have shown they like it.
  *
  * Pure, so the rules can be tested without a database. The caller builds one from
- * what is on disk — `play_history` and the `track_signal` table — before each batch,
- * which is what makes "don't replay" hold across restarts rather than for one session.
+ * the `track_signal` table before each batch, which is what makes "don't replay"
+ * hold across restarts rather than for one session. A play is filed there as well as
+ * a serve, under the same key, so a track holds one place in the window however it
+ * was heard, and Music Assistant plays count as well as the phone's own.
  *
  * ## The rules
  *
@@ -27,18 +28,18 @@ import com.engabd.sendpin.ma.MaItem
  *    the listener's favour without letting the same hearted songs crowd every set.
  */
 class RadioMemory(
-    /** When each track was last played or served, epoch ms, by any of its keys. */
+    /** When each track was last played or served, epoch ms, by its key. */
     heard: Map<String, Long> = emptyMap(),
     /** Skips by key. */
     private val skips: Map<String, Skip> = emptyMap(),
     private val limit: Int = HISTORY_LIMIT,
     private val clock: () -> Long = System::currentTimeMillis,
     /**
-     * Every key a candidate may be filed under. A history row carries only the bare
-     * library id; a served or skipped one carries the provider-qualified key scans
-     * use, so the caller answers with both.
+     * The one key a track is filed under, whether served, played or skipped: in the
+     * app, its scan key. One form, so a track is never two entries in the window, nor
+     * missed because it was filed under the other.
      */
-    private val keysOf: (MaItem) -> List<String> = { listOf(it.itemId) },
+    private val keyOf: (MaItem) -> String = { it.itemId },
 ) {
     data class Skip(val count: Int, val lastAtMs: Long)
 
@@ -46,10 +47,10 @@ class RadioMemory(
     private val heard = LinkedHashMap(heard)
     private var blockedCache: Set<String>? = null
 
-    /** Note [ids] as served now — what this session has just queued. */
-    fun served(ids: Collection<String>) {
+    /** Note [keys] as served now — what this session has just queued. See [key]. */
+    fun served(keys: Collection<String>) {
         val now = clock()
-        ids.forEach {
+        keys.forEach {
             heard.remove(it)
             heard[it] = now
         }
@@ -68,16 +69,15 @@ class RadioMemory(
         .mapTo(HashSet()) { it.key }
         .also { blockedCache = it }
 
-    // Asked from sort comparators, so each item's keys are worked out once.
-    private val keyCache = HashMap<String, List<String>>()
-    private fun keys(item: MaItem) = keyCache.getOrPut(item.provider + "|" + item.itemId) { keysOf(item) }
+    // Asked from sort comparators, so each item's key is worked out once.
+    private val keyCache = HashMap<String, String>()
 
-    fun isBlocked(item: MaItem): Boolean {
-        val set = blocked()
-        return keys(item).any { it in set }
-    }
+    /** The key [item] is filed under. */
+    fun key(item: MaItem): String = keyCache.getOrPut(item.provider + "|" + item.itemId) { keyOf(item) }
 
-    private fun lastHeard(item: MaItem): Long = keys(item).maxOfOrNull { heard[it] ?: 0L } ?: 0L
+    fun isBlocked(item: MaItem): Boolean = key(item) in blocked()
+
+    private fun lastHeard(item: MaItem): Long = heard[key(item)] ?: 0L
 
     /**
      * [candidates] without what was heard recently — topped back up, oldest-heard
@@ -95,7 +95,7 @@ class RadioMemory(
         val now = clock()
         var s = if (item.favorite) FAVOURITE_BONUS else 0f
         if (now - lastHeard(item) < RECENT_MS) s -= RECENT_PENALTY
-        val skip = keys(item).mapNotNull { skips[it] }.maxByOrNull { it.lastAtMs }
+        val skip = skips[key(item)]
         if (skip != null) s -= skipPenalty(skip, now)
         return s
     }
@@ -131,34 +131,22 @@ class RadioMemory(
         }
 
         /**
-         * The library id inside a `play_history.trackId`, which local plays store as
-         * "queueIndex-id" (`PlaybackReporter`). Only a leading integer is stripped —
-         * "-1-" when the track was not found in the queue — so an id that itself
-         * contains dashes, a Jellyfin guid or an MA uri, comes back whole.
-         */
-        fun historyId(trackId: String): String = trackId.replaceFirst(HISTORY_PREFIX, "")
-
-        /**
-         * The memory the rows on disk describe: [plays] from `play_history` and
-         * [signals] from `track_signal`, both as their DAOs return them.
+         * The memory the `track_signal` rows on disk describe, as the DAO returns them:
+         * plays and serves in `lastServedAt`, skips in their own columns.
          */
         fun fromDisk(
-            plays: List<RecentPlay>,
             signals: List<TrackSignalEntity>,
             clock: () -> Long = System::currentTimeMillis,
-            keysOf: (MaItem) -> List<String> = { listOf(it.itemId) },
+            keyOf: (MaItem) -> String = { it.itemId },
         ): RadioMemory {
             val heard = HashMap<String, Long>()
-            plays.forEach { heard.merge(historyId(it.trackId), it.timestamp, ::maxOf) }
             signals.filter { it.lastServedAt > 0 }.forEach { heard.merge(it.trackKey, it.lastServedAt, ::maxOf) }
             // Oldest first, so the insertion order agrees with the clock.
             val ordered = LinkedHashMap<String, Long>()
             heard.entries.sortedBy { it.value }.forEach { ordered[it.key] = it.value }
             val skips = signals.filter { it.skips > 0 }
                 .associate { it.trackKey to Skip(it.skips, it.lastSkippedAt) }
-            return RadioMemory(ordered, skips, clock = clock, keysOf = keysOf)
+            return RadioMemory(ordered, skips, clock = clock, keyOf = keyOf)
         }
-
-        private val HISTORY_PREFIX = Regex("^-?\\d+-")
     }
 }

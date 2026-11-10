@@ -3441,7 +3441,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         )
         // Only what is actually served goes in the history — the rest of the pool is
         // still fair game next time. See [LocalRadio.pool].
-        radio.remember(picked.map { it.itemId })
+        radio.remember(picked)
         persistServed(picked)
         return picked
     }
@@ -3456,12 +3456,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadRadioMemory(): RadioMemory = withContext(Dispatchers.IO) {
         val db = LocalMediaDatabase.get(getApplication())
         val since = System.currentTimeMillis() - RadioMemory.SKIP_DECAY_MS
-        val plays = runCatchingCancellable { db.playHistoryDao().recentPlays(RadioMemory.HISTORY_LIMIT) }
-            .getOrDefault(emptyList())
         val signals = runCatchingCancellable {
             db.trackSignalDao().recentlyServed(RadioMemory.HISTORY_LIMIT) + db.trackSignalDao().skippedSince(since)
         }.getOrDefault(emptyList())
-        RadioMemory.fromDisk(plays, signals, keysOf = { listOf(it.itemId, signalKey(it)) })
+        RadioMemory.fromDisk(signals, keyOf = ::signalKey)
     }
 
     /** What the radio queued, filed so a restart does not serve it again straight away. */
@@ -3477,7 +3475,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** The key a track's skips and serves are filed under: its scan key. */
+    /**
+     * The key a track's skips, serves and plays are filed under: its scan key, as
+     * `PlaybackReporter` and Now Playing work it out for what they record.
+     */
     private fun signalKey(item: MaItem): String =
         TrackScanRepository.keyFor(downloadManager.toLocalTrack(item))
 

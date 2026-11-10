@@ -2573,6 +2573,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 ),
             )
             if (com.engabd.sendpin.data.PlayHistoryRetention.shared.dueAfterInsert()) dao.trimTo()
+            // The radio's no-repeat window, under the library item's own key: the row's
+            // trackId is a queue item id, which the radio cannot recognise a track by.
+            currentItem.value?.takeIf { it.name == identity.title }?.let { item ->
+                val key = com.engabd.sendpin.audio.TrackScanRepository.keyFor(SendpinApp.instance.downloads.toLocalTrack(item))
+                LocalMediaDatabase.get(getApplication()).trackSignalDao().recordServed(listOf(key), System.currentTimeMillis())
+            }
         } catch (e: Exception) {
             // Best-effort: a failed history write is not worth surfacing to the
             // listener, and must not be allowed to look like a playback problem.

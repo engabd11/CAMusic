@@ -3,9 +3,11 @@ package com.engabd.sendpin.audio
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaSimilarTrack
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 
 /**
@@ -18,9 +20,12 @@ import kotlinx.coroutines.withContext
  * two tracks without asking anyone.
  *
  * Building the index means enumerating every local library over the network, so
- * it is built on first use and reused for [INDEX_TTL_MS]. Nothing reaches here
- * until Music Assistant has already come back empty, so that cost is only ever
- * paid by someone who would otherwise be looking at an empty panel.
+ * it is built on first use and rebuilt only when it may be out of date: more or fewer
+ * scans than it was built from (and not within [INDEX_TTL_MS] of the last build, so a
+ * sweep landing a scan a second does not re-read the library a second), or
+ * [LIBRARY_TTL_MS] old, for tracks a library dropped. A stale index keeps answering
+ * while the new one builds in the background. The radio never waits on a cold one
+ * (see [similarTo]'s `wait`); the Similar panel does, being someone looking at it.
  */
 class LocalSonicIndex(
     private val context: android.content.Context,
@@ -29,18 +34,21 @@ class LocalSonicIndex(
     /** A track that can be both matched on and shown, with no second round-trip. */
     private class Entry(val track: MaSimilarTrack, val fingerprint: SonicFingerprint)
 
-    private val lock = Mutex()
-    private var entries: Map<String, Entry> = emptyMap()
-    private var builtAtMs = 0L
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var entries: Map<String, Entry> = emptyMap()
+    @Volatile private var builtAtMs = 0L
+    @Volatile private var builtFromScans = 0
+    private var building: Deferred<Map<String, Entry>>? = null
 
     /**
      * The closest local tracks to [seed], nearest first.
      *
      * Empty when [seed] has no scan of its own: with nothing to compare against,
      * every answer would be equally wrong, and a wrong list reads worse than none.
+     * Empty too, without [wait], while the first index is still being built.
      */
-    suspend fun similarTo(seed: MaItem, limit: Int = 20): List<MaSimilarTrack> {
-        val indexed = index()
+    suspend fun similarTo(seed: MaItem, limit: Int = 20, wait: Boolean = true): List<MaSimilarTrack> {
+        val indexed = index(wait)
         val seedKey = MusicSources.legacyScanKey(seed)
         val target = indexed[seedKey]?.fingerprint ?: return emptyList()
         return indexed.asSequence()
@@ -52,13 +60,26 @@ class LocalSonicIndex(
             .toList()
     }
 
-    private suspend fun index(): Map<String, Entry> = lock.withLock {
-        val fresh = entries.isNotEmpty() && System.currentTimeMillis() - builtAtMs < INDEX_TTL_MS
-        if (fresh) return@withLock entries
-        build().also {
-            entries = it
-            builtAtMs = System.currentTimeMillis()
+    private suspend fun index(wait: Boolean): Map<String, Entry> {
+        if (builtAtMs > 0) {
+            val age = System.currentTimeMillis() - builtAtMs
+            if (needsRebuild(age, builtFromScans, scanStore.count())) rebuild()
+            return entries
         }
+        val pending = rebuild()
+        return if (wait) pending.await() else emptyMap()
+    }
+
+    /** The build in progress, or a new one. One at a time. */
+    private fun rebuild(): Deferred<Map<String, Entry>> = synchronized(this) {
+        building?.takeIf { it.isActive } ?: scope.async {
+            val scans = scanStore.count()
+            build().also {
+                entries = it
+                builtFromScans = scans
+                builtAtMs = System.currentTimeMillis()
+            }
+        }.also { building = it }
     }
 
     private suspend fun build(): Map<String, Entry> = withContext(Dispatchers.IO) {
@@ -103,10 +124,17 @@ class LocalSonicIndex(
         provider = provider,
     )
 
-    private companion object {
+    internal companion object {
         const val PAGE = 500
 
-        /** Long enough that opening the panel twice does not enumerate twice. */
+        /** The least time between two builds for a change in scans. */
         const val INDEX_TTL_MS = 10 * 60 * 1000L
+
+        /** Rebuilt this often regardless, for tracks a library no longer has. */
+        const val LIBRARY_TTL_MS = 6 * 60 * 60 * 1000L
+
+        /** Whether an index [ageMs] old, built from [builtFromScans] scans, is out of date now there are [scansNow]. */
+        fun needsRebuild(ageMs: Long, builtFromScans: Int, scansNow: Int): Boolean =
+            ageMs >= LIBRARY_TTL_MS || (ageMs >= INDEX_TTL_MS && scansNow != builtFromScans)
     }
 }

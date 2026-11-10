@@ -10,7 +10,8 @@ import androidx.room.Transaction
 
 /**
  * What the radio has learned about one track: how often the listener skipped it, and
- * when the radio last served it. Read by [com.engabd.sendpin.audio.RadioMemory].
+ * when it was last heard — served by the radio, or played through to the point a play
+ * counts. Read by [com.engabd.sendpin.audio.RadioMemory].
  *
  * Keyed like a scan (`TrackScanRepository.keyFor`, "<provider>:<id>"), so two
  * libraries that both number their songs from 1 do not share one song's skips.
@@ -43,7 +44,7 @@ interface TrackSignalDao {
         bumpSkip(key, at)
     }
 
-    /** [keys] were just queued by the radio. */
+    /** [keys] were just queued by the radio. Also what a counted play records, under [lastServedAt]. */
     @Transaction
     suspend fun recordServed(keys: List<String>, at: Long) {
         if (keys.isEmpty()) return

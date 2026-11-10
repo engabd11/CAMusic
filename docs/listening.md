@@ -13,7 +13,8 @@ energy, tempo and brightness together, and mixes into it directly instead of fad
 It stays within reach of the song the set started from, plays one artist at most twice in a
 row, keeps clear of what you played or it served recently (even after a restart), and learns
 from the songs you skip early. On Music Assistant it ranks the server's similar tracks the same
-way, with the server's own "Don't stop the music" as the fallback.
+way, with the server's own "Don't stop the music" as the fallback; songs you played there, and
+songs you skipped by pressing next in this app, count the same as on the phone's own player.
 All of them state their scan coverage up front, so you always know what the ordering had
 to work with.
 

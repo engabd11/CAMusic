@@ -18,7 +18,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -502,7 +505,27 @@ class MaNowPlaying(private val app: Context) {
      * [MaPlayhead.holdForTrackChange]. Throws what the server throws; [next] and
      * [previous] swallow that, the screen's callers decide for themselves.
      */
-    suspend fun skipNext() = playhead.holdForTrackChange(target()) { repo.next(targetId()) }
+    suspend fun skipNext() {
+        notePressedNext()
+        playhead.holdForTrackChange(target()) { repo.next(targetId()) }
+    }
+
+    private val _nextPressed = MutableSharedFlow<Triple<com.engabd.sendpin.audio.LocalTrack, Long, Long>>(extraBufferCapacity = 4)
+    /**
+     * The listener pressed next on the selected player, leaving this track at this
+     * position of this length: `LocalPlayer.nextPressed`'s signal, from Music
+     * Assistant's own playhead. Only a press emits it, never a change MA makes itself.
+     */
+    val nextPressed: SharedFlow<Triple<com.engabd.sendpin.audio.LocalTrack, Long, Long>> = _nextPressed.asSharedFlow()
+
+    /** Emit [nextPressed] for what the selected player has now; called before the skip is sent. */
+    fun notePressedNext() {
+        val p = _players.value.firstOrNull { it.playerId == targetId() }
+        val queue = _queues.value.firstOrNull { it.queueId == streamId(p) }
+        val item = queue?.currentItem ?: return
+        val durationMs = now.value?.durationMs?.takeIf { it > 0 } ?: queue.currentItemDurationMs ?: 0L
+        _nextPressed.tryEmit(Triple(SendpinApp.instance.downloads.toLocalTrack(item), positionMs.value, durationMs))
+    }
 
     suspend fun skipPrevious() = playhead.holdForTrackChange(target()) { repo.previous(targetId()) }
 

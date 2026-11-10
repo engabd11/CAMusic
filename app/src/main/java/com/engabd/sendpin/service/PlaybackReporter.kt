@@ -347,6 +347,9 @@ class PlaybackReporter(private val app: SendpinApp) {
                 ),
             )
             if (com.engabd.sendpin.data.PlayHistoryRetention.shared.dueAfterInsert()) dao.trimTo()
+            // The radio's no-repeat window, under the key the radio files the track by.
+            LocalMediaDatabase.get(app).trackSignalDao()
+                .recordServed(listOf(com.engabd.sendpin.audio.TrackScanRepository.keyFor(track)), System.currentTimeMillis())
         }
     }
 
@@ -354,10 +357,10 @@ class PlaybackReporter(private val app: SendpinApp) {
      * A press of next before [com.engabd.sendpin.audio.RadioMemory.SKIP_PERCENT] percent of the
      * track had played, filed for the radio to weigh against that track. Here rather
      * than in a screen for the reason history is: next is pressed in the car and on the
-     * lock screen too.
+     * lock screen too. On this phone's player or on a Music Assistant one.
      */
     private suspend fun recordSkips() {
-        player.nextPressed.collect { (track, positionMs, durationMs) ->
+        merge(player.nextPressed, app.maNowPlaying.nextPressed).collect { (track, positionMs, durationMs) ->
             val length = durationMs.takeIf { it > 0 } ?: track.durationMs
             if (!com.engabd.sendpin.audio.RadioMemory.isSkip(positionMs, length)) return@collect
             val key = com.engabd.sendpin.audio.TrackScanRepository.keyFor(track)

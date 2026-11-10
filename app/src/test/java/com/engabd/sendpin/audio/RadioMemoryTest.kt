@@ -1,6 +1,5 @@
 package com.engabd.sendpin.audio
 
-import com.engabd.sendpin.local.db.RecentPlay
 import com.engabd.sendpin.local.db.TrackSignalEntity
 import com.engabd.sendpin.ma.MaItem
 import kotlin.test.Test
@@ -28,12 +27,26 @@ class RadioMemoryTest {
     }
 
     @Test
-    fun `the history row's queue position is stripped, and only that`() {
-        assertEquals("abc", RadioMemory.historyId("3-abc"))
-        assertEquals("abc", RadioMemory.historyId("-1-abc"), "not found in the queue")
-        assertEquals("12-34-ab", RadioMemory.historyId("7-12-34-ab"), "an id with dashes stays whole")
-        assertEquals("f3a9-11ee-b962", RadioMemory.historyId("0-f3a9-11ee-b962"))
-        assertEquals("abc-def", RadioMemory.historyId("abc-def"), "no position, nothing to strip")
+    fun `a track played and served is one entry in the window, under its one key`() {
+        val now = 100 * day
+        val keyOf = { it: MaItem -> "${it.provider}:${it.itemId}" }
+        // A window of two: "a" was played, "b" served, then "a" served again.
+        val memory = RadioMemory.fromDisk(
+            signals = listOf(
+                TrackSignalEntity("subsonic:a", lastServedAt = now - 4_000),
+                TrackSignalEntity("subsonic:b", lastServedAt = now - 3_000),
+            ),
+            clock = { now },
+            keyOf = keyOf,
+        )
+        memory.served(listOf(memory.key(item("a"))))
+        val limited = RadioMemory(linkedMapOf("subsonic:a" to now - 4_000, "subsonic:b" to now - 3_000), limit = 2, clock = { now }, keyOf = keyOf)
+        limited.served(listOf(limited.key(item("a"))))
+        // Still one slot each, so "b" is not pushed out of a window of two.
+        assertTrue(limited.isBlocked(item("a")))
+        assertTrue(limited.isBlocked(item("b")))
+        assertTrue(memory.isBlocked(item("a")))
+        assertFalse(memory.isBlocked(item("c")))
     }
 
     @Test
@@ -53,8 +66,11 @@ class RadioMemoryTest {
     fun `adjust lifts a favourite and sinks a skipped or just-played track`() {
         val now = 100 * day
         val memory = RadioMemory.fromDisk(
-            plays = listOf(RecentPlay("0-recent", now - 60_000), RecentPlay("1-old", now - 3 * day)),
-            signals = listOf(TrackSignalEntity("skipped", skips = 2, lastSkippedAt = now - day)),
+            signals = listOf(
+                TrackSignalEntity("recent", lastServedAt = now - 60_000),
+                TrackSignalEntity("old", lastServedAt = now - 3 * day),
+                TrackSignalEntity("skipped", skips = 2, lastSkippedAt = now - day),
+            ),
             clock = { now },
         )
         assertEquals(RadioMemory.FAVOURITE_BONUS, memory.adjust(item("fav", favorite = true)), 0.0001f)
@@ -68,8 +84,11 @@ class RadioMemoryTest {
     fun `the window is the newest plays and serves, and it lets the oldest back when short`() {
         val now = 100 * day
         val memory = RadioMemory.fromDisk(
-            plays = listOf(RecentPlay("0-a", now - 3_000), RecentPlay("0-b", now - 2_000)),
-            signals = listOf(TrackSignalEntity("c", lastServedAt = now - 1_000)),
+            signals = listOf(
+                TrackSignalEntity("a", lastServedAt = now - 3_000),
+                TrackSignalEntity("b", lastServedAt = now - 2_000),
+                TrackSignalEntity("c", lastServedAt = now - 1_000),
+            ),
             clock = { now },
         )
         val all = listOf(item("a"), item("b"), item("c"), item("d"))
@@ -77,8 +96,7 @@ class RadioMemoryTest {
         assertEquals(listOf("d", "a", "b"), memory.admit(all, need = 3).map { it.itemId })
 
         val narrow = RadioMemory.fromDisk(
-            plays = listOf(RecentPlay("0-a", now - 3_000), RecentPlay("0-b", now - 2_000)),
-            signals = emptyList(),
+            signals = listOf(TrackSignalEntity("a", lastServedAt = now - 3_000), TrackSignalEntity("b", lastServedAt = now - 2_000)),
             clock = { now },
         ).also { it.served(listOf("c")) }
         assertTrue(narrow.isBlocked(item("c")), "served this session counts at once")

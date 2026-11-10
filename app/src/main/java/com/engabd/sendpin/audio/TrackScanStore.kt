@@ -159,6 +159,9 @@ class TrackScanStore(private val dir: File) {
         return gone
     }
 
+    /** How many scans are stored: one directory listing, no file opened. */
+    fun count(): Int = dir.list { _, name -> name.endsWith(SUFFIX) }?.size ?: 0
+
     /** `(number of scans, bytes on disk)`. */
     fun usage(): Pair<Int, Long> {
         val files = dir.listFiles { f: File -> f.name.endsWith(SUFFIX) } ?: return 0 to 0L

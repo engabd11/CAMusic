@@ -1,6 +1,5 @@
 package com.engabd.sendpin.audio
 
-import com.engabd.sendpin.local.db.RecentPlay
 import com.engabd.sendpin.local.db.TrackSignalEntity
 import com.engabd.sendpin.ma.MaItem
 import kotlinx.coroutines.runBlocking
@@ -163,7 +162,7 @@ class LocalRadioTest {
     @Test
     fun `history is bounded, so a long session forgets its oldest picks`() = runBlocking {
         val radio = LocalRadio(historyLimit = 2)
-        radio.remember(listOf("x", "y", "z"))
+        radio.remember(listOf(track("x"), track("y"), track("z")))
         val source = FakeSource(similarTrack = listOf(track("x")))
         // "x" fell out of a two-deep history, so it is playable again.
         assertEquals(listOf("x"), radio.next(source, seed = track("seed"), count = 5).map { it.itemId })
@@ -256,11 +255,13 @@ class LocalRadioTest {
         val radio = LocalRadio()
         val now = 1_000_000_000L
         radio.memory = RadioMemory.fromDisk(
-            // "3-a": play_history's local rows carry the queue position in front.
-            plays = listOf(RecentPlay("3-a", now - 60_000)),
-            signals = listOf(TrackSignalEntity("subsonic:b", lastServedAt = now - 30_000)),
+            // A counted play and a serve, both under the one key form.
+            signals = listOf(
+                TrackSignalEntity("subsonic:a", lastServedAt = now - 60_000),
+                TrackSignalEntity("subsonic:b", lastServedAt = now - 30_000),
+            ),
             clock = { now },
-            keysOf = { listOf(it.itemId, "${it.provider}:${it.itemId}") },
+            keyOf = { "${it.provider}:${it.itemId}" },
         )
         val source = FakeSource(similarTrack = listOf(track("a"), track("b"), track("c")))
         assertEquals(listOf("c"), radio.next(source, seed = track("seed"), count = 5).map { it.itemId })
@@ -271,7 +272,7 @@ class LocalRadioTest {
         var now = 0L
         val radio = LocalRadio()
         radio.memory = RadioMemory(clock = { now })
-        listOf("a", "b", "c").forEach { now += 1_000; radio.remember(listOf(it)) }
+        listOf("a", "b", "c").forEach { now += 1_000; radio.remember(listOf(track(it))) }
         val source = FakeSource(similarTrack = listOf(track("c"), track("b"), track("a")))
         // Every track was heard: the ladder used to come back empty and the music stopped.
         assertEquals(listOf("a"), radio.next(source, seed = track("seed"), count = 1).map { it.itemId })
@@ -342,8 +343,8 @@ class LocalRadioTest {
         // library smaller than its own no-repeat window.
         val radio = LocalRadio()
         val downloads = listOf(track("d1"), track("d2"))
-        radio.remember(listOf("d1"))
-        radio.remember(listOf("d2"))
+        radio.memory.served(listOf("d1"))
+        radio.memory.served(listOf("d2"))
         assertEquals(listOf("d1"), radio.offline(downloads, seed = null, count = 1).map { it.itemId })
     }
 

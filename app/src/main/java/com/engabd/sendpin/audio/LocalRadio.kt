@@ -61,8 +61,9 @@ class LibraryRadioSource(
         runCatchingCancellable { source.randomSongs(count) }.getOrDefault(emptyList())
 
     // The index spans every local library; only this one's tracks can be queued here.
+    // Not waited for while it is first built: a top-up has the server's answers anyway.
     override suspend fun soundsLike(seed: MaItem, count: Int) = runCatchingCancellable {
-        sonic?.similarTo(seed, count).orEmpty()
+        sonic?.similarTo(seed, count, wait = false).orEmpty()
             .filter { it.provider == source.providerId }
             .map { MaItem(it.itemId, it.provider, it.name, it.uri, "track", it.artist, it.image, null) }
     }.getOrDefault(emptyList())
@@ -131,7 +132,7 @@ class LocalRadio(
     var memory: RadioMemory = RadioMemory(limit = historyLimit)
 
     /** Note ids as served, so the next batches leave them alone. */
-    fun remember(ids: Collection<String>) = memory.served(ids)
+    fun remember(items: Collection<MaItem>) = memory.served(items.map(memory::key))
 
     fun forget() = memory.forget()
 
@@ -210,7 +211,7 @@ class LocalRadio(
                 .sortedWith(ranking(bonus))
                 .take(count)
             if (picked.isNotEmpty()) {
-                remember(picked.map { it.itemId })
+                remember(picked)
                 return picked
             }
             heard += answered
@@ -220,7 +221,7 @@ class LocalRadio(
         val picked = memory.admit(heard.distinctBy { it.itemId }, count)
             .sortedWith(ranking(bonus))
             .take(count)
-        remember(picked.map { it.itemId })
+        remember(picked)
         return picked
     }
 
@@ -301,7 +302,7 @@ class LocalRadio(
         // Shuffled first, then ranked, so the bonus decides between equals rather
         // than pinning the same key-compatible handful to the front every time.
         val picked = pool.shuffled(random).sortedWith(ranking(bonus)).take(count)
-        remember(picked.map { it.itemId })
+        remember(picked)
         return picked
     }
 
@@ -340,7 +341,7 @@ class LocalRadio(
         // Take from the best-matching half, then shuffle, so a genre match leads
         // without the same five songs every time.
         val head = ranked.take(maxOf(count * 3, 12))
-        return head.shuffled(random).take(count).also { remember(it.map { t -> t.itemId }) }
+        return head.shuffled(random).take(count).also { remember(it) }
     }
 
     companion object {
