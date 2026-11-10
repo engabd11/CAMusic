@@ -3,6 +3,7 @@ package com.engabd.sendpin.audio
 import com.engabd.sendpin.util.runCatchingCancellable
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.ma.MaItem
+import kotlin.random.Random
 
 /**
  * Where a radio's next batch of tracks can come from.
@@ -15,8 +16,15 @@ interface RadioSource {
     suspend fun similarToTrack(trackId: String, count: Int): List<MaItem>
     suspend fun similarToAlbum(albumId: String, count: Int): List<MaItem>
     suspend fun topSongs(artistName: String, count: Int): List<MaItem>
-    suspend fun byGenre(genre: String, count: Int): List<MaItem>
+    suspend fun byGenre(genre: String, count: Int, offset: Int = 0): List<MaItem>
     suspend fun random(count: Int): List<MaItem>
+
+    /**
+     * Tracks that *sound* like [seed], from scans rather than from server metadata.
+     * Asked only when [similarToTrack] has nothing, which on Plex, MPD, foobar2000
+     * and local files is every time. Nothing by default.
+     */
+    suspend fun soundsLike(seed: MaItem, count: Int): List<MaItem> = emptyList()
 }
 
 /**
@@ -32,7 +40,11 @@ interface RadioSource {
  * Every call is wrapped: a rung that fails is a rung that's skipped, and the ladder
  * falls through to `random` rather than to silence.
  */
-class LibraryRadioSource(private val source: MusicSource) : RadioSource {
+class LibraryRadioSource(
+    private val source: MusicSource,
+    /** This phone's scan index, for [soundsLike]; null where there is none to ask. */
+    private val sonic: LocalSonicIndex? = null,
+) : RadioSource {
     override suspend fun similarToTrack(trackId: String, count: Int) =
         runCatchingCancellable { source.similarSongs(trackId, count) }.getOrDefault(emptyList())
 
@@ -42,11 +54,49 @@ class LibraryRadioSource(private val source: MusicSource) : RadioSource {
     override suspend fun topSongs(artistName: String, count: Int) =
         runCatchingCancellable { source.topSongs(artistName, count) }.getOrDefault(emptyList())
 
-    override suspend fun byGenre(genre: String, count: Int) =
-        runCatchingCancellable { source.songsByGenre(genre, count) }.getOrDefault(emptyList())
+    override suspend fun byGenre(genre: String, count: Int, offset: Int) =
+        runCatchingCancellable { source.songsByGenre(genre, count, offset) }.getOrDefault(emptyList())
 
     override suspend fun random(count: Int) =
         runCatchingCancellable { source.randomSongs(count) }.getOrDefault(emptyList())
+
+    // The index spans every local library; only this one's tracks can be queued here.
+    override suspend fun soundsLike(seed: MaItem, count: Int) = runCatchingCancellable {
+        sonic?.similarTo(seed, count).orEmpty()
+            .filter { it.provider == source.providerId }
+            .map { MaItem(it.itemId, it.provider, it.name, it.uri, "track", it.artist, it.image, null) }
+    }.getOrDefault(emptyList())
+}
+
+/**
+ * DJ Radio's candidates on Music Assistant: the server's own similar tracks for the
+ * seed, plus its sonic text search for the set's mood where the server has one.
+ *
+ * Nothing else. A random page here would be ranked as an equal of a real match —
+ * neither carries genres from MA — so a seed MA knows nothing about yields an empty
+ * pool, and the queue's own "Don't stop the music" carries the set instead.
+ */
+class MaRadioSource(
+    private val repo: com.engabd.sendpin.ma.MaRepository,
+    private val mood: DjMood? = null,
+) : RadioSource {
+    override suspend fun similarToTrack(trackId: String, count: Int) = emptyList<MaItem>()
+    override suspend fun similarToAlbum(albumId: String, count: Int) = emptyList<MaItem>()
+    override suspend fun topSongs(artistName: String, count: Int) = emptyList<MaItem>()
+    override suspend fun byGenre(genre: String, count: Int, offset: Int) = emptyList<MaItem>()
+    override suspend fun random(count: Int) = emptyList<MaItem>()
+
+    override suspend fun soundsLike(seed: MaItem, count: Int): List<MaItem> {
+        val similar = runCatchingCancellable { repo.similarTracks(seed.itemId, seed.provider, count) }
+            .getOrDefault(emptyList())
+        // Older servers, and servers without the sonic provider, refuse the command.
+        val brief = mood?.takeIf { !it.open }?.let { m ->
+            runCatchingCancellable { repo.sonicTextSearch(m.title, count) }.getOrDefault(emptyList())
+        }.orEmpty()
+        return (similar + brief)
+            .filter { it.uri != null }
+            .map { MaItem(it.itemId, it.provider, it.name, it.uri, "track", it.artist, it.image, null) }
+    }
 }
 
 /**
@@ -65,23 +115,49 @@ class LibraryRadioSource(private val source: MusicSource) : RadioSource {
  * about "more like this" than the one above it, and a server with no last.fm metadata
  * will fall through the first few every time — which is why the bottom rung exists.
  *
- * Holds a rolling history so a radio doesn't circle back on itself within a session.
- * Not persisted: a new session is a new mood.
+ * Remembers what it served and what was played through [memory], which the library
+ * refills from disk before each batch, so a radio doesn't circle back on itself —
+ * this session or after a restart.
  */
-class LocalRadio(private val historyLimit: Int = 200) {
+class LocalRadio(
+    historyLimit: Int = RadioMemory.HISTORY_LIMIT,
+    private val random: Random = Random.Default,
+) {
 
-    private val history = LinkedHashSet<String>()
+    /**
+     * What has been heard lately and what the listener thinks of it. Empty until the
+     * caller loads one from disk; see [RadioMemory].
+     */
+    var memory: RadioMemory = RadioMemory(limit = historyLimit)
 
-    /** Note ids as served, oldest dropped once [historyLimit] is passed. */
-    fun remember(ids: Collection<String>) {
-        history.addAll(ids)
-        while (history.size > historyLimit) {
-            val oldest = history.first()
-            history.remove(oldest)
-        }
+    /** Note ids as served, so the next batches leave them alone. */
+    fun remember(ids: Collection<String>) = memory.served(ids)
+
+    fun forget() = memory.forget()
+
+    /** Which of the seed's genres the next genre page asks for. */
+    private var genreTurn = 0
+
+    /**
+     * One page of the seed's genre — a different tag each time, from a random offset.
+     *
+     * Asked the same way twice, a server hands back the same first page of the same
+     * first genre, which was every genre-led batch this radio ever played. A page
+     * past the end of a small genre comes back empty, so that one is asked again
+     * from the top.
+     */
+    private suspend fun genrePage(source: RadioSource, seed: MaItem?, count: Int): List<MaItem> {
+        val genres = seed?.genres?.filter { it.isNotBlank() }.orEmpty()
+        if (genres.isEmpty()) return emptyList()
+        val genre = genres[genreTurn++ % genres.size]
+        val offset = random.nextInt(GENRE_MAX_OFFSET + 1)
+        val page = source.byGenre(genre, count, offset)
+        return if (page.isEmpty() && offset > 0) source.byGenre(genre, count, 0) else page
     }
 
-    fun forget() = history.clear()
+    /** The bonus first, then what the listener's history says, as the tie-break. */
+    private fun ranking(bonus: (MaItem) -> Int) =
+        compareByDescending<MaItem> { bonus(it) }.thenByDescending { memory.adjust(it) }
 
     /**
      * The next batch, seeded from [seed] — normally the track that just played.
@@ -121,25 +197,31 @@ class LocalRadio(private val historyLimit: Int = 200) {
             seed?.subtitle?.substringBefore(",")?.trim()?.takeIf { it.isNotBlank() }?.let { artist ->
                 add { source.topSongs(artist, want) }
             }
-            seed?.genres?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { genre ->
-                add { source.byGenre(genre, want) }
-            }
+            if (seed?.genres.orEmpty().any { it.isNotBlank() }) add { genrePage(source, seed, want) }
             add { source.random(want) }
         }
 
+        val heard = ArrayList<MaItem>()
         for (rung in rungs) {
-            val picked = rung()
-                .filter { it.itemId.isNotBlank() }
-                .filterNot { it.itemId in exclude || it.itemId in history }
+            val answered = rung()
+                .filter { it.itemId.isNotBlank() && it.itemId !in exclude }
                 .distinctBy { it.itemId }
-                .sortedByDescending { bonus(it) }
+            val picked = answered.filterNot { memory.isBlocked(it) }
+                .sortedWith(ranking(bonus))
                 .take(count)
             if (picked.isNotEmpty()) {
                 remember(picked.map { it.itemId })
                 return picked
             }
+            heard += answered
         }
-        return emptyList()
+        // Every rung answered only with what was heard lately: a library smaller than
+        // the no-repeat window. The longest-ago heard of it, rather than silence.
+        val picked = memory.admit(heard.distinctBy { it.itemId }, count)
+            .sortedWith(ranking(bonus))
+            .take(count)
+        remember(picked.map { it.itemId })
+        return picked
     }
 
     /**
@@ -156,6 +238,9 @@ class LocalRadio(private val historyLimit: Int = 200) {
      * real similarity data never has its set diluted by arbitrary tracks, and one
      * without still fills a queue.
      *
+     * [count] is the batch the pool is for: on a library too small to spare the
+     * no-repeat window, that many are let back in (see [RadioMemory.admit]).
+     *
      * Does **not** [remember] what it returns: this is a pool of candidates, most of
      * which will not be played, and putting them all in the history would exclude
      * them from every later batch for the rest of the session.
@@ -165,25 +250,32 @@ class LocalRadio(private val historyLimit: Int = 200) {
         seed: MaItem?,
         want: Int,
         exclude: Set<String> = emptySet(),
+        count: Int = 10,
     ): List<MaItem> {
         val each = (want / 2).coerceAtLeast(20)
         val found = LinkedHashMap<String, MaItem>()
 
         suspend fun gather(rung: suspend () -> List<MaItem>) {
             rung()
-                .filter { it.itemId.isNotBlank() }
-                .filterNot { it.itemId in exclude || it.itemId in history }
+                .filter { it.itemId.isNotBlank() && it.itemId !in exclude }
                 .forEach { found.putIfAbsent(it.itemId, it) }
         }
 
-        seed?.itemId?.takeIf { it.isNotBlank() }?.let { gather { source.similarToTrack(it, each) } }
+        var similar = 0
+        seed?.itemId?.takeIf { it.isNotBlank() }
+            ?.let { gather { source.similarToTrack(it, each).also { r -> similar = r.size } } }
+        // No similarity on the server (Plex, MPD, foobar2000, local files): what the
+        // scans on this phone say sounds alike instead.
+        if (seed != null && similar == 0) gather { source.soundsLike(seed, each) }
         seed?.parentId?.takeIf { it.isNotBlank() }?.let { gather { source.similarToAlbum(it, each) } }
-        seed?.genres?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { gather { source.byGenre(it, each) } }
+        gather { genrePage(source, seed, each) }
+        // One artist's best-known songs are seasoning, not the pool: uncapped they
+        // were a quarter of it, and the set came back to that artist all evening.
         seed?.subtitle?.substringBefore(",")?.trim()?.takeIf { it.isNotBlank() }
-            ?.let { gather { source.topSongs(it, each) } }
-        if (found.size < want) gather { source.random(want) }
+            ?.let { gather { source.topSongs(it, each).take(topSongsCap(want)) } }
+        if (found.values.count { !memory.isBlocked(it) } < want) gather { source.random(want) }
 
-        return found.values.toList()
+        return memory.admit(found.values.toList(), count)
     }
 
     /**
@@ -192,7 +284,7 @@ class LocalRadio(private val historyLimit: Int = 200) {
      * Deliberately not [next]: that ladder's whole job is to stay *near* the seed,
      * and "shuffle" is the listener saying they don't want that. It asks for a wide
      * page and shuffles it here rather than trusting a server-side random to differ
-     * between two calls a minute apart, and it shares [history] with the ladder so a
+     * between two calls a minute apart, and it shares [memory] with the ladder so a
      * session doesn't circle back on itself either way.
      */
     suspend fun random(
@@ -201,14 +293,14 @@ class LocalRadio(private val historyLimit: Int = 200) {
         exclude: Set<String> = emptySet(),
         bonus: (MaItem) -> Int = { 0 },
     ): List<MaItem> {
-        val pool = source.random(count * 5)
-            .filter { it.itemId.isNotBlank() }
-            .filterNot { it.itemId in exclude || it.itemId in history }
+        val page = source.random(count * 5)
+            .filter { it.itemId.isNotBlank() && it.itemId !in exclude }
             .distinctBy { it.itemId }
+        val pool = memory.admit(page, 1)
         if (pool.isEmpty()) return emptyList()
         // Shuffled first, then ranked, so the bonus decides between equals rather
         // than pinning the same key-compatible handful to the front every time.
-        val picked = pool.shuffled().sortedByDescending { bonus(it) }.take(count)
+        val picked = pool.shuffled(random).sortedWith(ranking(bonus)).take(count)
         remember(picked.map { it.itemId })
         return picked
     }
@@ -233,19 +325,53 @@ class LocalRadio(private val historyLimit: Int = 200) {
         exclude: Set<String> = emptySet(),
         bonus: (MaItem) -> Int = { 0 },
     ): List<MaItem> {
-        val pool = downloads.filterNot { it.itemId in exclude || it.itemId in history }
+        val pool = memory.admit(downloads.filterNot { it.itemId in exclude }, 1)
         if (pool.isEmpty()) return emptyList()
         val genre = seed?.genres?.firstOrNull()
         val artist = seed?.subtitle
-        val ranked = pool.sortedByDescending { track ->
-            var score = 0
-            if (genre != null && track.genres.contains(genre)) score += 2
-            if (artist != null && track.subtitle == artist) score += 1
-            score + bonus(track)
-        }
+        val ranked = pool.sortedWith(
+            compareByDescending<MaItem> { track ->
+                var score = 0
+                if (genre != null && track.genres.contains(genre)) score += 2
+                if (artist != null && track.subtitle == artist) score += 1
+                score + bonus(track)
+            }.thenByDescending { memory.adjust(it) },
+        )
         // Take from the best-matching half, then shuffle, so a genre match leads
         // without the same five songs every time.
         val head = ranked.take(maxOf(count * 3, 12))
-        return head.shuffled().take(count).also { remember(it.map { t -> t.itemId }) }
+        return head.shuffled(random).take(count).also { remember(it.map { t -> t.itemId }) }
+    }
+
+    companion object {
+        /** How far into a genre a page may start. A smaller genre falls back to 0. */
+        const val GENRE_MAX_OFFSET = 200
+
+        /** The most of a pool one artist's top songs may be. */
+        const val TOP_SONGS_SHARE = 0.15f
+
+        fun topSongsCap(want: Int): Int = (want * TOP_SONGS_SHARE).toInt().coerceAtLeast(3)
+
+        /**
+         * The radio's seed for [track]: the library item it was queued from when one
+         * was [recorded], else one rebuilt from what the track carries itself.
+         *
+         * Only the library's own screen records items; a queue started from an album,
+         * artist or playlist page, the car or Now Playing has none, and with no seed
+         * every similar, genre and artist rung was skipped and the radio was a
+         * shuffle. The rebuilt one has no album id, so the album rung still sits out.
+         */
+        fun seedOf(track: LocalTrack, recorded: MaItem?): MaItem = recorded ?: MaItem(
+            itemId = track.scrobbleId ?: track.id,
+            provider = track.scrobbleProvider.orEmpty(),
+            name = track.title,
+            uri = null,
+            mediaType = "track",
+            subtitle = track.artist,
+            image = track.artUrl,
+            duration = (track.durationMs / 1000).toInt(),
+            genres = listOfNotNull(track.genre?.takeIf { it.isNotBlank() }),
+            album = track.album,
+        )
     }
 }

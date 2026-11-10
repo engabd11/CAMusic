@@ -10,6 +10,10 @@ orders the tracks in front of you into that curve, choosing keys and tempos that
 there is a choice between equals. **Harmonic DJ mode** does the same job continuously for the
 auto-queue, and **DJ Radio** takes the whole decision: it chooses each next track on genre,
 energy, tempo and brightness together, and mixes into it directly instead of fading out first.
+It stays within reach of the song the set started from, plays one artist at most twice in a
+row, keeps clear of what you played or it served recently (even after a restart), and learns
+from the songs you skip early. On Music Assistant it ranks the server's similar tracks the same
+way, with the server's own "Don't stop the music" as the fallback.
 All of them state their scan coverage up front, so you always know what the ordering had
 to work with.
 

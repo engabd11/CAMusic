@@ -65,6 +65,7 @@ class PlaybackReporter(private val app: SendpinApp) {
         scope.launch { reportPlays() }
         scope.launch { closeOnQueueEnd() }
         scope.launch { recordLocalHistory() }
+        scope.launch { recordSkips() }
         scope.launch { syncSavedQueue() }
         scrobbler.start()
     }
@@ -346,6 +347,23 @@ class PlaybackReporter(private val app: SendpinApp) {
                 ),
             )
             if (com.engabd.sendpin.data.PlayHistoryRetention.shared.dueAfterInsert()) dao.trimTo()
+        }
+    }
+
+    /**
+     * A press of next before [com.engabd.sendpin.audio.RadioMemory.SKIP_PERCENT] percent of the
+     * track had played, filed for the radio to weigh against that track. Here rather
+     * than in a screen for the reason history is: next is pressed in the car and on the
+     * lock screen too.
+     */
+    private suspend fun recordSkips() {
+        player.nextPressed.collect { (track, positionMs, durationMs) ->
+            val length = durationMs.takeIf { it > 0 } ?: track.durationMs
+            if (!com.engabd.sendpin.audio.RadioMemory.isSkip(positionMs, length)) return@collect
+            val key = com.engabd.sendpin.audio.TrackScanRepository.keyFor(track)
+            runCatchingCancellable {
+                LocalMediaDatabase.get(app).trackSignalDao().recordSkip(key, System.currentTimeMillis())
+            }
         }
     }
 

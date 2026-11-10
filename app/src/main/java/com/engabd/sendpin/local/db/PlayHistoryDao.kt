@@ -43,6 +43,9 @@ data class AlbumPlayCount(val album: String, val artist: String, val plays: Int)
 /** One calendar month's totals (1 = January), for the year in review. */
 data class MonthTotals(val month: Int, val plays: Int, val listenedMs: Long)
 
+/** A play's raw `trackId` ("queueIndex-id" for local plays) and when it was logged. */
+data class RecentPlay(val trackId: String, val timestamp: Long)
+
 /** A history row cut down to what the rediscover shelves read. */
 data class PlayRow(val timestamp: Long, val title: String, val artist: String, val album: String)
 
@@ -287,6 +290,10 @@ interface PlayHistoryDao {
     /** Every play, trimmed to the four columns the "Rediscover" shelves read. */
     @Query("SELECT timestamp, title, artist, album FROM play_history")
     suspend fun rediscoverRows(): List<PlayRow>
+
+    /** The newest plays' track ids and times, for the radio's no-repeat window. */
+    @Query("SELECT trackId, timestamp FROM play_history ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun recentPlays(limit: Int): List<RecentPlay>
 
     /** Every play, oldest first, for a backup. */
     @Query("SELECT * FROM play_history ORDER BY timestamp ASC")

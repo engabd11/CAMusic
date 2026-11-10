@@ -75,6 +75,30 @@ class LocalMediaDatabaseMigrationTest {
         }
     }
 
+    /** v8 adds the radio's `track_signal` table; the play history must come through untouched. */
+    @Test
+    fun migrate7To8_addsTrackSignal() {
+        helper.createDatabase(TEST_DB, 7).use { db ->
+            db.execSQL(
+                "INSERT INTO play_history (timestamp, trackId, title, artist, album, provider, sampleRate, " +
+                    "bitDepth, durationPlayedMs, durationMs) VALUES (1, '3-abc', 'Song', 'Act', 'Record', " +
+                    "'Navidrome', 0, 0, 1000, 2000)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(TEST_DB, 8, true, LocalMediaDatabase.MIGRATION_7_8)
+
+        db.query("SELECT trackId FROM play_history").use {
+            assertTrue("the play history must survive", it.moveToFirst())
+            assertEquals("3-abc", it.getString(0))
+        }
+        db.execSQL("INSERT INTO track_signal (trackKey, skips, lastSkippedAt, lastServedAt) VALUES ('subsonic:abc', 1, 5, 0)")
+        db.query("SELECT skips FROM track_signal WHERE trackKey = 'subsonic:abc'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(1, it.getInt(0))
+        }
+    }
+
     @Test
     fun migrate5To6_preservesDownloadsAndAddsPlaylistTables() {
         val trackId = "nav:track:991"
