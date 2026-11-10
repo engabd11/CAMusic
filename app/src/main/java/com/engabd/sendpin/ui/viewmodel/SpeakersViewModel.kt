@@ -175,7 +175,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         SpeakerScene.forServer(list, server)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** What the last scene or group-speaker action did, for the scenes sheet. */
+    /** What the last custom-group or group-speaker action did, for the custom groups dialog. */
     private val _sceneStatus = MutableStateFlow<String?>(null); val sceneStatus: StateFlow<String?> = _sceneStatus
 
     init {
@@ -457,7 +457,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         if (plan.leaderChanges) selectPlayer(plan.leader)
         _joinIntent.update { m -> m + plan.add.associateWith { Intent(true) } + plan.remove.associateWith { Intent(false) } }
         plan.volumes.forEach { (id, level) -> setPlayerVolumeLevel(id, level) }
-        _sceneStatus.value = "Recalled \"${scene.name}\".$skipped"
+        _sceneStatus.value = "Applied \"${scene.name}\".$skipped"
         act {
             // Out of the old groups first, so a speaker joining is free to.
             if (plan.remove.isNotEmpty()) repo.ungroup(plan.remove)
@@ -466,15 +466,34 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * A permanent group player, which MA then lists as a speaker of its own.
-     *
-     * `universal_group` is MA's built-in provider for groups of any mix of speakers; the
-     * per-brand providers only group their own.
+     * Providers on this server that can create a group player, see [MaRepository.groupProviders].
+     * Null until asked, and when the server would not say.
+     */
+    private val _groupProviders = MutableStateFlow<Set<String>?>(null)
+    val groupProviders: StateFlow<Set<String>?> = _groupProviders
+
+    fun loadGroupProviders() {
+        viewModelScope.launch {
+            runCatchingCancellable { repo.groupProviders() }
+                .onSuccess { _groupProviders.value = it }
+                .onFailure { _sceneStatus.value = "Couldn't ask Music Assistant which groups it can make: ${it.message}" }
+        }
+    }
+
+    /** The provider that can group [members] permanently, or null. See [SpeakerScene.groupProvider]. */
+    fun groupProviderFor(members: Collection<String>, canCreate: Set<String>?): String? =
+        SpeakerScene.groupProvider(_players.value.filter { it.playerId in members }, canCreate.orEmpty())
+
+    /**
+     * A permanent group player, which MA then lists as a speaker of its own. The provider
+     * is chosen from the members: hard-coding `universal_group` failed on every server
+     * that has not added that optional provider.
      */
     fun createGroupSpeaker(name: String, members: List<String>) {
+        val provider = groupProviderFor(members, _groupProviders.value) ?: return
         viewModelScope.launch {
             _sceneStatus.value = try {
-                repo.createGroupPlayer("universal_group", name, members)
+                repo.createGroupPlayer(provider, name, members)
                 maNowPlaying.refreshNow()
                 "Created the group speaker \"$name\""
             } catch (e: Exception) {

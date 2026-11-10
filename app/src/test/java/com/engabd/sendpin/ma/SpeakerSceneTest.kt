@@ -112,4 +112,22 @@ class SpeakerSceneTest {
         val scene = SpeakerScene(name = "A", leader = "x", members = listOf(SpeakerScene.Member("x", "X", 12)))
         assertEquals(listOf(scene), SpeakerScene.decode(SpeakerScene.encode(listOf(scene))))
     }
+
+    private fun g(id: String, provider: String, groupsWith: List<String> = emptyList()) =
+        MaPlayer(playerId = id, name = id, available = true, powered = true, provider = provider, canGroupWith = groupsWith)
+
+    @Test
+    fun `a group player is made by a provider the server has`() {
+        val kitchen = g("kitchen", "airplay--1", listOf("lounge"))
+        val lounge = g("lounge", "airplay--1", listOf("kitchen"))
+        val cast = g("cast", "chromecast--2")
+        // Their own provider when it groups natively.
+        assertEquals("airplay--1", SpeakerScene.groupProvider(listOf(kitchen, lounge), setOf("airplay--1", "sync_group")))
+        // Otherwise a sync group, when they can sync together.
+        assertEquals("sync_group", SpeakerScene.groupProvider(listOf(kitchen, lounge), setOf("sync_group")))
+        // Mixed speakers only through a universal group, and only if it is installed.
+        assertEquals("universal_group", SpeakerScene.groupProvider(listOf(kitchen, cast), setOf("sync_group", "universal_group")))
+        assertEquals(null, SpeakerScene.groupProvider(listOf(kitchen, cast), setOf("sync_group")))
+        assertEquals(null, SpeakerScene.groupProvider(listOf(kitchen), setOf("sync_group", "universal_group")))
+    }
 }

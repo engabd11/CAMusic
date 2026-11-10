@@ -118,6 +118,24 @@ data class SpeakerScene(
         fun forServer(list: List<SpeakerScene>, server: String): List<SpeakerScene> =
             list.filter { it.server.isBlank() || it.server == server }
 
+        /**
+         * Which provider can make a permanent group player of [members], from the
+         * [canCreate] ids [MaRepository.groupProviders] returned, or null when none can.
+         * Their own provider first when they share one that groups natively; then MA's
+         * `sync_group`, which keeps only members that can sync with the first (so all
+         * must, or the group comes out short); `universal_group` only if it is installed.
+         */
+        fun groupProvider(members: List<MaPlayer>, canCreate: Set<String>): String? {
+            if (members.size < 2) return null
+            members.map { it.provider }.distinct().singleOrNull()?.takeIf { it in canCreate }?.let { return it }
+            val first = members.first()
+            if (SYNC_GROUP in canCreate && members.drop(1).all { it.playerId in first.canGroupWith }) return SYNC_GROUP
+            return UNIVERSAL_GROUP.takeIf { it in canCreate }
+        }
+
+        private const val SYNC_GROUP = "sync_group"
+        private const val UNIVERSAL_GROUP = "universal_group"
+
         /** [leader] and every player synced to it. */
         private fun groupOf(leader: String, players: List<MaPlayer>): Set<String> {
             val childs = players.firstOrNull { it.playerId == leader }?.groupChilds.orEmpty()

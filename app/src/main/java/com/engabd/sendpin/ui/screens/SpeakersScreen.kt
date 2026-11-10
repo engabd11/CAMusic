@@ -93,7 +93,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                     Spacer(Modifier.width(10.dp))
                 }
                 if (connected) {
-                    CircleIconButton(Icons.Default.Bookmarks, "Scenes and group speakers") { scenesOpen = true }
+                    CircleIconButton(Icons.Default.Bookmarks, "Custom groups") { scenesOpen = true }
                     Spacer(Modifier.width(10.dp))
                 }
                 RefreshButton(refreshing = refreshing, onClick = viewModel::manualRefresh)
@@ -185,7 +185,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
         }
 
         announceTo?.let { AnnounceDialog(it, announceable, onClose = { announceTo = null }, viewModel = viewModel) }
-        if (scenesOpen) SpeakerScenesSheet(joined + available, onClose = { scenesOpen = false }, viewModel = viewModel)
+        if (scenesOpen) CustomGroupsDialog(joined + available, onClose = { scenesOpen = false }, viewModel = viewModel)
         // Removing deletes the group player on the server, for every app, so it asks first.
         removing?.let { p ->
             AlertDialog(
