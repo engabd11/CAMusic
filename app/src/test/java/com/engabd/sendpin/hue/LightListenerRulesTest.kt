@@ -58,6 +58,17 @@ class LightListenerRulesTest {
     private val phone = player(me)
 
     @Test
+    fun `a speaker whose own list leaves the phone out is not asked`() {
+        val kitchen = player("kitchen")
+        assertTrue(plan(listOf(phone, kitchen.copy(canGroupWith = listOf("lounge")))) is ListenerPlan.Fallback)
+        assertEquals(ListenerPlan.Join("kitchen", "kitchen"), plan(listOf(phone, kitchen.copy(canGroupWith = listOf(me)))))
+        assertEquals(ListenerPlan.Join("kitchen", "kitchen"), plan(listOf(phone, kitchen.copy(canGroupWith = listOf("sendspin")))))
+        // A wrapped speaker's provider is not Sendspin, yet its list takes the phone.
+        val wrapped = player("kitchen", provider = "universal_player").copy(canGroupWith = listOf(me))
+        assertEquals(ListenerPlan.Join("kitchen", "kitchen"), plan(listOf(phone, wrapped)))
+    }
+
+    @Test
     fun `a playing remote Sendspin speaker with the setting on is joined`() {
         assertEquals(
             ListenerPlan.Join("kitchen", "kitchen"),

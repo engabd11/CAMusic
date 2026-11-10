@@ -87,7 +87,18 @@ object LightListenerRules {
         if (leader.type == "group") {
             return ListenerPlan.Fallback("${leader.name} is a group player, and the phone only joins a single speaker")
         }
-        if (!isSendspin(leader, players, myPlayerId)) {
+        // Music Assistant's own list of who this speaker groups with is the answer when it
+        // sends one: it refuses anything else while reporting success, and a wrapped
+        // speaker's provider says nothing about what it plays through. The list holds
+        // player ids, or a provider for "anything of this kind". The provider guess is
+        // only for a server that sends no list.
+        val phoneProvider = players.firstOrNull { it.playerId == myPlayerId }?.provider
+        val phone = phoneIds + players.filter { it.activeOutputProtocol == myPlayerId }.map { it.playerId }
+        if (leader.canGroupWith.isNotEmpty()) {
+            if (leader.canGroupWith.none { it in phone || it == phoneProvider }) {
+                return ListenerPlan.Fallback("Music Assistant does not let ${leader.name} group with this phone")
+            }
+        } else if (!isSendspin(leader, players, myPlayerId)) {
             return ListenerPlan.Fallback("${leader.name} is not a Sendspin speaker, so the phone cannot keep time with it")
         }
         if (!leader.canSetMembers) return ListenerPlan.Fallback("${leader.name} does not accept group members")
@@ -267,6 +278,7 @@ class LightListener(
             is ListenerPlan.Fallback -> {
                 if (current != null) leave(current)
                 _note.value = "not listening silently: ${plan.reason}"
+                Log.i(TAG, "Not joining: ${plan.reason}; ${describePlayers()}")
             }
             is ListenerPlan.Idle -> {
                 failed.value = null
@@ -294,11 +306,21 @@ class LightListener(
         failed.value = plan.leaderId to "Music Assistant would not add the phone to ${plan.leaderName}"
     }
 
+    /** What Music Assistant listed, for the log: the only way to see why a join was not made. */
+    private fun describePlayers() = "client ${myPlayerId()}; players: " +
+        nowPlaying.players.value.joinToString("; ") {
+            "${it.playerId}|${it.name}|${it.type}|${it.provider}|out=${it.activeOutputProtocol}" +
+                "|synced=${it.syncedTo}|canGroup=${it.canGroupWith}"
+        }
+
     /** The join itself; returns the attempt when Music Assistant would not take it. */
     private suspend fun joinLocked(plan: ListenerPlan.Join): Joined? {
         // The id Music Assistant lists this phone under — the `up…` wrapper on 2.10 —
         // resolved the way Playback's group poll does.
         val phoneId = runCatching { repo.getPlayer(myPlayerId())?.playerId }.getOrNull() ?: myPlayerId()
+        // Music Assistant answers a join it will not make with success and a log line of
+        // its own, so what it was asked with is the only evidence on this side.
+        Log.i(TAG, "Join ${plan.leaderId} with $phoneId; ${describePlayers()}")
         val j = Joined(phoneId, plan.leaderId, plan.leaderName)
         playback.setListenOnly(true)
         LightListenerRules.groupVolume(nowPlaying.players.value, plan.leaderId, setOf(phoneId, myPlayerId()))
