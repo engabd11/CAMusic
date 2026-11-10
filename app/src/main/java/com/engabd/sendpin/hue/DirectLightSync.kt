@@ -580,6 +580,12 @@ class DirectLightSync(
      */
     @Volatile private var mapStretchStartS: Float? = null
 
+    /**
+     * This track's scan, landed after the stretch had settled on the live tracker.
+     * Taken over at a section start or the next seek; see [MapAdoption.lateHandover].
+     */
+    @Volatile private var lateScan: TrackScan? = null
+
     /** The last frame's track position, for spotting a gapless item boundary. Analysis thread only. */
     private var lastTapPosS: Float? = null
 
@@ -1229,12 +1235,14 @@ class DirectLightSync(
             // decided afresh for the track that has arrived.
             if (MapAdoption.crossedBoundary(lastTapPosS, pos)) {
                 boundaryHold = true
+                lateScan = null
                 mapCommitted = null
                 mapStretchStartS = null
                 mapPrevPos = null
                 mapSection = null
                 scannedSignal = null
             }
+            val prevPos = lastTapPosS
             lastTapPosS = pos
             // No change of track came: the same one started again (repeat one).
             if (boundaryHold && pos >= MapAdoption.BOUNDARY_HOLD_S) boundaryHold = false
@@ -1249,15 +1257,28 @@ class DirectLightSync(
                     positionTrusted = activeSource.value.feed == LightSyncFeed.LOCAL_PCM,
                 )
             }
-            if (mapCommitted == true && scan != null && !boundaryHold) {
-                scan.gridAt(pos, mapPrevPos)?.let { grid = it }
-                arc = arc?.let { enrichWithScan(it, scan, pos) }
-                scannedSignal = scan.intensitySignalAt(pos)
+            val late = lateScan
+            if (mapCommitted == false && late != null && !boundaryHold && MapAdoption.lateHandover(
+                    prevPos, pos, late.sections.map { it.startS },
+                    trackerLocked = grid?.locked == true,
+                    positionTrusted = activeSource.value.feed == LightSyncFeed.LOCAL_PCM,
+                )
+            ) {
+                lateScan = null
+                adoptScan(late)
+                mapCommitted = true
+                mapPrevPos = null
+            }
+            val adopted = activeScan
+            if (mapCommitted == true && adopted != null && !boundaryHold) {
+                adopted.gridAt(pos, mapPrevPos)?.let { grid = it }
+                arc = arc?.let { enrichWithScan(it, adopted, pos) }
+                scannedSignal = adopted.intensitySignalAt(pos)
                 // The one absolute measure a per-bin AGC cannot leave behind.
                 // Extreme's per-lamp brightness reads it; every other rung
                 // ignores it, so attaching it unconditionally costs nothing.
-                if (scan.melbankRef.isNotEmpty()) {
-                    published = frame.copy(melbankRef = scan.melbankRef)
+                if (adopted.melbankRef.isNotEmpty()) {
+                    published = frame.copy(melbankRef = adopted.melbankRef)
                 }
                 mapPrevPos = pos
             }
@@ -1430,7 +1451,10 @@ class DirectLightSync(
         // A "no" was about not unseating a PLL that had found the beat, and that PLL
         // has just been reset; a scan that arrived since gets this stretch. A "yes"
         // stays: the grid describes the whole track.
-        if (mapCommitted == false) mapCommitted = null
+        if (mapCommitted == false) {
+            lateScan?.let { adoptScan(it); lateScan = null }
+            mapCommitted = null
+        }
         // For the same reason the structure tracker resets: a layer's smoothed
         // temperature, decaying flash or accumulated phase describes the audio
         // that was playing, and a new track is not that audio. Each layer
@@ -2489,8 +2513,12 @@ class DirectLightSync(
                 repo.completed.collect { key ->
                     val track = currentTrack ?: return@collect
                     if (TrackScanRepository.keyFor(track) != key) return@collect
-                    if (mapCommitted != null) return@collect  // regime already settled
-                    adoptScan(repo.cached(track))
+                    when (mapCommitted) {
+                        null -> adoptScan(repo.cached(track))
+                        // Settled on the live beat: kept for a safe moment, not forced in now.
+                        false -> lateScan = repo.cached(track)
+                        true -> {}
+                    }
                 }
             }
         }
@@ -2649,6 +2677,7 @@ class DirectLightSync(
         }
         activeScan = null
         activeProfile = null
+        lateScan = null
         scannedSignal = null
         mapCommitted = null
         mapStretchStartS = null

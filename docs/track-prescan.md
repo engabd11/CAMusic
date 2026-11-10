@@ -97,7 +97,10 @@ One regime per track, decided once, inside the first `MapAdoption.COMMIT_WINDOW_
 (syncoV2's `coordinator._MAP_COMMIT_WINDOW_S`). A grid arriving mid-song would
 replace a PLL that has by then found the beat itself, and the handover between
 two clocks that agree on tempo but not quite on phase reads as the room
-stumbling. A late scan is used on the *next* play instead.
+stumbling. A late scan waits for a safe moment instead: on the local player's exact
+position it takes over where one of its own sections starts (the music changes there,
+so the handover reads as part of it), at once if the live tracker never locked, or at
+the next seek. On a session clock it waits for the next play.
 
 The window counts from where a stretch of listening begins, not from 0:00, when the
 position is the local player's own media time. A scan already cached when Light

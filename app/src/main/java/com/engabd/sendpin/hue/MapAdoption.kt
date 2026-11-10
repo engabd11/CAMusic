@@ -58,6 +58,28 @@ internal object MapAdoption {
         }
     }
 
+    /**
+     * Whether a scan that arrived after this stretch settled on the live tracker
+     * ("no") may take over between the frames at [prevS] and [posS].
+     *
+     * Only on an exact position ([positionTrusted]): a session clock does not line up
+     * with the scan's sections. At once while the live tracker has not locked, since
+     * there is no found beat to unseat. Otherwise only where one of the scan's own
+     * sections starts ([sectionStartsS]): the music changes there, so the handover
+     * between two clocks reads as part of it, not as the room stumbling mid-phrase.
+     */
+    fun lateHandover(
+        prevS: Float?,
+        posS: Float,
+        sectionStartsS: List<Float>,
+        trackerLocked: Boolean,
+        positionTrusted: Boolean,
+    ): Boolean {
+        if (!positionTrusted || prevS == null || posS < prevS) return false
+        if (!trackerLocked) return true
+        return sectionStartsS.any { it > prevS && it <= posS }
+    }
+
     /** Whether the frame at [posS] has crossed into the next item since [prevS]. */
     fun crossedBoundary(prevS: Float?, posS: Float): Boolean =
         prevS != null && posS < prevS - BOUNDARY_JUMP_S
