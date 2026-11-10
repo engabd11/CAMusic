@@ -40,7 +40,7 @@ import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel.SpeakerUi
  * Assistant's permanent group speakers. Both are "which speakers play together", one
  * kept on this phone, the other on the server.
  *
- * Drawn inside the Speakers screen's own Box like [AnnounceSheet], for the same reason.
+ * Drawn inside the Speakers screen's own Box, like [SpeakerPickerSheet].
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

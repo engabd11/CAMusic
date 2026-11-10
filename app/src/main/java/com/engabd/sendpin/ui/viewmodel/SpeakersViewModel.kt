@@ -61,6 +61,8 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         val isGroup: Boolean = false,
         /** The phone sitting silently in a group for Light Sync. */
         val isListener: Boolean = false,
+        /** MA can reach it now, so it can take an announcement. */
+        val available: Boolean = true,
     )
 
     private val settings = AppSettings(app)
@@ -563,6 +565,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
             canLead = canSetMembers,
             isGroup = type == "group",
             isListener = listener,
+            available = available,
         )
     }
 

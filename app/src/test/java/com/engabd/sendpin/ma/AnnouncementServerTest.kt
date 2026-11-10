@@ -1,7 +1,10 @@
 package com.engabd.sendpin.ma
 
+import com.engabd.sendpin.ma.Announcer.LocalAddress
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.URL
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
@@ -36,12 +39,14 @@ class AnnouncementServerTest {
     }
 
     @Test fun theRightTokenServesTheClipAsOftenAsAsked() {
+        assertFalse(server.fetched.isCompleted)
         assertEquals("http://127.0.0.1:${server.listeningPort}/$token/announce1.aac", server.url)
         repeat(2) {
             val (code, body) = get("/$token/announce1.aac")
             assertEquals(200, code)
             assertContentEquals(bytes, body)
         }
+        assertTrue(server.fetched.isCompleted)
     }
 
     @Test fun anythingElseIsNotFound() {
@@ -49,6 +54,13 @@ class AnnouncementServerTest {
             "/", "/$token", "/$token/", "/$token/other.aac", "/wrong/announce1.aac",
             "/${token.uppercase()}/announce1.aac", "/$token/../announce1.aac", "/announce1.aac",
         ).forEach { assertEquals(404, get(it).first, it) }
+        // A wrong path is not MA fetching the clip.
+        assertFalse(server.fetched.isCompleted)
+    }
+
+    @Test fun stoppingToTryAnotherAddressKeepsTheClip() {
+        server.stopKeepingClip()
+        assertTrue(file.exists())
     }
 
     @Test fun expiredClipIsNotFound() {
@@ -74,8 +86,34 @@ class AnnouncementServerTest {
         assertEquals("Couldn't announce on Lounge: Player is off. Played on Kitchen.", mixed.text)
     }
 
-    @Test fun addressTowardALoopbackServerIsLoopback() {
-        assertEquals("127.0.0.1", Announcer.addressToward("http://127.0.0.1:8095"))
-        assertEquals(null, Announcer.addressToward("not a url"))
+    @Test fun theRouteToALoopbackServerIsLoopback() {
+        assertEquals("127.0.0.1", Announcer.routeToward(InetAddress.getByName("127.0.0.1") as Inet4Address)?.ip)
+        assertEquals("127.0.0.1", Announcer.maAddress("http://127.0.0.1:8095")?.hostAddress)
+        assertEquals(null, Announcer.maAddress("not a url"))
+    }
+
+    private val wifi = LocalAddress("192.168.0.179", 24)
+    private val vpn = LocalAddress("100.67.113.26", 32)
+
+    @Test fun aVpnDefaultRouteDoesNotHideWifiFromALanServer() {
+        assertEquals(listOf("192.168.0.179", "100.67.113.26"), Announcer.orderCandidates(listOf(wifi), vpn, "192.168.0.20"))
+    }
+
+    @Test fun aServerReachedOverTheVpnWithNoSharedSubnetStillGetsBoth() {
+        assertEquals(listOf("192.168.0.179", "100.67.113.26"), Announcer.orderCandidates(listOf(wifi), vpn, "100.101.5.9"))
+    }
+
+    @Test fun theAddressInTheServersSubnetGoesFirst() {
+        val wideVpn = LocalAddress("100.67.113.26", 10)
+        assertEquals(listOf("100.67.113.26", "192.168.0.179"), Announcer.orderCandidates(listOf(wifi), wideVpn, "100.101.5.9"))
+    }
+
+    @Test fun oneAddressIsOfferedOnce() {
+        assertEquals(listOf("192.168.0.179"), Announcer.orderCandidates(listOf(wifi), wifi, "192.168.0.20"))
+        assertEquals(listOf("100.67.113.26"), Announcer.orderCandidates(emptyList(), vpn, null))
+    }
+
+    @Test fun noAddressIsNoCandidates() {
+        assertEquals(emptyList(), Announcer.orderCandidates(emptyList(), null, "192.168.0.20"))
     }
 }

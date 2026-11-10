@@ -2,6 +2,8 @@ package com.engabd.sendpin.ma
 
 import android.content.Context
 import android.media.MediaRecorder
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -10,15 +12,18 @@ import java.io.File
 import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.NetworkInterface
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -43,11 +48,14 @@ class Announcer(
     private val scope: CoroutineScope,
     private val maBaseUrl: suspend () -> String,
 ) {
-    /** What the announce sheet shows under its controls. [failed] tints it as a warning. */
+    /** What the announce dialog shows under its controls. [failed] tints it as a warning. */
     data class Status(val text: String, val failed: Boolean = false)
 
-    /** Who to announce to (player id to display name), with the chime and a 0..100 volume. */
-    class Request(val players: Map<String, String>, val chime: Boolean, val volume: Int)
+    /** One of this phone's IPv4 addresses, with its network's prefix length. */
+    data class LocalAddress(val ip: String, val prefix: Int)
+
+    /** Who to announce to (player id to display name), with the chime and a 0..100 volume (null: MA's own). */
+    class Request(val players: Map<String, String>, val chime: Boolean, val volume: Int?)
 
     private val _status = MutableStateFlow<Status?>(null); val status: StateFlow<Status?> = _status.asStateFlow()
     private val _busy = MutableStateFlow(false); val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -131,36 +139,106 @@ class Announcer(
         _status.value = Status("Announcing…")
         scope.launch {
             var srv: AnnouncementServer? = null
+            // Once Music Assistant has the clip, its server keeps it until its own timer.
+            var handedOver = false
             try {
                 produce(file)
-                val host = withContext(Dispatchers.IO) { addressToward(maBaseUrl()) }
-                    ?: throw IllegalStateException(
-                        "Couldn't find this phone's address on the network Music Assistant is on. " +
-                            "Connect to the same Wi-Fi as the server.",
+                val hosts = withContext(Dispatchers.IO) { candidatesToward(maBaseUrl()) }
+                if (hosts.isEmpty()) {
+                    throw IllegalStateException(
+                        "Couldn't find this phone's address on the network. Connect to the same Wi-Fi as Music Assistant.",
                     )
+                }
                 // One clip on offer at a time; a newer announcement replaces an older one.
                 server?.stop()
-                srv = AnnouncementServer(host, file, contentType)
-                srv.begin()
-                server = srv
-                val url = srv.url
-                val results = request.players.map { (id, name) ->
-                    async { name to runCatchingCancellable { repo.playAnnouncement(id, url, request.chime, request.volume, timeoutMs = CALL_TIMEOUT_MS) }.exceptionOrNull() }
-                }.awaitAll()
-                _status.value = summary(results)
-                // On success it stays up until its timer: a speaker may still be fetching.
-                if (results.all { it.second != null }) srv.stop()
+                server = null
+                for (host in hosts) {
+                    srv = AnnouncementServer(host, file, contentType)
+                    srv.begin()
+                    server = srv
+                    val results = attempt(srv, request)
+                    if (results != null) {
+                        _status.value = summary(results)
+                        // A speaker may still be fetching; if none took it, nothing will.
+                        handedOver = results.any { it.second == null }
+                        return@launch
+                    }
+                    // Never fetched from this address: the next one replays the chime, so it is tried only now.
+                    srv.stopKeepingClip()
+                    server = null
+                }
+                _status.value = Status(
+                    "Music Assistant couldn't reach this phone to fetch the announcement " +
+                        "(tried ${hosts.joinToString()}). A VPN on the phone can cause this: pause it and try again.",
+                    failed = true,
+                )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                srv?.stop()
                 _status.value = Status(e.message ?: "Couldn't send the announcement", failed = true)
             } finally {
-                // Never served: nothing else will delete it.
-                if (srv == null) file.delete()
+                if (!handedOver) {
+                    srv?.stopKeepingClip()
+                    if (server === srv) server = null
+                    file.delete()
+                }
                 _busy.value = false
             }
         }
+    }
+
+    /**
+     * Ask MA to play [srv]'s clip on every speaker. The results, once MA has fetched the
+     * clip or refused every speaker outright; null when it never came for it, which is
+     * MA failing to reach this address (it still plays the chime and answers success).
+     */
+    private suspend fun attempt(srv: AnnouncementServer, request: Request): List<Pair<String, Throwable?>>? = coroutineScope {
+        val calls = async {
+            request.players.map { (id, name) ->
+                async {
+                    name to runCatchingCancellable {
+                        repo.playAnnouncement(id, srv.url, request.chime, request.volume, timeoutMs = CALL_TIMEOUT_MS)
+                    }.exceptionOrNull()
+                }
+            }.awaitAll()
+        }
+        val fetched = withTimeoutOrNull(FETCH_WAIT_MS) {
+            select<Boolean> {
+                srv.fetched.onAwait { true }
+                calls.onAwait { srv.fetched.isCompleted }
+            }
+        } ?: false
+        when {
+            fetched -> {
+                _status.value = Status("Playing the announcement…")
+                calls.await()
+            }
+            // Refused before fetching anything (speaker off, unknown): another address won't help.
+            calls.isCompleted && calls.await().all { it.second != null } -> calls.await()
+            else -> { calls.cancel(); null }
+        }
+    }
+
+    /**
+     * Where MA might reach this phone, best first. Wi-Fi and Ethernet are read from
+     * every network, not the default one: a VPN made the default hides them from the
+     * route lookup, and MA on the LAN cannot reach a VPN address. Blocking.
+     */
+    private fun candidatesToward(maUrl: String): List<String> {
+        val cm = app.getSystemService(ConnectivityManager::class.java)
+        @Suppress("DEPRECATION") // allNetworks: the one call that lists non-default networks, as PartyManager uses it.
+        val lan = cm?.allNetworks.orEmpty().flatMap { network ->
+            val caps = cm?.getNetworkCapabilities(network)
+            val local = caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+            if (!local) return@flatMap emptyList()
+            cm?.getLinkProperties(network)?.linkAddresses.orEmpty().mapNotNull { la ->
+                val a = la.address as? Inet4Address ?: return@mapNotNull null
+                if (a.isLoopbackAddress || a.isLinkLocalAddress) null else LocalAddress(a.hostAddress ?: return@mapNotNull null, la.prefixLength)
+            }
+        }
+        val ma = maAddress(maUrl)
+        return orderCandidates(lan, ma?.let(::routeToward), ma?.hostAddress)
     }
 
     /** Android text-to-speech into [out] as WAV, or a message saying why not. */
@@ -196,21 +274,51 @@ class Announcer(
         /** MA answers once the announcement has played, so allow the longest clip plus the chime. */
         const val CALL_TIMEOUT_MS = 90_000L
 
+        /** How long MA gets to fetch the clip from one address. Its ffmpeg gives up after about 5 s. */
+        const val FETCH_WAIT_MS = 7_000L
+
         /**
-         * This phone's IPv4 address on its route to the Music Assistant server: the one
-         * address the server can be expected to call back. Blocking (it may resolve DNS).
+         * The addresses to offer MA the clip on, best first, without repeats. A retry
+         * replays the chime, so the first guess matters: one in the MA server's own subnet
+         * when there is one, then the Wi-Fi/Ethernet addresses, then [route], the address
+         * the system would use toward the server (which a VPN can make its own).
          */
-        fun addressToward(maUrl: String): String? {
-            val host = maUrl.toHttpUrlOrNull()?.host ?: return null
-            return runCatching {
-                val target = InetAddress.getAllByName(host).first { it is Inet4Address }
-                // A UDP connect sends nothing; it only asks the system which interface would carry it.
-                DatagramSocket().use { s ->
-                    s.connect(target, 9)
-                    (s.localAddress as? Inet4Address)?.takeUnless { it.isAnyLocalAddress }?.hostAddress
-                }
-            }.getOrNull()
+        fun orderCandidates(lan: List<LocalAddress>, route: LocalAddress?, maIp: String?): List<String> {
+            val all = lan + listOfNotNull(route)
+            val ma = maIp?.let(::ipv4Bits)
+            val sameSubnet = all.filter { a -> ma != null && ipv4Bits(a.ip)?.let { sameNetwork(it, ma, a.prefix) } == true }
+            return (sameSubnet + all).map { it.ip }.distinct()
         }
+
+        private fun ipv4Bits(ip: String): Int? {
+            val parts = ip.split('.').map { it.toIntOrNull() ?: return null }
+            if (parts.size != 4 || parts.any { it !in 0..255 }) return null
+            return parts.fold(0) { acc, b -> (acc shl 8) or b }
+        }
+
+        private fun sameNetwork(a: Int, b: Int, prefix: Int): Boolean {
+            if (prefix !in 1..32) return false
+            val mask = if (prefix == 32) -1 else (-1 shl (32 - prefix))
+            return (a and mask) == (b and mask)
+        }
+
+        /** The MA server's IPv4 address, from its URL. Blocking (it may resolve DNS). */
+        fun maAddress(maUrl: String): Inet4Address? {
+            val host = maUrl.toHttpUrlOrNull()?.host ?: return null
+            return runCatching { InetAddress.getAllByName(host).firstOrNull { it is Inet4Address } as Inet4Address? }.getOrNull()
+        }
+
+        /** This phone's IPv4 address on the system's route to [target], with its prefix. */
+        fun routeToward(target: Inet4Address): LocalAddress? = runCatching {
+            // A UDP connect sends nothing; it only asks the system which interface would carry it.
+            val local = DatagramSocket().use { s ->
+                s.connect(target, 9)
+                (s.localAddress as? Inet4Address)?.takeUnless { it.isAnyLocalAddress }
+            } ?: return null
+            val prefix = NetworkInterface.getByInetAddress(local)?.interfaceAddresses
+                ?.firstOrNull { it.address == local }?.networkPrefixLength?.toInt() ?: 32
+            LocalAddress(local.hostAddress ?: return null, prefix)
+        }.getOrNull()
 
         /** One line for how the announcement went, naming any speaker that refused it. */
         fun summary(results: List<Pair<String, Throwable?>>): Status {

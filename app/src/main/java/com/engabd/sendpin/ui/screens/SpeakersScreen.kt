@@ -54,11 +54,14 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
     val canGroup by viewModel.leaderCanGroup.collectAsStateWithLifecycle()
     val somethingPlaying by viewModel.leaderIsPlaying.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
-    var announcing by remember { mutableStateOf(false) }
+    var announceTo by remember { mutableStateOf<SpeakerUi?>(null) }
     var scenesOpen by remember { mutableStateOf(false) }
     var removing by remember { mutableStateOf<SpeakerUi?>(null) }
 
     val total = joined.size + available.size
+    // MA speakers that can take an announcement: not the phone sitting silently for Light Sync.
+    val announceable = (joined + available).filter { it.available && !it.isListener }
+    val canAnnounce: (SpeakerUi) -> Boolean = { p -> connected && announceable.any { it.id == p.id } }
     val allJoined = available.isEmpty() && joined.isNotEmpty()
 
     Box(Modifier.fillMaxSize().background(Ink)) {
@@ -83,9 +86,13 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                     }
                     Spacer(Modifier.width(10.dp))
                 }
-                if (connected) {
-                    CircleIconButton(Icons.Default.Campaign, "Announce") { announcing = true }
+                // Aimed at the play-to speaker; each card's own button aims at that speaker.
+                val headerTarget = announceable.firstOrNull { it.isTarget } ?: announceable.firstOrNull()
+                if (connected && headerTarget != null) {
+                    CircleIconButton(Icons.Default.Campaign, "Announce on ${headerTarget.name}") { announceTo = headerTarget }
                     Spacer(Modifier.width(10.dp))
+                }
+                if (connected) {
                     CircleIconButton(Icons.Default.Bookmarks, "Scenes and group speakers") { scenesOpen = true }
                     Spacer(Modifier.width(10.dp))
                 }
@@ -125,6 +132,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                             onVol = { viewModel.setPlayerVolume(p.id, it) },
                             onOffset = { viewModel.changeOffset(p.id, it) },
                             onRemove = { removing = p },
+                            onAnnounce = if (canAnnounce(p)) ({ announceTo = p }) else null,
                         )
                         Spacer(Modifier.height(12.dp))
                     }
@@ -152,6 +160,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                                 onJoin = { viewModel.join(p.id) },
                                 onMoveMusic = { viewModel.transferQueueTo(p.id) },
                                 onRemove = { removing = p },
+                                onAnnounce = if (canAnnounce(p)) ({ announceTo = p }) else null,
                             )
                             Spacer(Modifier.height(12.dp))
                         }
@@ -175,7 +184,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
             }
         }
 
-        if (announcing) AnnounceSheet(joined + available, onClose = { announcing = false }, viewModel = viewModel)
+        announceTo?.let { AnnounceDialog(it, announceable, onClose = { announceTo = null }, viewModel = viewModel) }
         if (scenesOpen) SpeakerScenesSheet(joined + available, onClose = { scenesOpen = false }, viewModel = viewModel)
         // Removing deletes the group player on the server, for every app, so it asks first.
         removing?.let { p ->
@@ -254,7 +263,7 @@ private fun GroupHeroCard(master: Float, activeCount: Int, title: String, onMast
 }
 
 @Composable
-private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit, onVol: (Float) -> Unit, onOffset: (Int) -> Unit, onRemove: () -> Unit) {
+private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit, onVol: (Float) -> Unit, onOffset: (Int) -> Unit, onRemove: () -> Unit, onAnnounce: (() -> Unit)?) {
     val accent = LocalAccent.current
     Box(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(accent.a(0.08f)).border(1.dp, accent.a(0.28f), RoundedCornerShape(16.dp)).padding(14.dp),
@@ -266,6 +275,10 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                 Column(Modifier.weight(1f).clickable(onClick = onSelect)) {
                     Text(p.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(if (p.isTarget) "Playing here" else p.meta, color = if (p.isTarget) accent else TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                }
+                onAnnounce?.let {
+                    CircleIconButton(Icons.Default.Campaign, "Announce on ${p.name}", it)
+                    Spacer(Modifier.width(8.dp))
                 }
                 if (p.isGroup) {
                     CircleIconButton(Icons.Default.DeleteOutline, "Remove group speaker ${p.name}", onRemove)
@@ -331,6 +344,7 @@ private fun FreeCard(
     onJoin: () -> Unit,
     onMoveMusic: () -> Unit,
     onRemove: () -> Unit,
+    onAnnounce: (() -> Unit)?,
 ) {
     val accent = LocalAccent.current
     Row(
@@ -350,6 +364,10 @@ private fun FreeCard(
         // playing to move.
         if (canMoveMusic) {
             CircleIconButton(Icons.Default.MusicNote, "Move music here", onMoveMusic)
+            Spacer(Modifier.width(8.dp))
+        }
+        onAnnounce?.let {
+            CircleIconButton(Icons.Default.Campaign, "Announce on ${p.name}", it)
             Spacer(Modifier.width(8.dp))
         }
         // Group players only: a real speaker is not this app's to delete.
