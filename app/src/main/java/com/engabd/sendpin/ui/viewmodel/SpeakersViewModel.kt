@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.ma.Announcer
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaPlayer
 import com.engabd.sendpin.ma.MaRepository
@@ -68,6 +69,9 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
 
     private val api = (app as SendpinApp).maApi
     private val repo = MaRepository(api)
+
+    /** Typed or spoken announcements to chosen speakers. See [Announcer]. */
+    val announcer = Announcer(app, repo, viewModelScope) { settings.maBaseUrl.first() }
 
     /** The process-scoped poller this screen reads its player list from. */
     private val maNowPlaying = (app as SendpinApp).maNowPlaying
@@ -485,6 +489,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
+        announcer.close()
         // Shared MaApiClient — don't disconnect it when one ViewModel is destroyed.
     }
 }

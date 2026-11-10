@@ -1163,12 +1163,14 @@ class MaRepository(
         preAnnounce: Boolean? = null,
         volumeLevel: Int? = null,
         preAnnounceUrl: String? = null,
+        // MA answers only once the announcement has played, which can outlast the default.
+        timeoutMs: Long = 30_000,
     ) = api.sendCommand("players/cmd/play_announcement", buildJsonObject {
         put("player_id", playerId); put("url", url)
         preAnnounce?.let { put("pre_announce", it) }
         volumeLevel?.let { put("volume_level", it.coerceIn(0, 100)) }
         preAnnounceUrl?.let { put("pre_announce_url", it) }
-    })
+    }, timeoutMs = timeoutMs)
 
     /** Add the currently playing item on the given player to favorites. */
     suspend fun addCurrentlyPlayingToFavorites(playerId: String) =

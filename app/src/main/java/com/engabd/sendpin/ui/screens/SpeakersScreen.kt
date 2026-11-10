@@ -51,6 +51,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
     val canGroup by viewModel.leaderCanGroup.collectAsStateWithLifecycle()
     val somethingPlaying by viewModel.leaderIsPlaying.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+    var announcing by remember { mutableStateOf(false) }
 
     val total = joined.size + available.size
     val allJoined = available.isEmpty() && joined.isNotEmpty()
@@ -75,6 +76,10 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                     Pill(if (allJoined) "Ungroup" else "Group all", allJoined) {
                         if (allJoined) viewModel.ungroupAll() else viewModel.groupAll()
                     }
+                    Spacer(Modifier.width(10.dp))
+                }
+                if (connected) {
+                    CircleIconButton(Icons.Default.Campaign, "Announce") { announcing = true }
                     Spacer(Modifier.width(10.dp))
                 }
                 RefreshButton(refreshing = refreshing, onClick = viewModel::manualRefresh)
@@ -160,6 +165,8 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                 }
             }
         }
+
+        if (announcing) AnnounceSheet(joined + available, onClose = { announcing = false }, viewModel = viewModel)
     }
 }
 

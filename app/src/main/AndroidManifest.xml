@@ -45,8 +45,12 @@
       Light Sync reacting to *other apps* (Settings > Light Sync > "Other apps").
       RECORD_AUDIO is what AudioPlaybackCapture is gated on even though no microphone
       is ever opened: the platform has one permission for "this app can receive audio
-      it did not produce", and this is it. Nothing here records the microphone, and
-      the feature is off until it is explicitly set up.
+      it did not produce", and this is it. That feature never records the microphone,
+      and it is off until it is explicitly set up.
+
+      The same permission also covers the one place the microphone *is* opened: a
+      spoken announcement on the Speakers screen (ma/Announcer.kt), recorded only
+      while the talk button is held and asked for at that moment.
 
       Note this is visible on the store listing and in the app's own permission page
       whether or not anyone turns the feature on. That is the cost of the feature
@@ -134,6 +138,11 @@
     -->
     <queries>
         <package android:name="com.google.android.projection.gearhead" />
+        <!-- Typed announcements (ma/Announcer.kt): without this, Android 11+ hides
+             every speech engine from the app and TextToSpeech never initialises. -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
 
     <!--
