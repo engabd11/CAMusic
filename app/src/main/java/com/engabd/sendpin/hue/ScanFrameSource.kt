@@ -85,6 +85,7 @@ class ScanFrameSource(
 
     @Volatile private var scan: TrackScan? = null
     @Volatile private var pendingKey: String? = null
+    @Volatile private var pendingTrack: LocalTrack? = null
     @Volatile private var offsetMs: Int = 0
 
     private var jobs = mutableListOf<Job>()
@@ -93,6 +94,7 @@ class ScanFrameSource(
         if (jobs.isNotEmpty()) return
         jobs += scope.launch { watchTrack() }
         jobs += scope.launch { watchScans() }
+        jobs += scope.launch { watchUnavailable() }
         jobs += scope.launch { settings.lightSyncSpeakerOffsetMs.collect { offsetMs = it } }
         jobs += scope.launch { tick() }
     }
@@ -106,6 +108,7 @@ class ScanFrameSource(
     private fun reset() {
         scan = null
         pendingKey = null
+        pendingTrack = null
         slew.clear()
         synth.reset()
         _driving.value = false
@@ -135,6 +138,10 @@ class ScanFrameSource(
                     return@collect
                 }
                 scan = null
+                // Cleared before the search, so the last track's scan landing meanwhile
+                // is not adopted for this one.
+                pendingKey = null
+                pendingTrack = null
                 synth.reset()
                 slew.clear()
                 _driving.value = false
@@ -143,6 +150,7 @@ class ScanFrameSource(
                 if (track == null) {
                     _state.value = ScanFeedState.NO_MATCH
                     pendingKey = null
+                    pendingTrack = null
                     return@collect
                 }
                 val cached = scans.cached(track)
@@ -151,7 +159,10 @@ class ScanFrameSource(
                     return@collect
                 }
                 _state.value = ScanFeedState.SCANNING
-                pendingKey = track.id
+                // The repository's key, not the track id: the two differ once the key
+                // names the library, and a completion is announced by key.
+                pendingKey = TrackScanRepository.keyFor(track)
+                pendingTrack = track
                 // Urgent: this is the track playing right now, not a sweep.
                 scans.request(track, urgent = true)
             }
@@ -161,14 +172,30 @@ class ScanFrameSource(
     private suspend fun watchScans() {
         scans.completed.collect { key ->
             if (key != pendingKey) return@collect
-            val now = nowPlaying.now.value ?: return@collect
-            val track = resolveTrack(now) ?: return@collect
+            // The track that was asked about, not a fresh search: a search can come
+            // back different, and the key it was announced under is this one's.
+            val track = pendingTrack ?: return@collect
             scans.cached(track)?.let { adopt(it) }
+        }
+    }
+
+    /**
+     * Stop saying "analysing" when the repository says there will be no analysis.
+     *
+     * [pendingKey] is kept, so a parked request that lands once Wi-Fi returns is still
+     * adopted by [watchScans].
+     */
+    private suspend fun watchUnavailable() {
+        scans.unavailable.collect { key ->
+            if (key == pendingKey && _state.value == ScanFeedState.SCANNING) {
+                _state.value = ScanFeedState.UNAVAILABLE
+            }
         }
     }
 
     private fun adopt(next: TrackScan) {
         pendingKey = null
+        pendingTrack = null
         // A grid the scanner itself does not trust is worse than none: scheduling
         // against a wrong beat is visibly, rhythmically wrong in a way that an idle
         // glow is not. Say so instead.
@@ -194,22 +221,17 @@ class ScanFrameSource(
      * pointed at another speaker and there is no second copy to ask for.
      */
     private suspend fun resolveTrack(now: MaNowPlaying.Now): LocalTrack? {
-        downloads.downloads.value.firstOrNull {
-            RemoteTrackIdentity.sameTrack(
-                now.title, now.artist, now.durationMs,
-                it.title, it.artist, it.durationMs,
-            )
+        RemoteTrackIdentity.closest(now.title, now.artist, now.durationMs, downloads.downloads.value) {
+            Triple(it.title, it.artist, it.durationMs)
         }?.let { return it.toLocalTrack() }
 
         val source = musicSource() ?: return null
-        val hits = runCatchingCancellable { source.search("${now.title} ${now.artist}", limit = 10) }
-            .getOrNull()?.tracks
-            ?: return null
-        val hit = hits.firstOrNull {
-            RemoteTrackIdentity.sameTrack(
-                now.title, now.artist, now.durationMs,
-                it.name, it.subtitle, (it.duration ?: 0).toLong() * 1000L,
-            )
+        val hit = RemoteTrackIdentity.search(now.title, now.artist) { query ->
+            val hits = runCatchingCancellable { source.search(query, limit = RemoteTrackIdentity.SEARCH_LIMIT) }
+                .getOrNull()?.tracks.orEmpty()
+            RemoteTrackIdentity.closest(now.title, now.artist, now.durationMs, hits) {
+                Triple(it.name, it.subtitle, (it.duration ?: 0).toLong() * 1000L)
+            }
         } ?: return null
         return LocalTrack(
             id = hit.itemId,
@@ -220,6 +242,10 @@ class ScanFrameSource(
             artUrl = now.artworkUrl,
             streamUrl = source.downloadUrl(hit.itemId),
             localPath = null,
+            // Named by its library, so the scan key is the one the same song gets
+            // when it plays on this phone, and one analysis serves both.
+            scrobbleId = hit.itemId,
+            scrobbleProvider = source.providerId,
         )
     }
 

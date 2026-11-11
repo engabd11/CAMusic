@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.library.ServerKind
+import com.engabd.sendpin.ma.Announcer
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaPlayer
 import com.engabd.sendpin.ma.MaRepository
@@ -15,6 +17,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** How long a local intent outranks the server's answer. */
 private const val SETTLE_MS = 6_000L
@@ -53,6 +56,10 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         val offsetKnown: Boolean,
         /** This player can lead a sync group, so it's a valid "Play here" target. */
         val canLead: Boolean,
+        /** The phone sitting silently in a group for Light Sync. */
+        val isListener: Boolean = false,
+        /** MA can reach it now, so it can take an announcement. */
+        val available: Boolean = true,
     )
 
     private val settings = AppSettings(app)
@@ -68,6 +75,9 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
 
     private val api = (app as SendpinApp).maApi
     private val repo = MaRepository(api)
+
+    /** Typed or spoken announcements to chosen speakers. See [Announcer]. */
+    val announcer = Announcer(app, repo, viewModelScope) { settings.maBaseUrl.first() }
 
     /** The process-scoped poller this screen reads its player list from. */
     private val maNowPlaying = (app as SendpinApp).maNowPlaying
@@ -320,8 +330,10 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     private val volumeJobs = mutableMapOf<String, kotlinx.coroutines.Job>()
     private var groupVolJob: kotlinx.coroutines.Job? = null
 
-    fun setPlayerVolume(playerId: String, level01: Float) {
-        val lvl = (level01 * 100).toInt().coerceIn(0, 100)
+    fun setPlayerVolume(playerId: String, level01: Float) = setPlayerVolumeLevel(playerId, (level01 * 100).roundToInt())
+
+    private fun setPlayerVolumeLevel(playerId: String, level: Int) {
+        val lvl = level.coerceIn(0, 100)
         _volumeIntent.update { it + (playerId to Intent(lvl)) }
         volumeJobs[playerId]?.cancel()
         volumeJobs[playerId] = viewModelScope.launch {
@@ -337,7 +349,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
      * there is nothing grouped to fan out to.
      */
     fun setGroupVolume(level01: Float) {
-        val lvl = (level01 * 100).toInt().coerceIn(0, 100)
+        val lvl = (level01 * 100).roundToInt().coerceIn(0, 100)
         val leader = leaderId
         val isGroup = joinedIds(_players.value, _joinIntent.value, leader).size > 1
         _groupVolumeIntent.value = Intent(lvl)
@@ -437,11 +449,19 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun MaPlayer.toUi(delays: Map<String, SyncDelay>, leader: String): SpeakerUi {
         val self = playerId == myPlayerId
+        // The phone sitting silently in the group for Light Sync is not a speaker anyone
+        // is playing to, and must not read as one. Read rather than collected: joining
+        // and leaving both refresh the player list this is built from.
+        val listener = playerId == (getApplication<Application>() as SendpinApp).lightListener.listeningAs.value
         val delay = delays[playerId]
         return SpeakerUi(
             id = playerId,
-            name = if (self) "$name (this phone)" else name,
-            meta = metaFor(this),
+            name = when {
+                listener -> "$name (Light listener)"
+                self -> "$name (this phone)"
+                else -> name
+            },
+            meta = if (listener) "Silent, for Light Sync" else metaFor(this),
             isSelf = self,
             isTarget = playerId == leader,
             volume = (volumeLevel / 100f).coerceIn(0f, 1f),
@@ -452,6 +472,8 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
             // showed a value that was not its own.
             offsetKnown = delay != null,
             canLead = canSetMembers,
+            isListener = listener,
+            available = available,
         )
     }
 
@@ -485,6 +507,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
+        announcer.close()
         // Shared MaApiClient — don't disconnect it when one ViewModel is destroyed.
     }
 }

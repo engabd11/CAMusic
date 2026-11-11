@@ -253,7 +253,7 @@ class SendspinService : Service() {
     }
 
     private fun deviceVolumePercent(): Int =
-        (SendpinApp.instance.deviceVolume.read() * 100).toInt().coerceIn(0, 100)
+        (SendpinApp.instance.deviceVolume.read() * 100).roundToInt().coerceIn(0, 100)
 
     /** Route a transport action to whichever player the shade is showing. */
     private fun route(localAction: () -> Unit, remoteAction: () -> Unit) {

@@ -53,6 +53,13 @@ enum class ScanFeedState {
     /** Matched and analysed, but the beat grid was not good enough to schedule against. */
     NO_GRID,
 
+    /**
+     * Matched, but the request ended without an analysis: pre-scan is off, the file
+     * could not be fetched, decoded or saved, or it is waiting for Wi-Fi. Without it
+     * the feed sat on [SCANNING] for good.
+     */
+    UNAVAILABLE,
+
     /** Frames are being synthesised right now. */
     DRIVING,
 }
@@ -86,7 +93,7 @@ object ShowStatusRules {
             LightSyncFeed.SCAN_REMOTE -> when (scanState) {
                 ScanFeedState.DRIVING -> if (framesFresh) ShowStatus.SCAN_DRIVEN else ShowStatus.WAITING
                 ScanFeedState.SCANNING -> ShowStatus.SCAN_PENDING
-                ScanFeedState.NO_MATCH, ScanFeedState.NO_GRID -> ShowStatus.NO_SCAN
+                ScanFeedState.NO_MATCH, ScanFeedState.NO_GRID, ScanFeedState.UNAVAILABLE -> ShowStatus.NO_SCAN
                 ScanFeedState.IDLE -> ShowStatus.WAITING
             }
         }

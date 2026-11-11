@@ -247,7 +247,7 @@ private fun PresetChip(
 }
 
 @Composable
-private fun NamePromptDialog(
+internal fun NamePromptDialog(
     title: String,
     note: String,
     initial: String,

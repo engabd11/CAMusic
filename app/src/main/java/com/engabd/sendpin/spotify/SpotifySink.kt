@@ -38,6 +38,14 @@ class SpotifySink(private val tapHolder: SpotifyEngine.TapHolder) : SinkOutput {
     /** True when the incoming PCM is big-endian and needs a pair swap. */
     private var swapBytes: Boolean = false
 
+    /**
+     * A flush (a seek, a new track loaded) asked for the analysis to start clean.
+     * Carried out by the next [write], not by [flush] itself: librespot flushes from
+     * its player thread while [write] runs on the output thread, and the tap's ring
+     * and clock have one writer, which must be this one.
+     */
+    @Volatile private var flushPending = false
+
     override fun start(format: OutputAudioFormat): Boolean {
         sampleRate = format.sampleRate.toInt()
         channels = format.channels
@@ -76,6 +84,13 @@ class SpotifySink(private val tapHolder: SpotifyEngine.TapHolder) : SinkOutput {
 
     override fun write(buffer: ByteArray, offset: Int, len: Int) {
         val t = track ?: return
+        if (flushPending) {
+            flushPending = false
+            samplesWritten = 0
+            // What ExoPlayer does for the local tap on every seek: the analyzer and the
+            // trackers start clean instead of carrying the old position's beat forward.
+            tapHolder.tap.resetAnalysis()
+        }
         if (swapBytes) {
             var i = offset
             val end = offset + len - 1
@@ -114,7 +129,7 @@ class SpotifySink(private val tapHolder: SpotifyEngine.TapHolder) : SinkOutput {
     }
 
     override fun flush() {
-        samplesWritten = 0
+        flushPending = true
         track?.flush()
     }
 

@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
+import kotlin.math.roundToInt
 
 /**
  * What's playing right now, across all three of this phone's playback paths, as one
@@ -59,7 +60,7 @@ class UnifiedNowPlaying(
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private fun deviceVolumePercent(): Int = (deviceVolume.level.value * 100).toInt().coerceIn(0, 100)
+    private fun deviceVolumePercent(): Int = (deviceVolume.level.value * 100).roundToInt().coerceIn(0, 100)
 
     private fun snapshot(): Snapshot {
         if (playbackOwner.state.value.sessionOwner == PlaybackOwner.Who.LOCAL) {

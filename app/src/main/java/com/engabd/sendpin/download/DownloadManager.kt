@@ -88,6 +88,11 @@ data class DownloadedTrack(
         id = id, title = title, artist = artist, album = album,
         durationMs = durationMs, artUrl = artUri, streamUrl = streamUrl, localPath = filePath,
         sourceQuality = format?.quality,
+        // The library it came from, as [DownloadManager.toLocalTrack] fills it for the
+        // same download: the scan key names the library, and the two must agree or a
+        // download and its own streamed original are analysed twice.
+        scrobbleId = id,
+        scrobbleProvider = sourceProvider ?: SubsonicClient.PROVIDER,
     )
 }
 

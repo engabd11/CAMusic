@@ -123,9 +123,6 @@ object DjSimilarity {
     private const val W_DYNAMICS = 0.06f
     private const val W_KEY = 0.10f
 
-    /** A shared artist is worth this much on top, before normalisation. */
-    private const val ARTIST_BONUS = 0.06f
-
     /**
      * What an unscanned candidate keeps of its tag-only score.
      *
@@ -193,11 +190,9 @@ object DjSimilarity {
         }
 
         if (weight <= 0f) return 0.5f
+        // No same-artist bonus: an act is already the closest match to itself on
+        // every axis, and the bonus on top is what kept bringing it back.
         var s = sum / weight
-
-        val sameArtist = seed.artist != null && seed.artist.equals(candidate.artist, ignoreCase = true)
-        if (sameArtist) s = min(1f, s + ARTIST_BONUS)
-
         if (!candidate.scanned) s *= UNSCANNED_DISCOUNT
         return s.coerceIn(0f, 1f)
     }
@@ -277,16 +272,35 @@ object DjSetBuilder {
     private const val RELAX_STEP = 0.12f
 
     /**
-     * Consecutive picks by one artist before the next one is pushed down the list.
-     *
-     * Not a ban — an artist genuinely is the closest match to themselves, and on a
-     * small library refusing that means refusing to play. Two in a row reads as a
-     * DJ making a point; four reads as a broken shuffle.
+     * Consecutive picks by one artist allowed. Two in a row reads as a DJ making a
+     * point; four reads as a broken shuffle.
      */
-    private const val ARTIST_RUN_LIMIT = 2
+    const val ARTIST_RUN_LIMIT = 2
 
-    /** What a candidate loses for extending an artist run past [ARTIST_RUN_LIMIT]. */
-    private const val ARTIST_RUN_PENALTY = 0.25f
+    /**
+     * Picks that must pass after a run of [ARTIST_RUN_LIMIT] before that artist may
+     * come back.
+     *
+     * A hard rule, not a penalty: a penalty lost to an artist who matched
+     * themselves too well, and the set kept coming back to them. It gives way only
+     * when every candidate left is blocked, because on a tiny library refusing
+     * means refusing to play.
+     */
+    const val ARTIST_COOLDOWN = 4
+
+    /** How many recent artists the rule needs to see. */
+    const val ARTIST_MEMORY = ARTIST_RUN_LIMIT + ARTIST_COOLDOWN
+
+    /**
+     * How much of the similarity a pick owes to the track the *set* started from,
+     * rather than to the one just before it.
+     *
+     * Chained alone, every transition stays close and the set still wanders off: an
+     * hour of small steps from a house record can end in drum and bass. A quarter is
+     * enough to keep it within reach of the seed while leaving the chain in charge
+     * of each transition.
+     */
+    private const val ANCHOR_WEIGHT = 0.25f
 
     /**
      * How much of a pick's score a [DjMood] is allowed to be worth.
@@ -323,6 +337,10 @@ object DjSetBuilder {
          * which is what this has always done. See [DjMood].
          */
         mood: DjMood? = null,
+        /** The set's first seed, held to by [ANCHOR_WEIGHT]; null to chain alone. */
+        anchor: DjProfile? = null,
+        /** Added to a candidate's score — the listener's skips and favourites. See [RadioMemory.adjust]. */
+        adjust: (MaItem) -> Float = { 0f },
     ): List<MaItem> {
         if (pool.isEmpty() || count <= 0) return emptyList()
         // By id, not by item: the ladder can hand back the same track under two
@@ -340,7 +358,7 @@ object DjSetBuilder {
         var current = seed
 
         while (picked.size < count && remaining.isNotEmpty()) {
-            val next = choose(current, remaining, profiles, strictness, harmonic, artistRun, mood) ?: break
+            val next = choose(current, remaining, profiles, strictness, harmonic, artistRun, mood, anchor, adjust) ?: break
             remaining.remove(next)
             picked.add(next)
             val profile = profiles.getValue(next.itemId)
@@ -362,31 +380,38 @@ object DjSetBuilder {
         harmonic: Boolean,
         artistRun: List<String>,
         mood: DjMood?,
+        anchor: DjProfile?,
+        adjust: (MaItem) -> Float,
     ): MaItem? {
         // Null unless there is a brief with something to say — [DjMood.ANYTHING] is
         // the listener declining to give one, and folding it away here means the
         // whole of the rest of this method is the code that ran before moods
         // existed, unchanged.
         val brief = mood?.takeIf { !it.open }
+        // The artist rule before any scoring, waived only when it would leave nothing.
+        val allowed = remaining
+            .filterNot { artistBlocked(profiles.getValue(it.itemId).artist, artistRun) }
+            .ifEmpty { remaining }
         // With no track to be similar *to* yet, the brief is the only thing there is
         // to answer — so the opener is the best answer to it rather than whatever
         // the pool handed back first.
         if (current == null) {
-            if (brief == null) return remaining.firstOrNull()
-            return remaining.maxByOrNull { brief.fit(profiles.getValue(it.itemId)) }
+            if (brief == null) return allowed.firstOrNull()
+            return allowed.maxByOrNull { brief.fit(profiles.getValue(it.itemId)) }
         }
-        val trailing = trailingRun(artistRun)
-        val ranked = remaining
+        val ranked = allowed
             .map { item ->
                 val profile = profiles.getValue(item.itemId)
                 var s = DjSimilarity.score(current, profile, harmonic)
+                if (anchor != null) {
+                    s = (1f - ANCHOR_WEIGHT) * s + ANCHOR_WEIGHT * DjSimilarity.score(anchor, profile, harmonic)
+                }
+                // The mood takes its third of the whole, so chain, anchor and mood
+                // still sum to one: 0.495, 0.165 and 0.34.
                 if (brief != null) {
                     s = (1f - MOOD_WEIGHT) * s + MOOD_WEIGHT * brief.fit(profile)
                 }
-                if (trailing != null && profile.artist.equals(trailing, ignoreCase = true)) {
-                    s -= ARTIST_RUN_PENALTY
-                }
-                item to s
+                item to s + adjust(item)
             }
             .sortedByDescending { it.second }
 
@@ -399,14 +424,17 @@ object DjSetBuilder {
     }
 
     /**
-     * The artist at the end of [run] if they already hold [ARTIST_RUN_LIMIT] in a
-     * row, else null — i.e. the one act the next pick should avoid.
+     * [artist] may not go next: they have had [ARTIST_RUN_LIMIT] in a row in [run]
+     * (newest last), and fewer than [ARTIST_COOLDOWN] picks have followed.
      */
-    private fun trailingRun(run: List<String>): String? {
-        if (run.size < ARTIST_RUN_LIMIT) return null
-        val last = run.last()
-        val streak = run.asReversed().takeWhile { it.equals(last, ignoreCase = true) }.size
-        return if (streak >= ARTIST_RUN_LIMIT) last else null
+    fun artistBlocked(artist: String?, run: List<String>): Boolean {
+        if (artist == null) return false
+        var streak = 0
+        for ((i, a) in run.withIndex()) {
+            streak = if (a.equals(artist, ignoreCase = true)) streak + 1 else 0
+            if (streak >= ARTIST_RUN_LIMIT && run.lastIndex - i < ARTIST_COOLDOWN) return true
+        }
+        return false
     }
 
     /**

@@ -128,6 +128,7 @@ internal fun LightSyncSection(
     val auto by settings.lightSyncModeAuto.collectAsStateWithLifecycle(initialValue = true)
     val direct = mode == AppSettings.MODE_DIRECT
     val bridgeIp by settings.hueBridgeIp.collectAsStateWithLifecycle(initialValue = "")
+    val listenMa by settings.lightSyncListenMa.collectAsStateWithLifecycle(initialValue = false)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
@@ -189,6 +190,30 @@ internal fun LightSyncSection(
                     modifier = Modifier.clickable { scope.launch { settings.setLightSyncModeAuto(true) } },
                 )
             }
+        }
+
+        // Here beside the route, because turning it on is what lets the bridge route
+        // follow a Music Assistant speaker at all. See LightListener.
+        SettingsCard(
+            title = "Music Assistant speakers",
+            info = "With this on, when Music Assistant plays on a Sendspin speaker in another " +
+                "room, this phone joins that speaker's group without making a sound. It hears " +
+                "the same audio at the same moment, so the bridge gets the full live show " +
+                "instead of a schedule from the track's analysis, and Home Assistant is not " +
+                "needed.\n\nIt needs the Hue Bridge route and a paired bridge. While the route " +
+                "follows your library, turning this on moves Music Assistant onto the bridge.\n\n" +
+                "AirPlay, Cast, Sonos and group players are left alone: the phone cannot keep " +
+                "time with them, so the show stays on the track's analysis and the Lights tab " +
+                "says why. The phone shows as \"Light listener\" in Speakers while it listens, " +
+                "and leaves the group when Light Sync or this switch goes off.\n\nExperimental: " +
+                "how each Music Assistant version treats a silent member is still being learnt.",
+        ) {
+            ToggleRow(
+                "Listen silently for Light Sync (Music Assistant)",
+                "Experimental. Joins the playing speaker's group without sound, so the lights " +
+                    "follow the real audio.",
+                listenMa, accent,
+            ) { on -> scope.launch { settings.setLightSyncListenMa(on) } }
         }
 
         if (direct) {

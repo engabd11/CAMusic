@@ -351,6 +351,14 @@ class LocalPlayer(private val context: Context) {
      */
     val seeks: SharedFlow<Long> = _seeks.asSharedFlow()
 
+    private val _nextPressed = MutableSharedFlow<Triple<LocalTrack, Long, Long>>(extraBufferCapacity = 4)
+    /**
+     * The listener pressed next, leaving this track at this position of this length.
+     * Only [next] emits it — a track ending, an error skip or a new queue never does —
+     * which is what lets the radio count a skip as a skip.
+     */
+    val nextPressed: SharedFlow<Triple<LocalTrack, Long, Long>> = _nextPressed.asSharedFlow()
+
     private val _exhausted = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     /**
      * The queue has run out: the last track finished, or a skip found nothing after
@@ -1764,6 +1772,7 @@ class LocalPlayer(private val context: Context) {
     }
 
     fun next() {
+        _current.value?.let { _nextPressed.tryEmit(Triple(it, _positionMs.value, _durationMs.value)) }
         dropCrossfade()
         remote?.let { r ->
             // The end of the queue is the remote player's to report — it is the one

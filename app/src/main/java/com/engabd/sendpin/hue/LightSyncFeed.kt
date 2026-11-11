@@ -12,7 +12,11 @@ enum class LightSyncFeed {
     /** This phone's own local player. PCM through the ExoPlayer tap. */
     LOCAL_PCM,
 
-    /** A Music Assistant queue streaming *to this phone*. Also PCM through a tap. */
+    /**
+     * A Music Assistant queue streaming *to this phone*. Also PCM through a tap. That
+     * includes the light listener, where the phone receives a remote speaker's group
+     * stream silently — see [LightListener].
+     */
     SENDSPIN_PCM,
 
     /**
@@ -99,9 +103,18 @@ object LightSyncFeedPicker {
          * the local tap for Spotify audio would show a silent idle show.
          */
         spotifyPlaying: Boolean = false,
+        /**
+         * The light listener is receiving a remote speaker's group audio — see
+         * [LightListener]. The same real PCM as the phone playing it, so it ranks with
+         * [sendspinPlayingHere]: it is what the room is hearing, and the scan it
+         * replaces is only a schedule of it. Under "projection" capture still wins,
+         * because that choice means "follow other apps outright".
+         */
+        listening: Boolean = false,
     ): LightSyncFeed {
         return when (phoneAudioFeed) {
             "internal" -> when {
+                listening && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
                 sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
                 spotifyPlaying -> LightSyncFeed.SPOTIFY_PCM
                 localPlaying -> LightSyncFeed.LOCAL_PCM
@@ -111,12 +124,14 @@ object LightSyncFeedPicker {
             }
             "projection" -> when {
                 captureRunning -> LightSyncFeed.CAPTURE
+                listening && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
                 spotifyPlaying -> LightSyncFeed.SPOTIFY_PCM
                 scanDriving -> LightSyncFeed.SCAN_REMOTE
                 remoteHoldsSound -> LightSyncFeed.SCAN_REMOTE
                 else -> LightSyncFeed.LOCAL_PCM
             }
             else -> when { // "auto" and anything unexpected
+                listening && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
                 sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
                 spotifyPlaying -> LightSyncFeed.SPOTIFY_PCM
                 localPlaying -> LightSyncFeed.LOCAL_PCM

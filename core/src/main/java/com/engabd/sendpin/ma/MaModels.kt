@@ -200,6 +200,13 @@ data class MaItem(
      * not. The "Never played" shelf is the reader; a source without it is skipped.
      */
     val addedAtMs: Long? = null,
+    /**
+     * Music Assistant's `fully_played` on a podcast episode or audiobook: heard to the
+     * end. Null where MA did not say, which is every other kind of item.
+     */
+    val fullyPlayed: Boolean? = null,
+    /** Music Assistant's `resume_position_ms` on the same items: where listening stopped. */
+    val resumePositionMs: Long? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -289,6 +296,19 @@ data class MaPlayer(
      */
     val activeOutputProtocol: String? = null,
     val nowPlaying: MaNowPlaying? = null,
+    /**
+     * The provider (instance) this player belongs to, e.g. `sendspin` or `airplay`.
+     * Read so the light listener can tell a Sendspin speaker, which this phone can
+     * share a timeline with, from one it cannot.
+     */
+    val provider: String? = null,
+    /**
+     * The other half of the wrapper link, which holds while nothing plays:
+     * a protocol client names the `up…` player around it, and that wrapper lists the
+     * protocol clients it can render through. Grouping lists hold the wrapper's id.
+     */
+    val protocolParentId: String? = null,
+    val outputProtocolIds: List<String> = emptyList(),
 ) {
     val isPlaying get() = state == "playing"
     /** This player leads an (ad-hoc sync or static) group. */
@@ -955,6 +975,9 @@ object MaParse {
             year = o["year"]?.jsonPrimitive?.intOrNull,
             addedAtMs = o["timestamp_added"]?.jsonPrimitive?.doubleOrNull
                 ?.takeIf { it > 0 }?.let { (it * 1000).toLong() },
+            // `as?`, not `.jsonPrimitive`: a field in an odd shape is skipped, not fatal.
+            fullyPlayed = (o["fully_played"] as? JsonPrimitive)?.booleanOrNull,
+            resumePositionMs = (o["resume_position_ms"] as? JsonPrimitive)?.let { it.longOrNull ?: it.doubleOrNull?.toLong() },
             genres = genreList(o),
             trackNumber = o["track_number"]?.jsonPrimitive?.intOrNull,
             discNumber = o["disc_number"]?.jsonPrimitive?.intOrNull,
@@ -1035,6 +1058,10 @@ object MaParse {
             icon = o["icon"]?.jsonPrimitive?.contentOrNull,
             activeOutputProtocol = o["active_output_protocol"]?.jsonPrimitive?.contentOrNull,
             nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"], serverUrl),
+            provider = o["provider"]?.jsonPrimitive?.contentOrNull,
+            protocolParentId = str(o["protocol_parent_id"]),
+            outputProtocolIds = (o["output_protocols"] as? JsonArray)
+                ?.mapNotNull { str((it as? JsonObject)?.get("output_protocol_id")) } ?: emptyList(),
         )
     }
 

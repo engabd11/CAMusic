@@ -18,7 +18,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -31,6 +34,7 @@ import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
 /**
  * What the **selected** Music Assistant player is doing, at process scope.
@@ -385,11 +389,13 @@ class MaNowPlaying(private val app: Context) {
      * Not a plain id comparison since Music Assistant 2.10: the target is the
      * `universal_player` wrapper (`up…`) and [myPlayerId] is the protocol client it
      * renders through, so the two are never equal. See [MaPlayer.isSelfOrActiveOutput].
+     *
+     * Public for the library switch, which stops Music Assistant only when this is true.
      */
-    private fun targetIsThisPhone(): Boolean {
+    fun targetIsThisPhone(): Boolean {
         val id = targetId()
-        if (id == myPlayerId) return true
-        return _players.value.firstOrNull { it.playerId == id }?.let { isThisPhone(it) } == true
+        return _players.value.firstOrNull { it.playerId == id }?.let { isThisPhone(it) }
+            ?: isThisPhonePlayer(id, null, myPlayerId, null)
     }
 
     /**
@@ -406,8 +412,7 @@ class MaNowPlaying(private val app: Context) {
 
     private fun isThisPhone(p: MaPlayer): Boolean {
         p.activeOutputProtocol?.let { lastOutputProtocol[p.playerId] = it }
-        return p.isSelfOrActiveOutput(myPlayerId) ||
-            (p.activeOutputProtocol == null && lastOutputProtocol[p.playerId] == myPlayerId)
+        return isThisPhonePlayer(p.playerId, p, myPlayerId, lastOutputProtocol[p.playerId])
     }
 
     // --- refresh ----------------------------------------------------------
@@ -500,7 +505,27 @@ class MaNowPlaying(private val app: Context) {
      * [MaPlayhead.holdForTrackChange]. Throws what the server throws; [next] and
      * [previous] swallow that, the screen's callers decide for themselves.
      */
-    suspend fun skipNext() = playhead.holdForTrackChange(target()) { repo.next(targetId()) }
+    suspend fun skipNext() {
+        notePressedNext()
+        playhead.holdForTrackChange(target()) { repo.next(targetId()) }
+    }
+
+    private val _nextPressed = MutableSharedFlow<Triple<com.engabd.sendpin.audio.LocalTrack, Long, Long>>(extraBufferCapacity = 4)
+    /**
+     * The listener pressed next on the selected player, leaving this track at this
+     * position of this length: `LocalPlayer.nextPressed`'s signal, from Music
+     * Assistant's own playhead. Only a press emits it, never a change MA makes itself.
+     */
+    val nextPressed: SharedFlow<Triple<com.engabd.sendpin.audio.LocalTrack, Long, Long>> = _nextPressed.asSharedFlow()
+
+    /** Emit [nextPressed] for what the selected player has now; called before the skip is sent. */
+    fun notePressedNext() {
+        val p = _players.value.firstOrNull { it.playerId == targetId() }
+        val queue = _queues.value.firstOrNull { it.queueId == streamId(p) }
+        val item = queue?.currentItem ?: return
+        val durationMs = now.value?.durationMs?.takeIf { it > 0 } ?: queue.currentItemDurationMs ?: 0L
+        _nextPressed.tryEmit(Triple(SendpinApp.instance.downloads.toLocalTrack(item), positionMs.value, durationMs))
+    }
 
     suspend fun skipPrevious() = playhead.holdForTrackChange(target()) { repo.previous(targetId()) }
 
@@ -550,7 +575,7 @@ class MaNowPlaying(private val app: Context) {
 
     /** [level01] is 0..1, as the media session reports it. */
     fun setVolume(level01: Float) = command {
-        repo.setVolume(targetId(), (level01.coerceIn(0f, 1f) * 100).toInt())
+        repo.setVolume(targetId(), (level01.coerceIn(0f, 1f) * 100).roundToInt())
     }
 
     private fun command(block: suspend () -> Unit) {
@@ -570,3 +595,15 @@ class MaNowPlaying(private val app: Context) {
         const val END_REPOLL_MIN_MS = 1_000L
     }
 }
+
+/**
+ * Is the player listed under [id] this phone? [player] is null when Music Assistant
+ * has not listed it, and [lastOutput] is the protocol client it last rendered through
+ * (see `MaNowPlaying.lastOutputProtocol`). A player that cannot be placed is not us.
+ *
+ * Pure so the rule a library switch stops by can be tested: switching library stops
+ * Music Assistant only when this is true, never a speaker elsewhere.
+ */
+internal fun isThisPhonePlayer(id: String, player: MaPlayer?, myPlayerId: String, lastOutput: String?): Boolean =
+    id == myPlayerId || player != null &&
+        (player.isSelfOrActiveOutput(myPlayerId) || (player.activeOutputProtocol == null && lastOutput == myPlayerId))

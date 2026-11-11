@@ -14,7 +14,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * Version 2 adds a downloaded track's disc number. Version 3 adds [PlayHistoryEntity]
  * for the Stats screen. Version 4 adds a bpm/key/energy snapshot to it, for the Stats
  * screen's Listening DNA section. Version 6 adds downloaded playlists and their
- * ordering. Migrated rather than rebuilt: the rows are the index
+ * ordering. Version 8 adds [TrackSignalEntity], what the radio learns from skips. Migrated rather than rebuilt: the rows are the index
  * of files already on the phone, and dropping the table would strand every one of
  * them — gigabytes on disk that the app would no longer know it had, and no way back
  * but downloading the lot again.
@@ -25,13 +25,15 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PlayHistoryEntity::class,
         DownloadedPlaylistEntity::class,
         DownloadedPlaylistTrackEntity::class,
+        TrackSignalEntity::class,
     ],
-    version = 7,
+    version = 8,
 )
 abstract class LocalMediaDatabase : RoomDatabase() {
     abstract fun downloadDao(): DownloadDao
     abstract fun playHistoryDao(): PlayHistoryDao
     abstract fun downloadPlaylistDao(): DownloadPlaylistDao
+    abstract fun trackSignalDao(): TrackSignalDao
 
     companion object {
         @Volatile
@@ -189,6 +191,21 @@ abstract class LocalMediaDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v7 → v8: a new, empty `track_signal` table — skips and radio serves, nothing
+         * existing to migrate. A skip before this version was never recorded.
+         */
+        internal val MIGRATION_7_8_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `track_signal` (`trackKey` TEXT NOT NULL, `skips` INTEGER NOT NULL, " +
+                "`lastSkippedAt` INTEGER NOT NULL, `lastServedAt` INTEGER NOT NULL, PRIMARY KEY(`trackKey`))",
+        )
+
+        internal val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_7_8_SQL.forEach { db.execSQL(it) }
+            }
+        }
+
         fun get(context: Context): LocalMediaDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -197,6 +214,7 @@ abstract class LocalMediaDatabase : RoomDatabase() {
                     "local_media.db",
                 ).addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+                    MIGRATION_7_8,
                 ).build().also { instance = it }
             }
     }

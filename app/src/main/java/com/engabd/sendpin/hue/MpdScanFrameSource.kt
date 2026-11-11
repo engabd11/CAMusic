@@ -90,6 +90,7 @@ class MpdScanFrameSource(
 
     @Volatile private var scan: TrackScan? = null
     @Volatile private var pendingKey: String? = null
+    @Volatile private var pendingTrack: LocalTrack? = null
     @Volatile private var offsetMs: Int = 0
 
     /**
@@ -104,6 +105,7 @@ class MpdScanFrameSource(
         if (jobs.isNotEmpty()) return
         jobs += scope.launch { watchTrack() }
         jobs += scope.launch { watchScans() }
+        jobs += scope.launch { watchUnavailable() }
         jobs += scope.launch { scanAhead() }
         jobs += scope.launch { settings.lightSyncSpeakerOffsetMs.collect { offsetMs = it } }
         jobs += scope.launch { tick() }
@@ -123,6 +125,7 @@ class MpdScanFrameSource(
     private fun reset() {
         scan = null
         pendingKey = null
+        pendingTrack = null
         slew.clear()
         synth.reset()
         _driving.value = false
@@ -157,6 +160,9 @@ class MpdScanFrameSource(
                     return@collect
                 }
                 scan = null
+                // Cleared before the search, as in [ScanFrameSource.watchTrack].
+                pendingKey = null
+                pendingTrack = null
                 synth.reset()
                 slew.clear()
                 _driving.value = false
@@ -173,7 +179,9 @@ class MpdScanFrameSource(
                     return@collect
                 }
                 _state.value = ScanFeedState.SCANNING
-                pendingKey = analysable.id
+                // The repository's key, which names the library as well as the id.
+                pendingKey = TrackScanRepository.keyFor(analysable)
+                pendingTrack = analysable
                 // Urgent: this is the track playing right now, not a sweep.
                 scans.request(analysable, urgent = true)
             }
@@ -215,14 +223,23 @@ class MpdScanFrameSource(
     private suspend fun watchScans() {
         scans.completed.collect { key ->
             if (key != pendingKey) return@collect
-            val track = local.current.value ?: return@collect
-            val analysable = resolveScannable(track) ?: return@collect
+            val analysable = pendingTrack ?: return@collect
             scans.cached(analysable)?.let { adopt(it) }
+        }
+    }
+
+    /** As [ScanFrameSource.watchUnavailable]: no analysis is coming, so stop saying one is. */
+    private suspend fun watchUnavailable() {
+        scans.unavailable.collect { key ->
+            if (key == pendingKey && _state.value == ScanFeedState.SCANNING) {
+                _state.value = ScanFeedState.UNAVAILABLE
+            }
         }
     }
 
     private fun adopt(next: TrackScan) {
         pendingKey = null
+        pendingTrack = null
         if (!next.gridUsable) {
             scan = null
             _driving.value = false
@@ -268,11 +285,8 @@ class MpdScanFrameSource(
 
     /** The part of [resolveScannable] that touches the network. */
     private suspend fun searchForScannable(track: LocalTrack): LocalTrack? {
-        downloads.downloads.value.firstOrNull {
-            RemoteTrackIdentity.sameTrack(
-                track.title, track.artist, track.durationMs,
-                it.title, it.artist, it.durationMs,
-            )
+        RemoteTrackIdentity.closest(track.title, track.artist, track.durationMs, downloads.downloads.value) {
+            Triple(it.title, it.artist, it.durationMs)
         }?.let { return it.toLocalTrack() }
 
         // Every library that will serve a file, not the one that is playing. On an
@@ -284,14 +298,12 @@ class MpdScanFrameSource(
         // worse than none, because "no match" is at least true and the Light Sync
         // screen says it out loud.
         for (source in runCatchingCancellable { libraries() }.getOrDefault(emptyList())) {
-            val hits = runCatchingCancellable { source.search("${track.title} ${track.artist}", limit = 10) }
-                .getOrNull()?.tracks
-                ?: continue
-            val hit = hits.firstOrNull {
-                RemoteTrackIdentity.sameTrack(
-                    track.title, track.artist, track.durationMs,
-                    it.name, it.subtitle, (it.duration ?: 0).toLong() * 1000L,
-                )
+            val hit = RemoteTrackIdentity.search(track.title, track.artist) { query ->
+                val hits = runCatchingCancellable { source.search(query, limit = RemoteTrackIdentity.SEARCH_LIMIT) }
+                    .getOrNull()?.tracks.orEmpty()
+                RemoteTrackIdentity.closest(track.title, track.artist, track.durationMs, hits) {
+                    Triple(it.name, it.subtitle, (it.duration ?: 0).toLong() * 1000L)
+                }
             } ?: continue
             val url = source.downloadUrl(hit.itemId)
             if (url.isBlank()) continue
@@ -304,6 +316,9 @@ class MpdScanFrameSource(
                 artUrl = track.artUrl,
                 streamUrl = url,
                 localPath = null,
+                // Named by its library, as in [ScanFrameSource.resolveTrack].
+                scrobbleId = hit.itemId,
+                scrobbleProvider = source.providerId,
             )
         }
         return null

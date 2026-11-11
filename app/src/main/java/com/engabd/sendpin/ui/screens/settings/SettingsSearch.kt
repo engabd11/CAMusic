@@ -74,6 +74,7 @@ internal object SettingsSearch {
 
         // ── Illumination & Sync ─────────────────────────────────────────
         SettingsEntry("How the lights hear the music", "light sync route hue direct home assistant transport", LIGHTS_SYNC),
+        SettingsEntry("Listen silently for Light Sync", "music assistant speaker group silent listener sendspin experimental bridge", LIGHTS_SYNC),
         SettingsEntry("Hue Bridge", "philips hue bridge pair pairing entertainment area lights", LIGHTS_SYNC, BRIDGE_ROUTE),
         SettingsEntry("Home Assistant", "ha token lights url", LIGHTS_SYNC, HA_ROUTE),
         SettingsEntry("Track analysis", "scan sweep offline analysis beats bpm library", LIGHTS_SYNC, ANALYSIS_ROUTE),

@@ -249,6 +249,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // The embedded Spotify client's state: its playing flag picks the feed,
             // its own tap is the thing the show would wire to.
             com.engabd.sendpin.spotify.SpotifyEngine.playing,
+            // The light listener: the remote speaker's group audio arriving here
+            // silently, and what Music Assistant says that speaker is playing — the
+            // phone's own metadata stays blank while it listens.
+            playback.listenerAudio, maNowPlaying.now,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
@@ -263,6 +267,8 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val maTitle = (values[9] as String).takeIf { it.isNotBlank() }
             val maTap = owner.sendspinTap
             val spotifyPlaying = values[10] as Boolean
+            val listening = values[11] as Boolean
+            val maNow = values[12] as com.engabd.sendpin.service.MaNowPlaying.Now?
             // MPD is playing and this phone is only its remote — see
             // `PlaybackOwner.State.soundIsReadable`, which is the same question the
             // other way round.
@@ -292,9 +298,21 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 // the house.
                 remoteHoldsSound = mpdHoldsSound,
                 spotifyPlaying = spotifyPlaying,
+                listening = listening,
             )
             when (feed) {
-                com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM ->
+                // The listener's track comes from Music Assistant's word on the remote
+                // speaker, because Playback keeps its own metadata blank while listening.
+                com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM -> if (listening && owner.soundOwner != PlaybackOwner.Who.SENDSPIN) {
+                    com.engabd.sendpin.hue.ActiveLightSyncSource(
+                        tap = maTap!!.first, lead = maTap.second, artUrl = maNow?.artworkUrl,
+                        scanTrack = null,
+                        paletteAlbum = maNow?.album?.takeIf { it.isNotBlank() },
+                        paletteArtist = maNow?.artist?.takeIf { it.isNotBlank() },
+                        trackTitle = maNow?.title?.takeIf { it.isNotBlank() },
+                        feed = feed,
+                    )
+                } else {
                     com.engabd.sendpin.hue.ActiveLightSyncSource(
                         tap = maTap!!.first, lead = maTap.second, artUrl = maArtUrl,
                         scanTrack = null,
@@ -302,6 +320,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         trackTitle = maTitle,
                         feed = feed,
                     )
+                }
                 // The embedded Spotify client: real decoded PCM in this process, on
                 // its own tap (single-producer contract — the sink is its only
                 // writer). Metadata rides librespot's events, which the remote
@@ -423,9 +442,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
             localPlayer.playing, playback.isPlaying, scanFrameSource.driving,
             com.engabd.sendpin.capture.PlaybackCapture.running,
             com.engabd.sendpin.spotify.SpotifyEngine.playing,
-        ) { local, ma, scanning, capturing, spotify ->
-            local || ma || scanning || capturing || spotify
-        }
+            // The light listener's audio is real sound in the room, though not this phone's.
+            playback.listenerAudio,
+        ) { flags -> flags.any { it } }
             .stateIn(appScope, SharingStarted.Eagerly, false)
     }
 
@@ -534,6 +553,13 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * "ready for announcements" while a speaker was playing an album.
      */
     val maNowPlaying: MaNowPlaying by lazy { MaNowPlaying(this) }
+
+    /** Silent group membership for Light Sync on a remote speaker. See [com.engabd.sendpin.hue.LightListener]. */
+    val lightListener: com.engabd.sendpin.hue.LightListener by lazy {
+        com.engabd.sendpin.hue.LightListener(
+            this, AppSettings(this), playback, maNowPlaying, com.engabd.sendpin.ma.MaRepository(maApi),
+        ) { com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(this) }
+    }
 
     /**
      * The library the app browses and plays itself — Navidrome, Jellyfin, or whatever
@@ -855,6 +881,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // catching the headset buttons — goes at once rather than after the grace,
         // because Music Assistant's is already up and playing.
         playbackOwner.attachRemotePlaying(maNowPlaying.selectedPlaying)
+        // From process start, not with Light Sync: if the process died with the phone in
+        // a speaker's group, this is what leaves it, silently, before anything streams.
+        // With the setting off it only watches four settings.
+        lightListener.start()
         // The media card, and the play button on it and on the headphones, belong to the
         // player last used. After a restart only Music Assistant had a live session - the
         // local queue was on disk - so MA's paused queue took the card, and pressing play
@@ -959,11 +989,14 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // writing from there would race the screen that wrote it.
         appScope.launch {
             val settings = com.engabd.sendpin.data.AppSettings(this@SendpinApp)
-            combine(settings.backend, settings.lightSyncModeAuto) { backend, auto -> backend to auto }
+            // The light listener makes the bridge right for Music Assistant as well, but
+            // only once there is a bridge to drive — see `lightSyncModeFor`.
+            val maListener = combine(settings.lightSyncListenMa, settings.hueBridgePaired) { on, paired -> on && paired }
+            combine(settings.backend, settings.lightSyncModeAuto, maListener) { backend, auto, listener -> Triple(backend, auto, listener) }
                 .distinctUntilChanged()
-                .collect { (backend, auto) ->
+                .collect { (backend, auto, listener) ->
                     val next = com.engabd.sendpin.data.AppSettings.lightSyncModeChange(
-                        backend, auto, settings.lightSyncMode.first(),
+                        backend, auto, settings.lightSyncMode.first(), listener,
                     ) ?: return@collect
 
                     // Written first, and that ordering is the whole fix.

@@ -56,10 +56,19 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        // Connected only while Home Assistant is the Light Sync route, and dropped when it
+        // stops being one: HaClient redials a lost socket by itself, and should not go on
+        // dialling an HA the user has switched away from.
         viewModelScope.launch {
-            val url = settings.haUrl.first()
-            val token = settings.haToken.first()
-            if (url.isNotBlank() && token.isNotBlank()) ha.connect(url, token) else _needsConfig.value = true
+            combine(settings.lightSyncMode, settings.haUrl, settings.haToken) { mode, url, token -> Triple(mode, url, token) }
+                .distinctUntilChanged()
+                .collect { (mode, url, token) ->
+                    when {
+                        mode != AppSettings.MODE_HA -> ha.disconnect()
+                        url.isNotBlank() && token.isNotBlank() -> ha.connect(url, token)
+                        else -> { ha.disconnect(); _needsConfig.value = true }
+                    }
+                }
         }
         viewModelScope.launch {
             ha.state.collect { st ->

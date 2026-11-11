@@ -290,4 +290,92 @@ class DjRadioTest {
         assertEquals(0f, p.brightness!!, 0.0001f)
         assertTrue(p.scanned)
     }
+
+    // ── Artists, drift and the listener ─────────────────────────────────────
+
+    @Test
+    fun `a shared artist earns nothing on top`() {
+        // The +0.06 bonus is gone: an act already matches itself on every axis.
+        val seed = profile("seed", artist = "Boards", genres = listOf("Ambient"), scan = scan())
+        val same = profile("a", artist = "Boards", genres = listOf("Ambient"), scan = scan())
+        val other = profile("b", artist = "Ulrich", genres = listOf("Ambient"), scan = scan())
+        assertEquals(DjSimilarity.score(seed, other), DjSimilarity.score(seed, same), 0.0001f)
+    }
+
+    @Test
+    fun `after two in a row an artist sits out the next four picks`() {
+        assertTrue(DjSetBuilder.artistBlocked("Boards", listOf("Boards", "Boards")))
+        assertTrue(DjSetBuilder.artistBlocked("Boards", listOf("Boards", "Boards", "x", "y", "z")))
+        assertTrue(!DjSetBuilder.artistBlocked("Boards", listOf("Boards", "Boards", "w", "x", "y", "z")))
+        // One at a time is not a run.
+        assertTrue(!DjSetBuilder.artistBlocked("Boards", listOf("Boards", "x", "Boards")))
+        assertTrue(!DjSetBuilder.artistBlocked(null, listOf("Boards", "Boards")))
+    }
+
+    @Test
+    fun `the artist rule holds even against a far better match`() {
+        // Same act, same genre, same scan as the seed — and still not allowed, two
+        // picks after a run of two.
+        val seed = item("seed", artist = "Boards", genres = listOf("Ambient"))
+        val pool = listOf(
+            item("twin", artist = "Boards", genres = listOf("Ambient")) to scan(),
+            item("stranger", artist = "Ulrich", genres = listOf("Opera")) to scan(bpm = 70f, character = 0.1f),
+        )
+        val picked = buildFrom(
+            seed, scan(), pool, 1, strictness = 1f,
+            recentArtists = listOf("Boards", "Boards", "x"),
+        )
+        assertEquals("stranger", picked.single().itemId)
+    }
+
+    @Test
+    fun `a set from one artist's pool never runs three, and the rule gives way only when it must`() {
+        val seed = item("seed", artist = "Seed", genres = listOf("House"))
+        val pool = (1..6).map { item("b$it", artist = "Boards", genres = listOf("House")) to scan() } +
+            (1..2).map { item("o$it", artist = "Other $it", genres = listOf("Techno")) to scan(bpm = 90f) }
+        val picked = buildFrom(seed, scan(), pool, 8, strictness = 0.5f)
+        assertEquals(8, picked.size, "with only Boards left, the rule is waived rather than stopping")
+        val artists = picked.map { it.subtitle }
+        // The first six picks are where a choice exists, and there no three run.
+        assertTrue(artists.take(4).windowed(3).none { w -> w.all { it == "Boards" } }, "$artists")
+    }
+
+    @Test
+    fun `the session seed holds a long set near where it started`() {
+        // From the bridge, the chain alone walks off into techno; a quarter held to
+        // the seed brings it home. Unscanned, so genre is the only axis in play.
+        val seed = item("seed", artist = "S", genres = listOf("House"))
+        val pool = listOf(
+            item("bridge", artist = "A", genres = listOf("Techno", "Minimal", "House", "Deep")),
+            item("home", artist = "B", genres = listOf("House", "Garage")),
+            item("drift", artist = "C", genres = listOf("Techno", "Minimal", "Acid")),
+        )
+        fun build(anchor: DjProfile?) = DjSetBuilder.build(
+            seed = DjProfile.profileOf(seed, null),
+            pool = pool,
+            profileOf = { DjProfile.profileOf(it, null) },
+            count = 2,
+            strictness = 0f,
+            harmonic = false,
+            anchor = anchor,
+        ).map { it.itemId }
+        assertEquals(listOf("bridge", "drift"), build(anchor = null))
+        assertEquals(listOf("bridge", "home"), build(anchor = DjProfile.profileOf(seed, null)))
+    }
+
+    @Test
+    fun `skips push a track down and favourites lift it`() {
+        val seed = item("seed", genres = listOf("House"))
+        val pool = listOf(item("skipped", genres = listOf("House")), item("loved", genres = listOf("House")))
+        val picked = DjSetBuilder.build(
+            seed = DjProfile.profileOf(seed, scan()),
+            pool = pool,
+            profileOf = { DjProfile.profileOf(it, scan()) },
+            count = 2,
+            strictness = 0.5f,
+            harmonic = false,
+            adjust = { if (it.itemId == "skipped") -0.2f else RadioMemory.FAVOURITE_BONUS },
+        )
+        assertEquals(listOf("loved", "skipped"), picked.map { it.itemId })
+    }
 }

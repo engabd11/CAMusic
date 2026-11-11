@@ -33,6 +33,16 @@ class LightSyncModeCouplingTest {
     }
 
     @Test
+    fun `music assistant with the light listener on and a bridge implies the bridge`() {
+        // `maListener` is the setting *and* a paired bridge, combined by the caller.
+        assertEquals(MODE_DIRECT, lightSyncModeFor(BACKEND_MA, maListener = true))
+        assertEquals(MODE_DIRECT, lightSyncModeChange(BACKEND_MA, auto = true, current = MODE_HA, maListener = true))
+        // Pinned by hand still wins, and the listener says nothing about other libraries.
+        assertEquals(null, lightSyncModeChange(BACKEND_MA, auto = false, current = MODE_HA, maListener = true))
+        assertEquals(MODE_HA, lightSyncModeFor("something-new", maListener = true))
+    }
+
+    @Test
     fun `an unknown backend falls back to home assistant`() {
         // The safer default: HA does nothing without a configured server, while
         // direct mode would try to open a bridge session for a library whose

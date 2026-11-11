@@ -18,8 +18,12 @@ import com.engabd.sendpin.audio.LibraryAlbumWalk
 import com.engabd.sendpin.audio.LibraryRadioSource
 import com.engabd.sendpin.audio.LocalRadio
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.MaRadioSource
+import com.engabd.sendpin.audio.RadioMemory
 import com.engabd.sendpin.audio.RadioSource
 import com.engabd.sendpin.audio.TrackScan
+import com.engabd.sendpin.audio.TrackScanRepository
+import com.engabd.sendpin.local.db.LocalMediaDatabase
 import com.engabd.sendpin.audio.SetBuilder
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -299,8 +303,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * self-hosted library that exists" back when it was. It stopped being that the
      * day Jellyfin arrived: a Jellyfin track got no download button — on rows or in
      * the long-press sheet — while the very same screen's "Download all" bar offered
-     * to fetch the whole list, because that one had already been widened. A Plex row
-     * got a favourite heart that calls a `setStarred` Plex has no endpoint for.
+     * to fetch the whole list, because that one had already been widened. The heart
+     * follows the library's own declaration too: Plex has one now, its loved rating
+     * (see `PlexSource`), because it declares [Capability.STAR].
      *
      * So the rows ask [Capability] instead. Published as a flow rather than read
      * during composition for the reason `AlbumDetailViewModel.canDownload` gives:
@@ -1243,7 +1248,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // at this phone's MA player. Opening the app to see what was playing killed
         // what was playing.
         localPlayer.stop()
-        stopMaPlayback()
+        // Only this phone's own MA player is changing over. A speaker elsewhere is not,
+        // and stopping it here paused the room every time the library was switched.
+        if (getApplication<SendpinApp>().maNowPlaying.targetIsThisPhone()) stopMaPlayback()
         applyBackend(b)
         viewModelScope.launch { settings.setBackend(if (b == Backend.SUBSONIC) "subsonic" else "ma") }
     }
@@ -3038,11 +3045,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val queueSession = localPlayer.sessionEpoch
         val seedId = seed.scrobbleId ?: seed.id
         val picks = djPicks(
-            seed = lastSeeds[seedId],
+            seed = radioSeed(seed),
             seedScan = trackScans.cached(seed),
             exclude = setOf(seedId),
             count = RADIO_BATCH,
-            generator = source?.takeIf { !_offline.value }?.let { LibraryRadioSource(it) },
+            generator = source?.takeIf { !_offline.value }?.let { radioSourceFor(it) },
             mood = djMood,
         )
         if (picks.isEmpty()) return
@@ -3156,7 +3163,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * the set is MA's radio from the seed the listener picked, on the speaker they are
      * playing to, with that speaker's crossfade switched on for the set and put back
      * when it ends ([restoreMaCrossfade]). A mood shapes which seeds are offered, from
-     * whatever scans exist; after the seed, MA chooses.
+     * whatever scans exist; after the seed the app ranks MA's similar tracks itself
+     * ([maDjTopUps]), with MA's own radio as the fallback.
      */
     private fun startMaDjRadio(seed: MaItem?, mood: DjMood?) {
         closeDjPicker()
@@ -3208,7 +3216,61 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
             val brief = djMood?.let { " · ${it.title}" }.orEmpty()
             _toast.tryEmit("DJ Radio - ${opener.name}$brief · $fade")
+            maDjTopUps(session, target, queueId, opener)
         }
+    }
+
+    /**
+     * Keep a Music Assistant set going with the app's own picks: MA's similar tracks
+     * (and its sonic search for the mood) around what is playing, ranked by the same
+     * [DjSetBuilder] as on the phone — so the strictness slider and Harmonic mode
+     * count here too — and appended [MA_TOPUP_AT] tracks before the end.
+     *
+     * "Don't stop the music" stays on underneath as the fallback. The server only
+     * reaches for it when the queue is about to run out, and the app fills earlier,
+     * so while the app has picks the server has nothing to add; when MA knows nothing
+     * similar, or the app is closed and this stops running, the server's radio carries
+     * the set. The queue is read again just before each append, so a fill the server
+     * got in first is not doubled.
+     *
+     * Runs until the set is stopped, and fills only while what is playing is a track
+     * the set queued: anything else means the listener replaced the queue elsewhere.
+     */
+    private suspend fun maDjTopUps(session: Int, target: String, queueId: String, opener: MaItem) {
+        // Matched on name too: MA can hand an appended provider uri back as its library uri.
+        val ours = HashSet<String>()
+        val served = HashSet<String>()
+        val artists = ArrayList<String>()
+        fun claim(item: MaItem) {
+            listOfNotNull(item.uri, item.itemId, item.name.lowercase()).forEach { ours += it }
+            served += item.itemId
+            item.subtitle?.substringBefore(",")?.trim()?.takeIf { it.isNotBlank() }?.let { artists += it }
+        }
+        claim(opener)
+        getApplication<SendpinApp>().maNowPlaying.queues
+            .map { all -> all.firstOrNull { it.queueId == queueId } }
+            .distinctUntilChanged { a, b -> a?.currentIndex == b?.currentIndex && a?.itemCount == b?.itemCount }
+            .collect { q ->
+                val current = q?.currentItem ?: return@collect
+                val at = q.currentIndex ?: return@collect
+                if (q.itemCount - at - 1 >= MA_TOPUP_AT || !djStillRunning(session)) return@collect
+                if (listOfNotNull(current.uri, current.itemId, current.name.lowercase()).none { it in ours }) return@collect
+                val picks = djPicks(
+                    seed = current,
+                    seedScan = scansFor(listOf(current))[current.itemId],
+                    exclude = served + current.itemId,
+                    count = RADIO_BATCH,
+                    generator = MaRadioSource(maRepo, djMood),
+                    mood = djMood,
+                    recent = artists.takeLast(DjSetBuilder.ARTIST_MEMORY),
+                ).filter { it.uri != null }
+                if (picks.isEmpty()) return@collect
+                val now = runCatchingCancellable { maRepo.queues().firstOrNull { it.queueId == queueId } }.getOrNull()
+                val left = now?.let { it.itemCount - (it.currentIndex ?: 0) - 1 }
+                if ((left != null && left >= MA_TOPUP_AT) || !djStillRunning(session)) return@collect
+                runCatchingCancellable { maRepo.playOn(target, picks.mapNotNull { it.uri }, "add", radioMode = false) }
+                    .onSuccess { picks.forEach(::claim) }
+            }
     }
 
     /** The opener when nothing was picked: the best answer to [mood] on a random page. */
@@ -3334,7 +3396,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         generator: RadioSource?,
         /** The brief this set is being held to, or null for "follow the seed". */
         mood: DjMood? = null,
+        /** Who has just played, oldest first; the phone's queue unless the set is MA's. */
+        recent: List<String> = recentArtists(),
     ): List<MaItem> {
+        radio.memory = loadRadioMemory()
+        val seedProfile = seed?.let { DjProfile.profileOf(it, seedScan) }
+        // The first seed of this set is its anchor for as long as it runs.
+        if (djAnchor?.first != djSession) djAnchor = djSession to seedProfile
         val strictness = settings.djRadioSimilarity.first()
         val harmonic = settings.djMode.first()
         // A brief rejects most of what comes back, so it needs more of it — the same
@@ -3347,28 +3415,83 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             downloads.value.map { downloadItem(it) }
                 .filter { it.itemId.isNotBlank() && it.itemId !in exclude }
                 .shuffled()
+                .let { radio.memory.admit(it, count) }
                 .take(want)
         } else {
-            radio.pool(generator, seed, want, exclude)
+            radio.pool(generator, seed, want, exclude, count)
         }
-        if (pool.isEmpty()) return emptyList()
+        // Nothing to rank: the plain ladder's answer rather than a queue that just ends.
+        if (pool.isEmpty()) {
+            return (generator?.let { radio.next(it, seed, count, exclude) }.orEmpty())
+                .also { persistServed(it) }
+        }
 
         val scans = scansFor(pool)
         val picked = DjSetBuilder.build(
-            seed = seed?.let { DjProfile.profileOf(it, seedScan) },
+            seed = seedProfile,
             pool = pool,
             profileOf = { item -> DjProfile.profileOf(item, scans[item.itemId]) },
             count = count,
             strictness = strictness,
             harmonic = harmonic,
-            recentArtists = recentArtists(),
+            recentArtists = recent,
             mood = mood,
+            anchor = djAnchor?.second,
+            adjust = radio.memory::adjust,
         )
         // Only what is actually served goes in the history — the rest of the pool is
         // still fair game next time. See [LocalRadio.pool].
-        radio.remember(picked.map { it.itemId })
+        radio.remember(picked)
+        persistServed(picked)
         return picked
     }
+
+    /** The session the anchor belongs to, and the first seed of that DJ set. */
+    private var djAnchor: Pair<Int, DjProfile?>? = null
+
+    /**
+     * The radio's memory as it stands on disk: recent plays, recent serves and skips.
+     * Read before each batch, so the no-repeat window holds across restarts.
+     */
+    private suspend fun loadRadioMemory(): RadioMemory = withContext(Dispatchers.IO) {
+        val db = LocalMediaDatabase.get(getApplication())
+        val since = System.currentTimeMillis() - RadioMemory.SKIP_DECAY_MS
+        val signals = runCatchingCancellable {
+            db.trackSignalDao().recentlyServed(RadioMemory.HISTORY_LIMIT) + db.trackSignalDao().skippedSince(since)
+        }.getOrDefault(emptyList())
+        RadioMemory.fromDisk(signals, keyOf = ::signalKey)
+    }
+
+    /** What the radio queued, filed so a restart does not serve it again straight away. */
+    private suspend fun persistServed(items: List<MaItem>) {
+        if (items.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            runCatchingCancellable {
+                val dao = LocalMediaDatabase.get(getApplication()).trackSignalDao()
+                val now = System.currentTimeMillis()
+                dao.recordServed(items.map { signalKey(it) }.distinct(), now)
+                dao.trim(now - RadioMemory.SKIP_DECAY_MS)
+            }
+        }
+    }
+
+    /**
+     * The key a track's skips, serves and plays are filed under: its scan key, as
+     * `PlaybackReporter` and Now Playing work it out for what they record.
+     */
+    private fun signalKey(item: MaItem): String =
+        TrackScanRepository.keyFor(downloadManager.toLocalTrack(item))
+
+    /**
+     * The seed for a queue's radio: the library item [track] was queued from, or one
+     * rebuilt from the track itself. See [LocalRadio.seedOf].
+     */
+    private fun radioSeed(track: LocalTrack?): MaItem? =
+        track?.let { LocalRadio.seedOf(it, lastSeeds[it.scrobbleId ?: it.id]) }
+
+    /** The connected library as a radio source, with this phone's scans to fall back on. */
+    private fun radioSourceFor(src: MusicSource): RadioSource =
+        LibraryRadioSource(src, getApplication<SendpinApp>().localSonicIndex)
 
     /**
      * The scans behind [items], by item id, for the ones that have been analysed.
@@ -3380,13 +3503,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * touched this session. (That constraint is why Harmonic DJ mode's own
      * [djBonus] still uses `peek`; it really is called per comparison.)
      *
-     * Keyed by `itemId` for the same reason [djBonus] is: that is what
-     * `TrackScanRepository.keyFor` resolves a local track to.
+     * Keyed by `itemId` for the callers; looked up through the very `LocalTrack` the
+     * item would play as, so the scan key cannot drift from the one it was filed under.
      */
     private suspend fun scansFor(items: List<MaItem>): Map<String, TrackScan> =
         withContext(Dispatchers.IO) {
             items.mapNotNull { item ->
-                trackScans.store.load(item.itemId)?.let { item.itemId to it }
+                trackScans.cached(downloadManager.toLocalTrack(item))?.let { item.itemId to it }
             }.toMap()
         }
 
@@ -3400,7 +3523,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * not reached the end of it yet.
      */
     private fun recentArtists(): List<String> =
-        localPlayer.queue.value.takeLast(ARTIST_RUN_WINDOW).mapNotNull {
+        localPlayer.queue.value.takeLast(DjSetBuilder.ARTIST_MEMORY).mapNotNull {
             it.artist?.substringBefore(",")?.trim()?.takeIf { name -> name.isNotBlank() }
         }
 
@@ -3515,8 +3638,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // [queueGone].
         val session = localPlayer.sessionEpoch
         val playing = localPlayer.current.value
-        val seedId = playing?.scrobbleId ?: playing?.id
-        val seed = seedId?.let { id -> lastSeeds[id] }
+        val seed = radioSeed(playing)
         val exclude = queue.mapNotNull { it.scrobbleId ?: it.id }.toSet()
 
         val src = source
@@ -3525,7 +3647,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // Jellyfin, Emby and Plex each fell through to the offline picker over
         // downloaded files, and on a library with nothing downloaded the queue ended
         // silently, exactly as if the setting were off. See [LibraryRadioSource].
-        val generator: RadioSource? = src?.let { LibraryRadioSource(it) }
+        val generator: RadioSource? = src?.let { radioSourceFor(it) }
 
         // DJ Radio takes the whole decision instead of the ladder's, on either path,
         // and takes it before the Harmonic-DJ ranking below is even worked out —
@@ -3575,6 +3697,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // thing to re-rank.
         val seedScan = if (settings.djMode.first()) playing?.let { trackScans.peek(it) } else null
         val bonus: (MaItem) -> Int = if (seedScan == null) ({ 0 }) else djBonus(seedScan)
+        radio.memory = loadRadioMemory()
 
         val picked = when {
             _offline.value || src == null || generator == null ->
@@ -3588,6 +3711,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (picked.isEmpty()) return false
         if (queueGone(session)) return false
+        persistServed(picked)
         rememberSeeds(picked)
         localPlayer.addToQueue(picked.map { localTrack(it) }, startIfEmpty = false)
         return true
@@ -3623,13 +3747,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * `store.peek`, not the suspending `cached()`: this is a sort selector, called
      * on every comparison, so a disk read is not an option. A candidate with no
      * memory-resident scan contributes nothing and keeps its genre/artist ranking.
-     * Keyed by `itemId` because that is what [TrackScanRepository.keyFor] resolves
-     * a downloaded track to — `DownloadsIndex.item` sets `itemId` from the
-     * download's id and `toLocalTrack` carries the same value into `LocalTrack.id`,
-     * which `keyFor` prefers over every other field.
+     * Looked up through the `LocalTrack` the candidate would play as, for the reason
+     * [scansFor] is: the scan key names the library as well as the id.
      */
     private fun djBonus(seedScan: TrackScan): (MaItem) -> Int = { item ->
-        val candidateScan = trackScans.store.peek(item.itemId)
+        val candidateScan = trackScans.peek(downloadManager.toLocalTrack(item))
         val seedKey = seedScan.key
         val candidateKey = candidateScan?.key
         var s = 0
@@ -4533,6 +4655,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun isFavorite(item: MaItem): Boolean = item.itemId in _favorites.value
 
+    /** Ask Music Assistant to re-sync every provider. Returns once it is requested, not done. */
+    suspend fun syncMaLibrary() {
+        maRepo.syncProviders()
+    }
+
+    /**
+     * Mark a Music Assistant podcast episode or audiobook played or unplayed, then re-read
+     * Continue listening, which is where its progress shows.
+     */
+    fun markPlayed(item: MaItem, played: Boolean) {
+        viewModelScope.launch {
+            try {
+                if (played) maRepo.markPlayed(item, fullyPlayed = true) else maRepo.markUnplayed(item)
+                _toast.tryEmit(if (played) "Marked as played" else "Marked as unplayed")
+                loadInProgress()
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't change the played state")
+            }
+        }
+    }
+
     // --- track preview -----------------------------------------------------
     //
     // Extracted to [TrackPreviewPlayer]: it is the one part of this class that owns a
@@ -4897,8 +5040,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
          */
         const val FAST_START_PAGE = 8
 
-        /** How far back DJ Radio looks for an artist run it should not extend. */
-        const val ARTIST_RUN_WINDOW = 4
+        /**
+         * Music Assistant tops up one track earlier than the phone: the append is a
+         * round trip to the server, and "Don't stop the music" fills an empty queue
+         * on its own, so the app's batch has to land well before that.
+         */
+        const val MA_TOPUP_AT = 3
 
         /**
          * How many songs the opening picker offers.

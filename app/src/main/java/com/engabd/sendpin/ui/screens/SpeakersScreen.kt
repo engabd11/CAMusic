@@ -18,10 +18,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,6 +41,7 @@ import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel
 import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel.SpeakerUi
+import kotlin.math.roundToInt
 
 @Composable
 fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewModel()) {
@@ -51,8 +54,12 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
     val canGroup by viewModel.leaderCanGroup.collectAsStateWithLifecycle()
     val somethingPlaying by viewModel.leaderIsPlaying.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+    var announceTo by remember { mutableStateOf<SpeakerUi?>(null) }
 
     val total = joined.size + available.size
+    // MA speakers that can take an announcement: not the phone sitting silently for Light Sync.
+    val announceable = (joined + available).filter { it.available && !it.isListener }
+    val canAnnounce: (SpeakerUi) -> Boolean = { p -> connected && announceable.any { it.id == p.id } }
     val allJoined = available.isEmpty() && joined.isNotEmpty()
 
     Box(Modifier.fillMaxSize().background(Ink)) {
@@ -76,6 +83,14 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                         if (allJoined) viewModel.ungroupAll() else viewModel.groupAll()
                     }
                     Spacer(Modifier.width(10.dp))
+                }
+                // Aimed at the play-to speaker; each card's own button aims at that speaker.
+                val headerTarget = announceable.firstOrNull { it.isTarget } ?: announceable.firstOrNull()
+                if (connected && headerTarget != null) {
+                    CircleIconButton(Icons.Default.Campaign, "Announce on ${headerTarget.name}") { announceTo = headerTarget }
+                    Spacer(Modifier.width(10.dp))
+                }
+                if (connected) {
                 }
                 RefreshButton(refreshing = refreshing, onClick = viewModel::manualRefresh)
             }
@@ -112,6 +127,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                             onUnjoin = { viewModel.unjoin(p.id) },
                             onVol = { viewModel.setPlayerVolume(p.id, it) },
                             onOffset = { viewModel.changeOffset(p.id, it) },
+                            onAnnounce = if (canAnnounce(p)) ({ announceTo = p }) else null,
                         )
                         Spacer(Modifier.height(12.dp))
                     }
@@ -138,6 +154,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                                 onPlayHere = { viewModel.selectPlayer(p.id) },
                                 onJoin = { viewModel.join(p.id) },
                                 onMoveMusic = { viewModel.transferQueueTo(p.id) },
+                                onAnnounce = if (canAnnounce(p)) ({ announceTo = p }) else null,
                             )
                             Spacer(Modifier.height(12.dp))
                         }
@@ -160,6 +177,8 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                 }
             }
         }
+
+        announceTo?.let { AnnounceDialog(it, announceable, onClose = { announceTo = null }, viewModel = viewModel) }
     }
 }
 
@@ -208,14 +227,14 @@ private fun GroupHeroCard(master: Float, activeCount: Int, title: String, onMast
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
                 Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = TextSecondary, modifier = Modifier.size(16.dp))
                 HSlider(master, onMaster, modifier = Modifier.weight(1f), trackHeight = 5.dp, knob = 15.dp)
-                Text("${(master * 100).toInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text("${(master * 100).roundToInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
         }
     }
 }
 
 @Composable
-private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit, onVol: (Float) -> Unit, onOffset: (Int) -> Unit) {
+private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit, onVol: (Float) -> Unit, onOffset: (Int) -> Unit, onAnnounce: (() -> Unit)?) {
     val accent = LocalAccent.current
     Box(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(accent.a(0.08f)).border(1.dp, accent.a(0.28f), RoundedCornerShape(16.dp)).padding(14.dp),
@@ -227,6 +246,10 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                 Column(Modifier.weight(1f).clickable(onClick = onSelect)) {
                     Text(p.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(if (p.isTarget) "Playing here" else p.meta, color = if (p.isTarget) accent else TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                }
+                onAnnounce?.let {
+                    CircleIconButton(Icons.Default.Campaign, "Announce on ${p.name}", it)
+                    Spacer(Modifier.width(8.dp))
                 }
                 // The leader is the group — it cannot leave itself — so it gets no
                 // switch at all rather than a disabled one. The spacer matches an M3
@@ -242,7 +265,7 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = TextMuted, modifier = Modifier.size(14.dp))
                 HSlider(p.volume, onVol, modifier = Modifier.weight(1f))
-                Text("${(p.volume * 100).toInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                Text("${(p.volume * 100).roundToInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
             }
             // Sync offset only for members. The leader is the reference clock of the
             // group; nudging it would move the whole group, so per-speaker latency trim
@@ -287,6 +310,7 @@ private fun FreeCard(
     onPlayHere: () -> Unit,
     onJoin: () -> Unit,
     onMoveMusic: () -> Unit,
+    onAnnounce: (() -> Unit)?,
 ) {
     val accent = LocalAccent.current
     Row(
@@ -306,6 +330,10 @@ private fun FreeCard(
         // playing to move.
         if (canMoveMusic) {
             CircleIconButton(Icons.Default.MusicNote, "Move music here", onMoveMusic)
+            Spacer(Modifier.width(8.dp))
+        }
+        onAnnounce?.let {
+            CircleIconButton(Icons.Default.Campaign, "Announce on ${p.name}", it)
             Spacer(Modifier.width(8.dp))
         }
         if (canJoin) {
